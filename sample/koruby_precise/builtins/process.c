@@ -1206,7 +1206,7 @@ static RESULT korb_m_kernel_backtick(CTX *c, korb_value *slots, korb_ref self, k
             if (KORB_STRING_P(nr.value)) {
                 char eb[64]; uint32_t el = VAL2STR(nr.value)->len;
                 if (el >= sizeof eb) el = sizeof eb - 1;
-                memcpy(eb, korb_strbuf_data(VAL2STR(nr.value)->buf), el); eb[el] = '\0';
+                memcpy(eb, korb_str_ptr(VAL2STR(nr.value)), el); eb[el] = '\0';
                 KORB_STR_ENC_SET(slots[0], korb_enc_index_pub(c->vm, eb));   /* slots[0] survived the sends */
             }
         }
@@ -1574,7 +1574,7 @@ static RESULT korb_m_process_test(CTX *c, korb_value *slots, korb_ref self, korb
     const korb_value cv = KORB_SLICE_GET(a, 0);
     int cmd = 0;
     if (FIXNUM_P(cv)) cmd = (int)FIX2LONG(cv);
-    else if (KORB_STRING_P(cv) && VAL2STR(cv)->len >= 1) cmd = (unsigned char)korb_strbuf_data(VAL2STR(cv)->buf)[0];
+    else if (KORB_STRING_P(cv) && VAL2STR(cv)->len >= 1) cmd = (unsigned char)korb_str_ptr(VAL2STR(cv))[0];
     else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
     char path[4096];
     if (!korb_cstr_arg(KORB_SLICE_GET(a, 1), path, sizeof path))

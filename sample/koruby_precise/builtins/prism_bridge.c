@@ -29,7 +29,7 @@ korb_bi_prism_dump(CTX *c, korb_value *slots, korb_slice args)
     const size_t slen = ss->len;
     uint8_t *const src = malloc(slen + 1);
     if (!src) { fprintf(stderr, "koruby_precise: oom (prism source)\n"); abort(); }
-    memcpy(src, korb_strbuf_data(ss->buf), slen);
+    memcpy(src, korb_str_ptr(ss), slen);
     src[slen] = '\0';
 
     char *opts = NULL;
@@ -37,7 +37,7 @@ korb_bi_prism_dump(CTX *c, korb_value *slots, korb_slice args)
         const KorbString *const os = VAL2STR(ov);
         opts = malloc(os->len + 1);
         if (!opts) { fprintf(stderr, "koruby_precise: oom (prism options)\n"); abort(); }
-        memcpy(opts, korb_strbuf_data(os->buf), os->len);
+        memcpy(opts, korb_str_ptr(os), os->len);
         opts[os->len] = '\0';
     }
 

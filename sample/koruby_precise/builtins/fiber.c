@@ -431,7 +431,7 @@ static RESULT korb_fiber_storage_key(CTX *c, korb_value *slots, korb_value k, ko
         if (KORB_STRING_P(sr.value)) k = sr.value;
     }
     if (KORB_STRING_P(k)) {
-        *out = ID2SYM(korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len, KORB_STR_ENC(k)));
+        *out = ID2SYM(korb_intern_enc(c->vm, korb_str_ptr(VAL2STR(k)), VAL2STR(k)->len, KORB_STR_ENC(k)));
         return RESULT_OK(KORB_TRUE);
     }
     char ib[128]; char *b = NULL; size_t bl = 0;

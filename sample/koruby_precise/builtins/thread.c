@@ -806,7 +806,7 @@ korb_thread_report(CTX *c, korb_value *base, struct korb_thread *t)
     if (ms == NULL) return;
     if (ts.state == KORB_NORMAL && KORB_STRING_P(ts.value))
         fprintf(ms, "%.*s terminated with exception (report_on_exception is true):\n",
-                (int)VAL2STR(ts.value)->len, korb_strbuf_data(VAL2STR(ts.value)->buf));
+                (int)VAL2STR(ts.value)->len, korb_str_ptr(VAL2STR(ts.value)));
     korb_report_uncaught_fp(c, ms, t->exc, false, NULL);   /* no '<main>' closer: a thread's bottom is its block */
     fclose(ms);
     bool def;
@@ -1091,7 +1091,7 @@ korb_m_thread_name_set(CTX *c, korb_value *slots, korb_ref self, korb_slice a)
                 return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, KORB_SLICE_GET(a, 0)));
         }
         const KorbString *const ns = VAL2STR(v);
-        if (UNLIKELY(memchr(korb_strbuf_data(ns->buf), 0, ns->len) != NULL))
+        if (UNLIKELY(memchr(korb_str_ptr(ns), 0, ns->len) != NULL))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string contains null byte");
     }
     VAL2THREAD(KORB_REF_GET(self))->rep->name = v;   /* rep は libc: barrier 不要 (root visit が forward) */
@@ -1118,12 +1118,12 @@ korb_thread_tls_key(CTX *c, korb_value *slots, korb_value k, korb_value *out)
             RESULT ir = korb_send(c, slots + 1, korb_intern_lit(c->vm, "inspect", 7), 0, 0);
             if (ir.state == KORB_NORMAL && KORB_STRING_P(ir.value)) {
                 const uint32_t il = VAL2STR(ir.value)->len < 60 ? VAL2STR(ir.value)->len : 60;
-                memcpy(kb, korb_strbuf_data(VAL2STR(ir.value)->buf), il); kb[il] = 0;   /* raise (may-GC) 前に copy */
+                memcpy(kb, korb_str_ptr(VAL2STR(ir.value)), il); kb[il] = 0;   /* raise (may-GC) 前に copy */
             }
             return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a symbol nor a string", kb);
         }
     }
-    *out = ID2SYM(korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(k)->buf), VAL2STR(k)->len, KORB_STR_ENC(k)));
+    *out = ID2SYM(korb_intern_enc(c->vm, korb_str_ptr(VAL2STR(k)), VAL2STR(k)->len, KORB_STR_ENC(k)));
     return RESULT_OK(KORB_NIL);
 }
 
@@ -1626,7 +1626,7 @@ korb_m_thread_to_s(CTX *c, korb_value *slots, korb_ref self, korb_slice a)
     int name_enc = -1;                                /* 非 ASCII の名前ならその encoding が伝播 (CRuby) */
     if (t->name != KORB_NIL && KORB_STRING_P(t->name)) {
         const uint32_t nl = VAL2STR(t->name)->len < 48 ? VAL2STR(t->name)->len : 48;
-        memcpy(nb, korb_strbuf_data(VAL2STR(t->name)->buf), nl);
+        memcpy(nb, korb_str_ptr(VAL2STR(t->name)), nl);
         nb[nl] = 0;
         for (uint32_t i = 0; i < nl; i++)
             if ((unsigned char)nb[i] >= 0x80) { name_enc = (int)KORB_STR_ENC(t->name); break; }

@@ -551,7 +551,7 @@ static RESULT korb_obj_copy_impl(CTX *c, korb_value *slots, korb_ref self, uint3
     if (KORB_STRING_P(v)) {
         uint32_t len = VAL2STR(v)->len;
         KorbString *r = korb_str_alloc(c, slots + 1, len);
-        memcpy(korb_strbuf_data(r->buf), korb_strbuf_data(VAL2STR(KORB_REF_GET(self))->buf), len);   /* re-read after alloc */
+        memcpy(korb_str_ptr(r), korb_str_ptr(VAL2STR(KORB_REF_GET(self))), len);   /* re-read after alloc */
         KORB_STR_ENC_SET((korb_value)r, KORB_STR_ENC(KORB_REF_GET(self)));   /* preserve encoding */
         slots[1] = (korb_value)r;
         need_initcopy = true;

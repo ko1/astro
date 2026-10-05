@@ -191,7 +191,7 @@ static RESULT kj_string(CTX *c, korb_value *slots, struct kj_state *const st, co
         }
         const uint32_t h = ((uint32_t)len * 31u + (unsigned char)bytes[0] * 7u + (unsigned char)bytes[len ? len - 1 : 0]) & (KJ_KCACHE - 1);
         const korb_value hit = korb_ary_ptr(VAL2ARY(*st->kcache))[h];
-        if (KORB_STRING_P(hit) && VAL2STR(hit)->len == len && memcmp(korb_strbuf_data(VAL2STR(hit)->buf), bytes, len) == 0)
+        if (KORB_STRING_P(hit) && VAL2STR(hit)->len == len && memcmp(korb_str_ptr(VAL2STR(hit)), bytes, len) == 0)
             return RESULT_OK(hit);
         const korb_value k = korb_fstr_get(c, slots, bytes, (uint32_t)len, KORB_ENC_UTF8);
         const KorbArray *const kc = VAL2ARY(*st->kcache);   /* re-read: the fstring may have been allocated */
@@ -467,7 +467,7 @@ korb_bi_json_parse(CTX *c, korb_value *slots, korb_slice args)
     const size_t n = src->len;
     unsigned char *const copy = malloc(n ? n : 1);
     if (!copy) abort();
-    memcpy(copy, korb_strbuf_data(src->buf), n);
+    memcpy(copy, korb_str_ptr(src), n);
     struct kj_state st = {
         .p = copy, .end = copy + n,
         .flags = (uint32_t)FIX2LONG(KORB_SLICE_GET(args, 1)),
@@ -649,7 +649,7 @@ static void kjg_object(struct kjg *const g, const korb_value v)
         kjg_put(g, g->object_nl, g->object_nl_n);
         kjg_indent(g, g->depth);
         const unsigned char *kp; size_t kn; uint32_t enc;
-        if (type == 1) { const KorbString *const s = VAL2STR(k); kp = (const unsigned char *)korb_strbuf_data(s->buf); kn = s->len; enc = KORB_STR_ENC(k); }
+        if (type == 1) { const KorbString *const s = VAL2STR(k); kp = (const unsigned char *)korb_str_ptr(s); kn = s->len; enc = KORB_STR_ENC(k); }
         else { const uint32_t id = SYM2ID(k); kp = (const unsigned char *)korb_sym_name(g->vm, id); kn = g->vm->sym_lens[id]; enc = g->vm->sym_encs[id]; }
         if (!kjg_string(g, kp, kn, enc)) { g->fail = true; return; }
         kjg_put(g, g->space_before, g->space_before_n);
@@ -688,7 +688,7 @@ static void kjg_value(struct kjg *const g, const korb_value v)
     if (!AROH_IS_GC_OBJECT(v) || (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS)) { g->fail = true; return; }
     if (KORB_STRING_P(v)) {
         const KorbString *const s = VAL2STR(v);
-        const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+        const unsigned char *const p = (const unsigned char *)korb_str_ptr(s);
         if (!kjg_string(g, p, s->len, KORB_STR_ENC(v))) g->fail = true;
         return;
     }
@@ -705,7 +705,7 @@ static bool kjg_str_arg(const korb_value v, const char **const p, uint32_t *cons
 {
     if (v == KORB_NIL) { *p = ""; *n = 0; return true; }
     if (!KORB_STRING_P(v)) return false;
-    *p = korb_strbuf_data(VAL2STR(v)->buf); *n = VAL2STR(v)->len;
+    *p = korb_str_ptr(VAL2STR(v)); *n = VAL2STR(v)->len;
     return kjg_valid((const unsigned char *)*p, *n, KORB_STR_ENC(v));   /* else `buf << indent` may raise: Ruby */
 }
 

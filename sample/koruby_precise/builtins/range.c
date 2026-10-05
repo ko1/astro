@@ -252,23 +252,23 @@ static RESULT korb_m_range_include(CTX *c, korb_value *slots, korb_ref self, kor
             const KorbString *const bs = VAL2STR(slots[2]), *const es = VAL2STR(end), *const vs = VAL2STR(slots[1]);
             if (bs->len == 1 && es->len == 1 && vs->len <= 1) {
                 if (vs->len == 0) return RESULT_OK(KORB_FALSE);
-                const unsigned char b = (unsigned char)korb_strbuf_data(bs->buf)[0], e = (unsigned char)korb_strbuf_data(es->buf)[0],
-                                    v = (unsigned char)korb_strbuf_data(vs->buf)[0];
+                const unsigned char b = (unsigned char)korb_str_ptr(bs)[0], e = (unsigned char)korb_str_ptr(es)[0],
+                                    v = (unsigned char)korb_str_ptr(vs)[0];
                 if (b < 0x80 && e < 0x80 && v < 0x80)
                     return RESULT_OK((b <= v && v < e) || (!excl && v == e) ? KORB_TRUE : KORB_FALSE);
             }
         }
         slots[3] = end;                                  /* end (rooted) */
-        const uint32_t el = korb_utf8_count(korb_strbuf_data(VAL2STR(end)->buf), VAL2STR(end)->len);
+        const uint32_t el = korb_utf8_count(korb_str_ptr(VAL2STR(end)), VAL2STR(end)->len);
         const uint32_t mid_succ = korb_intern_lit(c->vm, "succ", 4);
         for (int guard = 0; guard < 10000000; guard++) {
             const KorbString *cur = VAL2STR(slots[2]), *xs = VAL2STR(slots[1]);
-            const bool cur_eq_end = (cur->len == VAL2STR(slots[3])->len && memcmp(korb_strbuf_data(cur->buf), korb_strbuf_data(VAL2STR(slots[3])->buf), cur->len) == 0);
+            const bool cur_eq_end = (cur->len == VAL2STR(slots[3])->len && memcmp(korb_str_ptr(cur), korb_str_ptr(VAL2STR(slots[3])), cur->len) == 0);
             if (!(excl && cur_eq_end)) {                  /* check membership (skip end itself when exclusive) */
-                if (cur->len == xs->len && memcmp(korb_strbuf_data(cur->buf), korb_strbuf_data(xs->buf), cur->len) == 0) return RESULT_OK(KORB_TRUE);
+                if (cur->len == xs->len && memcmp(korb_str_ptr(cur), korb_str_ptr(xs), cur->len) == 0) return RESULT_OK(KORB_TRUE);
             }
             if (cur_eq_end) return RESULT_OK(KORB_FALSE); /* reached end without a match */
-            if (korb_utf8_count(korb_strbuf_data(cur->buf), cur->len) > el) return RESULT_OK(KORB_FALSE);   /* overshot end length */
+            if (korb_utf8_count(korb_str_ptr(cur), cur->len) > el) return RESULT_OK(KORB_FALSE);   /* overshot end length */
             slots[4] = slots[2];                          /* stage current as the #succ receiver */
             RESULT sc = korb_send_impl(c, slots + 5, mid_succ, 0, 0, NULL, NULL, NULL);   /* current = current.succ */
             if (UNLIKELY(sc.state != KORB_NORMAL)) return sc;
@@ -714,8 +714,8 @@ static RESULT korb_m_range_to_a(CTX *c, korb_value *slots, korb_ref self, korb_s
     }
     if (KORB_STRING_P(SELF_RANGE->rbegin) && KORB_STRING_P(SELF_RANGE->rend)) {   /* String range via succ */
         if (VAL2STR(SELF_RANGE->rbegin)->len == 1 && VAL2STR(SELF_RANGE->rend)->len == 1) {   /* single byte → codepoint iterate (CRuby: "A".."z" spans 58, incl. punctuation) */
-            const uint8_t b0 = (uint8_t)korb_strbuf_data(VAL2STR(SELF_RANGE->rbegin)->buf)[0];
-            const uint8_t e0 = (uint8_t)korb_strbuf_data(VAL2STR(SELF_RANGE->rend)->buf)[0];
+            const uint8_t b0 = (uint8_t)korb_str_ptr(VAL2STR(SELF_RANGE->rbegin))[0];
+            const uint8_t e0 = (uint8_t)korb_str_ptr(VAL2STR(SELF_RANGE->rend))[0];
             const uint32_t end_ch = SELF_RANGE->exclude_end ? e0 : (uint32_t)e0 + 1;
             slots[0] = UNWRAP(korb_ary_new(c, slots + 1, b0 < end_ch ? end_ch - b0 : 0));
             korb_ref out = KORB_REF_AT(&slots[0]);
@@ -769,7 +769,7 @@ static RESULT korb_m_range_to_a(CTX *c, korb_value *slots, korb_ref self, korb_s
             if (cmp > 0) break;
             if (excl && cmp == 0) break;
             const KorbString *const cs = VAL2STR(slots[1]);
-            CHECK(korb_ary_push_val(c, slots + 3, out, ID2SYM(korb_intern(c->vm, korb_strbuf_data(cs->buf), cs->len))));
+            CHECK(korb_ary_push_val(c, slots + 3, out, ID2SYM(korb_intern(c->vm, korb_str_ptr(cs), cs->len))));
             if (cmp == 0) break;
             slots[1] = UNWRAP(korb_m_str_succ(c, slots + 3, KORB_REF_AT(&slots[1]), KORB_SLICE_MAKE(NULL, 0)));
         }

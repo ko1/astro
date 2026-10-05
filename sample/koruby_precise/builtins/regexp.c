@@ -273,9 +273,9 @@ korb_re_exec_wide(struct korb_vm *const vm, const korb_re_exec_fn_t fn, const ko
     if (unit == 1 && korb_str_bytes_ascii((korb_value)(uintptr_t)pat)) {
         pw.u8 = malloc(pat->len ? pat->len : 1); pw.len = pat->len;
         if (pw.u8 == NULL) return -4;
-        memcpy(pw.u8, korb_strbuf_data(pat->buf), pat->len);
-    } else if (!(unit == 1 ? korb_re_mb_decode(vm, senc, (const unsigned char *)korb_strbuf_data(pat->buf), pat->len, false, &pw)
-                           : korb_re_wide_decode((const unsigned char *)korb_strbuf_data(pat->buf), pat->len, unit, be, false, &pw))) return -4;
+        memcpy(pw.u8, korb_str_ptr(pat), pat->len);
+    } else if (!(unit == 1 ? korb_re_mb_decode(vm, senc, (const unsigned char *)korb_str_ptr(pat), pat->len, false, &pw)
+                           : korb_re_wide_decode((const unsigned char *)korb_str_ptr(pat), pat->len, unit, be, false, &pw))) return -4;
     const korb_re_wide_buf *const sw = korb_re_wide_subject(vm, sb, slen, senc, unit, be);
     if (sw == NULL) { free(pw.u8); return -3; }
     uint32_t lo = 0, hi = sw->len;                       /* first UTF-8 offset whose character starts at/after startb */
@@ -299,7 +299,7 @@ korb_re_run_wide(CTX *c, korb_value *slots, korb_value re, korb_value subj, size
     const uint32_t unit = korb_re_wide_unit(c->vm, re, KORB_STR_ENC(subj), &be);
     if (unit == 0) return RESULT_OK(KORB_NIL);
     const KorbString *const s = VAL2STR(subj);
-    const int rc = korb_re_exec_wide(c->vm, fn, re, korb_strbuf_data(s->buf), s->len, KORB_STR_ENC(subj), unit, be, startb, m);
+    const int rc = korb_re_exec_wide(c->vm, fn, re, korb_str_ptr(s), s->len, KORB_STR_ENC(subj), unit, be, startb, m);
     if (UNLIKELY(rc < 0)) {
         const char *const en = korb_enc_name_of(c->vm, KORB_STR_ENC(subj));
         if (rc == -3) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in %s", en);
@@ -346,7 +346,7 @@ static RESULT korb_re_run(CTX *c, korb_value *slots, korb_value re, korb_value s
     if (sb_subj && !(eff_flags & (512u | KORB_RE_U8FIX))) eff_flags |= 128u;   /* a UTF-8-fixed pattern passed korb_re_check_enc: the subject is ASCII */
     if (UNLIKELY(KORB_STR_ENC(VAL2RE(re)->source) != KORB_ENC_UTF8) && korb_re_pat_bytewise_p(c->vm, re)) eff_flags |= 128u;
     eff_flags &= ~KORB_RE_DERIVED;
-    const int rc = fn(korb_strbuf_data(pat->buf), pat->len, eff_flags, korb_strbuf_data(s->buf), s->len, startb, m);
+    const int rc = fn(korb_str_ptr(pat), pat->len, eff_flags, korb_str_ptr(s), s->len, startb, m);
     if (UNLIKELY(rc == -2)) return korb_raise(c, slots, KORB_E_REGEXP, 0, "regexp match stack overflow");
     if (UNLIKELY(rc < 0)) {
         const char *const m = korb_re_error(c->vm);
@@ -368,7 +368,7 @@ static RESULT korb_re_slice(CTX *c, korb_value *slots, korb_value *subjslot, lon
 static long korb_re_bchar(const struct korb_vm *vm, const KorbString *s, long boff) {
     if (boff <= 0) return 0;
     if (boff >= (long)s->len) boff = (long)s->len;
-    return (long)korb_enc_charcount(vm, KORB_STR_ENC((korb_value)(uintptr_t)s), korb_strbuf_data(s->buf), (uint32_t)boff);
+    return (long)korb_enc_charcount(vm, KORB_STR_ENC((korb_value)(uintptr_t)s), korb_str_ptr(s), (uint32_t)boff);
 }
 
 /* Build a MatchData from a completed match `m` over `subj` with source `re`. */
@@ -441,7 +441,7 @@ bool korb_re_caseeq_backref(CTX *c, korb_value *slots, korb_value pat, korb_valu
                          ? korb_re_wide_unit(c->vm, slots[1], KORB_STR_ENC(slots[0]), &wbe) : 0;
     if (UNLIKELY(wunit)) {
         const KorbString *const s = VAL2STR(slots[0]);
-        if (korb_re_exec_wide(c->vm, fn, slots[1], korb_strbuf_data(s->buf), s->len, KORB_STR_ENC(slots[0]), wunit, wbe, 0, &m) != 1) {
+        if (korb_re_exec_wide(c->vm, fn, slots[1], korb_str_ptr(s), s->len, KORB_STR_ENC(slots[0]), wunit, wbe, 0, &m) != 1) {
             korb_re_set_lastmatch(c, KORB_NIL); return false;
         }
     } else
@@ -452,8 +452,8 @@ bool korb_re_caseeq_backref(CTX *c, korb_value *slots, korb_value pat, korb_valu
           (!(korb_re_u8_flags(c->vm, slots[1]) & (512u | KORB_RE_U8FIX)) || !korb_str_bytes_ascii(slots[0]))) eff |= 128u;
       if (UNLIKELY(KORB_STR_ENC(VAL2RE(slots[1])->source) != KORB_ENC_UTF8) && korb_re_pat_bytewise_p(c->vm, slots[1])) eff |= 128u;
       eff &= ~KORB_RE_DERIVED;
-      const int r = fn(korb_strbuf_data(p->buf), p->len, eff,
-                       korb_strbuf_data(s->buf), s->len, 0, &m);   /* fn does not allocate → borrows stable */
+      const int r = fn(korb_str_ptr(p), p->len, eff,
+                       korb_str_ptr(s), s->len, 0, &m);   /* fn does not allocate → borrows stable */
       if (r != 1) { korb_re_set_lastmatch(c, KORB_NIL); return false; } }
     const RESULT mdr = korb_re_build_md(c, slots + 2, slots[0], slots[1], &m);
     if (UNLIKELY(mdr.state != KORB_NORMAL)) return false;
@@ -492,14 +492,14 @@ static int korb_md_name_idx(CTX *c, korb_value mdv, const char *name, uint32_t n
     int best = -1, last_defined = -1;   /* duplicate names → the last group that participated (else last defined → nil) */
     const korb_re_name_groups_fn_t gf = (korb_re_name_groups_fn_t)c->vm->re_name_groups_fn;
     int gis[32];
-    const int gn = gf != NULL ? gf(korb_strbuf_data(pat->buf), pat->len, flags, name, nlen, gis, 32) : -2;
+    const int gn = gf != NULL ? gf(korb_str_ptr(pat), pat->len, flags, name, nlen, gis, 32) : -2;
     if (gn >= 0 && gn < 32) {
         for (int j = 0; j < gn; j++) { last_defined = gis[j]; if (korb_md_off(md, gis[j], 0) >= 0) best = gis[j]; }
         return best >= 0 ? best : last_defined;
     }
     for (int k = 0; ; k++) {
         int gi = -1;
-        const char *gn = nf(korb_strbuf_data(pat->buf), pat->len, flags, k, &gi);
+        const char *gn = nf(korb_str_ptr(pat), pat->len, flags, k, &gi);
         if (gn == NULL) break;
         if (strlen(gn) == nlen && memcmp(gn, name, nlen) == 0) {
             last_defined = gi;
@@ -527,7 +527,7 @@ static RESULT korb_m_md_aref(CTX *c, korb_value *slots, korb_ref self, korb_slic
     if (SYMBOL_P(k) || KORB_STRING_P(k)) {                /* [name] → named group */
         const char *nm; uint32_t nl;
         if (SYMBOL_P(k)) { nm = korb_sym_name(c->vm, SYM2ID(k)); nl = (uint32_t)strlen(nm); }
-        else { nm = korb_strbuf_data(VAL2STR(k)->buf); nl = VAL2STR(k)->len; }
+        else { nm = korb_str_ptr(VAL2STR(k)); nl = VAL2STR(k)->len; }
         int gi = korb_md_name_idx(c, mdv, nm, nl);
         if (gi < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
         return korb_md_group(c, slots, mdv, gi);
@@ -613,7 +613,7 @@ static RESULT korb_m_md_values_at(CTX *c, korb_value *slots, korb_ref self, korb
         if (SYMBOL_P(arg) || KORB_STRING_P(arg)) {        /* named-capture reference */
             const char *nm; uint32_t nl;
             if (SYMBOL_P(arg)) { nm = korb_sym_name(c->vm, SYM2ID(arg)); nl = (uint32_t)strlen(nm); }
-            else { nm = korb_strbuf_data(VAL2STR(arg)->buf); nl = VAL2STR(arg)->len; }
+            else { nm = korb_str_ptr(VAL2STR(arg)); nl = VAL2STR(arg)->len; }
             const int gi = korb_md_name_idx(c, slots[0], nm, nl);
             if (gi < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
             g = UNWRAP(korb_md_group(c, slots + 2, slots[0], gi));
@@ -648,7 +648,7 @@ static RESULT korb_md_arg_gi(CTX *c, korb_value *slots, korb_value mdv, korb_val
     if (SYMBOL_P(arg) || KORB_STRING_P(arg)) {
         const char *nm; uint32_t nl;
         if (SYMBOL_P(arg)) { nm = korb_sym_name(c->vm, SYM2ID(arg)); nl = (uint32_t)strlen(nm); }
-        else { nm = korb_strbuf_data(VAL2STR(arg)->buf); nl = VAL2STR(arg)->len; }
+        else { nm = korb_str_ptr(VAL2STR(arg)); nl = VAL2STR(arg)->len; }
         int gi = korb_md_name_idx(c, mdv, nm, nl);
         if (gi < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
         *gi_out = gi; return RESULT_OK(KORB_TRUE);
@@ -706,7 +706,7 @@ static RESULT korb_m_md_match_length(CTX *c, korb_value *slots, korb_ref self, k
     slots[0] = UNWRAP(korb_md_group(c, slots, KORB_REF_GET(self), gi));
     if (slots[0] == KORB_NIL) return RESULT_OK(KORB_NIL);
     const KorbString *g = VAL2STR(slots[0]);
-    return RESULT_OK(LONG2FIX((long)korb_enc_charcount(c->vm, KORB_STR_ENC(slots[0]), korb_strbuf_data(g->buf), g->len)));
+    return RESULT_OK(LONG2FIX((long)korb_enc_charcount(c->vm, KORB_STR_ENC(slots[0]), korb_str_ptr(g), g->len)));
 }
 /* Ruby 4.1: `md.integer_at(n)` is `md[n]&.to_i`, except that a capture with no
  * digits to parse answers nil rather than 0 (rb_int_parse_cstr semantics). */
@@ -742,7 +742,7 @@ static RESULT korb_m_md_integer_at(CTX *c, korb_value *slots, korb_ref self, kor
     else if (SYMBOL_P(k) || KORB_STRING_P(k)) {
         const char *nm; uint32_t nl;
         if (SYMBOL_P(k)) { nm = korb_sym_name(c->vm, SYM2ID(k)); nl = (uint32_t)strlen(nm); }
-        else { nm = korb_strbuf_data(VAL2STR(k)->buf); nl = VAL2STR(k)->len; }
+        else { nm = korb_str_ptr(VAL2STR(k)); nl = VAL2STR(k)->len; }
         const int gi = korb_md_name_idx(c, KORB_REF_GET(self), nm, nl);
         if (gi < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
         nth = gi;
@@ -768,7 +768,7 @@ static RESULT korb_m_md_integer_at(CTX *c, korb_value *slots, korb_ref self, kor
     if (slots[0] == KORB_NIL) return RESULT_OK(KORB_NIL);
     {
         const KorbString *const s = VAL2STR(slots[0]);
-        if (!korb_md_int_parsable(korb_strbuf_data(s->buf), s->len, (int)base)) return RESULT_OK(KORB_NIL);
+        if (!korb_md_int_parsable(korb_str_ptr(s), s->len, (int)base)) return RESULT_OK(KORB_NIL);
     }
     slots[1] = LONG2FIX(base);
     return korb_m_str_to_i(c, slots + 2, KORB_REF_AT(&slots[0]), KORB_SLICE_MAKE(&slots[1], 1));
@@ -793,12 +793,12 @@ static RESULT korb_md_names_into(CTX *c, korb_value *slots, korb_value mdv_or_re
     for (int k = 0; ; k++) {
         const KorbString *pat = VAL2STR(VAL2RE(slots[0])->source);   /* re-fetch (korb_str_new below moves GC) */
         const uint32_t flags = VAL2RE(slots[0])->flags;
-        int gi = -1; const char *gn = nf(korb_strbuf_data(pat->buf), pat->len, flags, k, &gi);
+        int gi = -1; const char *gn = nf(korb_str_ptr(pat), pat->len, flags, k, &gi);
         if (!gn) break;
         const uint32_t gnl = (uint32_t)strlen(gn);
         bool dup = false;                                /* each name only once */
         const KorbArray *da = VAL2ARY(KORB_REF_GET(dst_ary));
-        for (uint32_t j = 0; j < da->len; j++) { const KorbString *e = VAL2STR(korb_ary_ptr(da)[j]); if (e->len == gnl && memcmp(korb_strbuf_data(e->buf), gn, gnl) == 0) { dup = true; break; } }
+        for (uint32_t j = 0; j < da->len; j++) { const KorbString *e = VAL2STR(korb_ary_ptr(da)[j]); if (e->len == gnl && memcmp(korb_str_ptr(e), gn, gnl) == 0) { dup = true; break; } }
         if (dup) continue;
         slots[1] = UNWRAP(korb_str_new(c, slots + 1, gn, gnl));
         CHECK(korb_ary_push_val(c, slots + 2, dst_ary, slots[1]));
@@ -829,7 +829,7 @@ static RESULT korb_m_md_named_captures(CTX *c, korb_value *slots, korb_ref self,
              * and the moving GC can relocate the Regexp's source string. */
             const KorbString *pat = VAL2STR(VAL2RE(VAL2MD(slots[0])->regexp)->source);
             const uint32_t flags = VAL2RE(VAL2MD(slots[0])->regexp)->flags;
-            int gi = -1; const char *gn = nf(korb_strbuf_data(pat->buf), pat->len, flags, k, &gi);
+            int gi = -1; const char *gn = nf(korb_str_ptr(pat), pat->len, flags, k, &gi);
             if (!gn) break;
             /* duplicate names → the value of the last group that participated */
             const int best = korb_md_name_idx(c, slots[0], gn, (uint32_t)strlen(gn));
@@ -846,11 +846,11 @@ static RESULT korb_m_md_eq(CTX *c, korb_value *slots, korb_ref self, korb_slice 
     if (!KORB_MATCHDATA_P(o)) return RESULT_OK(KORB_FALSE);
     const KorbMatchData *m1 = VAL2MD(s), *m2 = VAL2MD(o);
     const KorbString *s1 = VAL2STR(m1->subject), *s2 = VAL2STR(m2->subject);
-    if (s1->len != s2->len || memcmp(korb_strbuf_data(s1->buf), korb_strbuf_data(s2->buf), s1->len) != 0) return RESULT_OK(KORB_FALSE);
+    if (s1->len != s2->len || memcmp(korb_str_ptr(s1), korb_str_ptr(s2), s1->len) != 0) return RESULT_OK(KORB_FALSE);
     if (KORB_REGEXP_P(m1->regexp) && KORB_REGEXP_P(m2->regexp)) {
         if (((VAL2RE(m1->regexp)->flags ^ VAL2RE(m2->regexp)->flags) & ~KORB_RE_DERIVED) != 0) return RESULT_OK(KORB_FALSE);
         const KorbString *p1 = VAL2STR(VAL2RE(m1->regexp)->source), *p2 = VAL2STR(VAL2RE(m2->regexp)->source);
-        if (p1->len != p2->len || memcmp(korb_strbuf_data(p1->buf), korb_strbuf_data(p2->buf), p1->len) != 0) return RESULT_OK(KORB_FALSE);
+        if (p1->len != p2->len || memcmp(korb_str_ptr(p1), korb_str_ptr(p2), p1->len) != 0) return RESULT_OK(KORB_FALSE);
     } else if (m1->regexp != m2->regexp) return RESULT_OK(KORB_FALSE);
     const KorbArray *o1 = VAL2ARY(m1->offsets), *o2 = VAL2ARY(m2->offsets);
     if (o1->len != o2->len) return RESULT_OK(KORB_FALSE);
@@ -862,7 +862,7 @@ static RESULT korb_m_md_hash(CTX *c, korb_value *slots, korb_ref self, korb_slic
     const KorbMatchData *md = VAL2MD(KORB_REF_GET(self));
     const KorbString *s = VAL2STR(md->subject);
     uint64_t h = 1469598103934665603ULL;                 /* FNV-1a over subject + offsets */
-    for (uint32_t i = 0; i < s->len; i++) { h ^= (unsigned char)korb_strbuf_data(s->buf)[i]; h *= 1099511628211ULL; }
+    for (uint32_t i = 0; i < s->len; i++) { h ^= (unsigned char)korb_str_ptr(s)[i]; h *= 1099511628211ULL; }
     const KorbArray *o = VAL2ARY(md->offsets);
     for (uint32_t i = 0; i < o->len; i++) { h ^= (uint64_t)FIX2LONG(korb_ary_ptr(o)[i]); h *= 1099511628211ULL; }
     return RESULT_OK(LONG2FIX((korb_sword_t)(h & (((korb_word_t)1 << 62) - 1))));
@@ -882,7 +882,7 @@ static RESULT korb_m_md_deconstruct_keys(CTX *c, korb_value *slots, korb_ref sel
         for (int k = 0; ; k++) {
             const KorbString *pat = VAL2STR(VAL2RE(VAL2MD(slots[0])->regexp)->source);
             const uint32_t flags = VAL2RE(VAL2MD(slots[0])->regexp)->flags;
-            int gi = -1; if (!nf(korb_strbuf_data(pat->buf), pat->len, flags, k, &gi)) break;
+            int gi = -1; if (!nf(korb_str_ptr(pat), pat->len, flags, k, &gi)) break;
             ng++;
         }
         if (klen > ng) return RESULT_OK(slots[1]);
@@ -901,7 +901,7 @@ static RESULT korb_m_md_deconstruct_keys(CTX *c, korb_value *slots, korb_ref sel
     for (int k = 0; ; k++) {
         const KorbString *pat = VAL2STR(VAL2RE(VAL2MD(slots[0])->regexp)->source);   /* re-fetch (GC-moving) */
         const uint32_t flags = VAL2RE(VAL2MD(slots[0])->regexp)->flags;
-        int gi = -1; const char *gn = nf(korb_strbuf_data(pat->buf), pat->len, flags, k, &gi);
+        int gi = -1; const char *gn = nf(korb_str_ptr(pat), pat->len, flags, k, &gi);
         if (!gn) break;
         const int best = korb_md_name_idx(c, slots[0], gn, (uint32_t)strlen(gn));
         slots[2] = ID2SYM(korb_intern(c->vm, gn, (uint32_t)strlen(gn)));
@@ -995,12 +995,12 @@ static RESULT korb_m_re_match_op(CTX *c, korb_value *slots, korb_ref self, korb_
 static size_t korb_re_startb(const struct korb_vm *const vm, korb_value sv, long startc) {
     if (startc <= 0) return 0;
     const KorbString *const s = VAL2STR(sv);
-    return korb_enc_byteoff(vm, KORB_STR_ENC(sv), korb_strbuf_data(s->buf), s->len, (uint32_t)startc);
+    return korb_enc_byteoff(vm, KORB_STR_ENC(sv), korb_str_ptr(s), s->len, (uint32_t)startc);
 }
 /* Character count in the subject's own encoding (same rule as above). */
 static long korb_re_ncp(const struct korb_vm *const vm, korb_value sv) {
     const KorbString *const s = VAL2STR(sv);
-    return (long)korb_enc_charcount(vm, KORB_STR_ENC(sv), korb_strbuf_data(s->buf), s->len);
+    return (long)korb_enc_charcount(vm, KORB_STR_ENC(sv), korb_str_ptr(s), s->len);
 }
 static RESULT korb_m_re_match_q(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {   /* match?(str[, pos]) — no $~ */
     KORB_RE_CHECK(c, slots, self);
@@ -1102,7 +1102,7 @@ static void korb_re_write_to_s(const struct korb_vm *const vm, FILE *ms, korb_va
     const korb_value srcv = VAL2RE(re)->source;                      /* nil for an allocate'd / never-compiled Regexp */
     const KorbString *const src = KORB_STRING_P(srcv) ? VAL2STR(srcv) : NULL;
     bool m = (f & 16u) != 0, i = (f & 4u) != 0, x = (f & 8u) != 0;
-    const char *body = src ? korb_strbuf_data(src->buf) : "";
+    const char *body = src ? korb_str_ptr(src) : "";
     size_t len = src ? src->len : 0;
     korb_re_wide_buf wb = { NULL, NULL, 0 };           /* a UTF-16/32 source is written as UTF-8 (callers re-encode) */
     bool wbe = false;
@@ -1164,7 +1164,7 @@ static RESULT korb_m_re_to_s(CTX *c, korb_value *slots, korb_ref self, korb_slic
         slots[1] = VAL2RE(slots[0])->to_s;
         const uint32_t n = VAL2STR(slots[1])->len;
         KorbString *const s = korb_str_alloc(c, slots + 2, n);
-        memcpy(korb_strbuf_data(s->buf), korb_strbuf_data(VAL2STR(slots[1])->buf), n);   /* re-read after the alloc */
+        memcpy(korb_str_ptr(s), korb_str_ptr(VAL2STR(slots[1])), n);   /* re-read after the alloc */
         KORB_STR_ENC_SET((korb_value)s, KORB_STR_ENC(slots[1]));
         return RESULT_OK((korb_value)s);
     }
@@ -1208,7 +1208,7 @@ static RESULT korb_m_re_inspect(CTX *c, korb_value *slots, korb_ref self, korb_s
     char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);
     fputc('/', ms);
     /* escape bare forward slashes; pass through existing "\x" escape pairs verbatim */
-    const char *p = src ? korb_strbuf_data(src->buf) : ""; const char *const end = p + (src ? src->len : 0);
+    const char *p = src ? korb_str_ptr(src) : ""; const char *const end = p + (src ? src->len : 0);
     while (p < end) {
         if (*p == '\\' && p + 1 < end) { fputc('\\', ms); fputc(p[1], ms); p += 2; continue; }
         if (*p == '/') { fputc('\\', ms); fputc('/', ms); p++; continue; }
@@ -1235,7 +1235,7 @@ static RESULT korb_m_re_named_captures(CTX *c, korb_value *slots, korb_ref self,
     for (int k = 0; ; k++) {
         const KorbString *pat = VAL2STR(VAL2RE(slots[0])->source);   /* re-fetch (GC-moving) */
         const uint32_t flags = VAL2RE(slots[0])->flags;
-        int gi = -1; const char *gn = nf(korb_strbuf_data(pat->buf), pat->len, flags, k, &gi);
+        int gi = -1; const char *gn = nf(korb_str_ptr(pat), pat->len, flags, k, &gi);
         if (!gn) break;
         slots[2] = UNWRAP(korb_str_new(c, slots + 2, gn, (uint32_t)strlen(gn)));   /* name key */
         int32_t idx = korb_hash_find(VAL2HASH(slots[1]), slots[2]);
@@ -1260,7 +1260,7 @@ static RESULT korb_m_re_eq(CTX *c, korb_value *slots, korb_ref self, korb_slice 
     if (UNLIKELY(VAL2RE(o)->flags & KORB_RE_UNINIT)) return korb_raise(c, slots, KORB_E_TYPE, 0, "uninitialized Regexp");
     if (korb_re_ident(c->vm, s) != korb_re_ident(c->vm, o)) return RESULT_OK(KORB_FALSE);
     const KorbString *a1 = VAL2STR(VAL2RE(s)->source), *b1 = VAL2STR(VAL2RE(o)->source);
-    if (a1->len != b1->len || memcmp(korb_strbuf_data(a1->buf), korb_strbuf_data(b1->buf), a1->len) != 0) return RESULT_OK(KORB_FALSE);
+    if (a1->len != b1->len || memcmp(korb_str_ptr(a1), korb_str_ptr(b1), a1->len) != 0) return RESULT_OK(KORB_FALSE);
     slots[0] = o;
     slots[1] = UNWRAP(korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "encoding", 8), 0, 0, NULL, NULL, NULL));
     slots[2] = KORB_REF_GET(self);
@@ -1270,7 +1270,7 @@ static RESULT korb_m_re_eq(CTX *c, korb_value *slots, korb_ref self, korb_slice 
 static RESULT korb_m_re_hash(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a; KORB_RE_CHECK(c, slots, self);
     const KorbString *src = VAL2STR(VAL2RE(KORB_REF_GET(self))->source);
-    uint32_t h = korb_str_hash(korb_strbuf_data(src->buf), src->len) ^ (korb_re_ident(c->vm, KORB_REF_GET(self)) * 2654435761u);
+    uint32_t h = korb_str_hash(korb_str_ptr(src), src->len) ^ (korb_re_ident(c->vm, KORB_REF_GET(self)) * 2654435761u);
     return RESULT_OK(LONG2FIX((long)h));
 }
 /* Regexp#match(str[,pos]) → MatchData|nil (sets $~); block form yields it. */
@@ -1365,7 +1365,7 @@ korb_re_start_char(CTX *c, korb_value subj, korb_value posv, long *out)
     if (!korb_to_index(posv, &p)) { *out = 0; return true; }   /* unusable → treat as 0, as before */
     if (p < 0) {
         const KorbString *const s = VAL2STR(subj);
-        const uint32_t nch = korb_enc_charcount(c->vm, KORB_STR_ENC(subj), korb_strbuf_data(s->buf), s->len);
+        const uint32_t nch = korb_enc_charcount(c->vm, KORB_STR_ENC(subj), korb_str_ptr(s), s->len);
         p += (korb_sword_t)nch;
         if (p < 0) return false;
     }
@@ -1421,7 +1421,7 @@ static RESULT korb_re_scan_elem(CTX *c, korb_value *slots, korb_value subj, korb
     if (m->n_groups == 0) {
         slots[0] = subj; const uint32_t ml = (uint32_t)(m->ends[0] - m->starts[0]);
         KorbString *r = korb_str_alloc(c, slots + 1, ml);
-        memcpy(korb_strbuf_data(r->buf), korb_strbuf_data(VAL2STR(slots[0])->buf) + m->starts[0], ml);
+        memcpy(korb_str_ptr(r), korb_str_ptr(VAL2STR(slots[0])) + m->starts[0], ml);
         KORB_STR_ENC_SET((korb_value)r, KORB_STR_ENC(slots[0]));   /* result keeps self's encoding */
         return RESULT_OK((korb_value)r);
     }
@@ -1434,7 +1434,7 @@ static RESULT korb_re_scan_elem(CTX *c, korb_value *slots, korb_value subj, korb
 static RESULT korb_re_coerce_pat_literal(CTX *c, korb_value *slots, korb_value pv, korb_value *out) {
     if (KORB_REGEXP_P(pv)) { *out = pv; return RESULT_OK(KORB_TRUE); }
     if (KORB_STRING_P(pv)) {                             /* a Symbol is a TypeError, like any non-String */
-        const char *b = korb_strbuf_data(VAL2STR(pv)->buf); const uint32_t n = VAL2STR(pv)->len;
+        const char *b = korb_str_ptr(VAL2STR(pv)); const uint32_t n = VAL2STR(pv)->len;
         const uint32_t penc = KORB_STR_ENC(pv);          /* read before any alloc moves pv */
         /* escaping at most doubles it: a plain buffer, not a stdio stream (str.sub("x", y) paid fputc / fwrite per char) */
         char sbuf[256];
@@ -1495,13 +1495,13 @@ static RESULT korb_m_str_scan(CTX *c, korb_value *slots, korb_ref self, korb_sli
         if (UNLIKELY(KORB_STR_ENC(slots[0]) >= KORB_ENC_OTHER_MIN) && m.ends[0] == m.starts[0] &&
             m.starts[0] < (long)VAL2STR(slots[0])->len) {    /* UTF-16/32 etc.: no UTF-8 continuation bytes */
             const KorbString *s2 = VAL2STR(slots[0]);
-            off = m.starts[0] + korb_re_char_len(c->vm, KORB_STR_ENC(slots[0]), (const unsigned char *)korb_strbuf_data(s2->buf),
+            off = m.starts[0] + korb_re_char_len(c->vm, KORB_STR_ENC(slots[0]), (const unsigned char *)korb_str_ptr(s2),
                                                  (uint32_t)m.starts[0], s2->len);
         } else if (KORB_STR_ENC(slots[0]) < KORB_ENC_OTHER_MIN && !KORB_ENC_SB(c->vm, KORB_STR_ENC(slots[0]))) {   /* an empty match advances one CHARACTER,
                                                               * not one byte — but a single-byte encoding
                                                               * has no continuation bytes to skip */
             const KorbString *s2 = VAL2STR(slots[0]);
-            while (off < (long)s2->len && ((unsigned char)korb_strbuf_data(s2->buf)[off] & 0xC0) == 0x80) off++;
+            while (off < (long)s2->len && ((unsigned char)korb_str_ptr(s2)[off] & 0xC0) == 0x80) off++;
         }
     }
     return RESULT_OK(block ? slots[0] : slots[2]);
@@ -1527,7 +1527,7 @@ static void korb_re_expand_repl(CTX *c, FILE *ms, const char *rep, uint32_t rn, 
                      * the one that took part is the answer, last match winning —
                      * same rule MatchData#[name] follows.  Stopping at the first
                      * name match emitted the empty unmatched alternative. */
-                    for (int k = 0; ; k++) { int idx = -1; const char *gn = nf(korb_strbuf_data(pat->buf), pat->len, fl, k, &idx); if (!gn) break;
+                    for (int k = 0; ; k++) { int idx = -1; const char *gn = nf(korb_str_ptr(pat), pat->len, fl, k, &idx); if (!gn) break;
                         if (strlen(gn) != j - (i + 3) || memcmp(gn, rep + i + 3, j - (i + 3)) != 0) continue;
                         if (idx <= m->n_groups && m->starts[idx] >= 0) gi = idx;   /* participated */
                         else if (gi < 0) gi = idx; } }
@@ -1569,11 +1569,11 @@ RESULT korb_re_literal_regexp(CTX *c, korb_value *slots, korb_value pv, korb_val
 /* Emit v into ms as a String, dispatching a user-defined #to_s (CRuby coerces
  * gsub block results and Hash-replacement values with #to_s). */
 static RESULT korb_emit_to_s(CTX *c, korb_value *slots, FILE *ms, korb_value v) {
-    if (KORB_STRING_P(v)) { const KorbString *r = VAL2STR(v); fwrite(korb_strbuf_data(r->buf), 1, r->len, ms); return RESULT_OK(KORB_NIL); }
+    if (KORB_STRING_P(v)) { const KorbString *r = VAL2STR(v); fwrite(korb_str_ptr(r), 1, r->len, ms); return RESULT_OK(KORB_NIL); }
     slots[0] = v;
     RESULT sr = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
     if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-    if (KORB_STRING_P(sr.value)) { const KorbString *r = VAL2STR(sr.value); fwrite(korb_strbuf_data(r->buf), 1, r->len, ms); }
+    if (KORB_STRING_P(sr.value)) { const KorbString *r = VAL2STR(sr.value); fwrite(korb_str_ptr(r), 1, r->len, ms); }
     else korb_fprint_to_s(c, ms, sr.value);
     return RESULT_OK(KORB_NIL);
 }
@@ -1581,7 +1581,7 @@ static RESULT korb_m_hash_aref(CTX *c, korb_value *slots, korb_ref self, korb_sl
 RESULT korb_re_str_gsub(CTX *c, korb_value *slots, korb_ref self, korb_slice a, korb_value re, bool global, bool in_place, NODE *block, korb_value *def_env, korb_value *cself) {
     slots[0] = KORB_REF_GET(self); slots[1] = re;
     const KorbString *s0 = VAL2STR(slots[0]); const uint32_t sn = s0->len;
-    char *const src = malloc(sn ? sn : 1); memcpy(src, korb_strbuf_data(s0->buf), sn);
+    char *const src = malloc(sn ? sn : 1); memcpy(src, korb_str_ptr(s0), sn);
     char *rep = NULL; uint32_t rn = 0; korb_value hashrep = KORB_NIL;
     uint32_t rep_enc = KORB_ENC_UTF8; bool rep_asc = true;   /* a String replacement's own encoding joins the result's */
     if (block == NULL) {
@@ -1611,7 +1611,7 @@ RESULT korb_re_str_gsub(CTX *c, korb_value *slots, korb_ref self, korb_slice a, 
             return nr;
         }
         korb_value rv = KORB_SLICE_GET(a, 1);
-        if (KORB_STRING_P(rv)) { const KorbString *rs = VAL2STR(rv); rn = rs->len; rep = malloc(rn ? rn : 1); memcpy(rep, korb_strbuf_data(rs->buf), rn);
+        if (KORB_STRING_P(rv)) { const KorbString *rs = VAL2STR(rv); rn = rs->len; rep = malloc(rn ? rn : 1); memcpy(rep, korb_str_ptr(rs), rn);
                                  rep_enc = KORB_STR_ENC(rv); rep_asc = korb_str_ascii_only_p(c->vm, rv); }
         else if (KORB_HASH_P(rv)) { hashrep = rv; slots[2] = rv; }
         else {                          /* coerce replacement via #to_str */
@@ -1626,7 +1626,7 @@ RESULT korb_re_str_gsub(CTX *c, korb_value *slots, korb_ref self, korb_slice a, 
                     return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into String (%s#to_str gives %s)",
                                       rn0, rn0, korb_coerce_name(c, sr.value));
                 }
-                const KorbString *rs = VAL2STR(sr.value); rn = rs->len; rep = malloc(rn ? rn : 1); memcpy(rep, korb_strbuf_data(rs->buf), rn);
+                const KorbString *rs = VAL2STR(sr.value); rn = rs->len; rep = malloc(rn ? rn : 1); memcpy(rep, korb_str_ptr(rs), rn);
                 rep_enc = KORB_STR_ENC(sr.value); rep_asc = korb_str_ascii_only_p(c->vm, sr.value);
             } else { free(src); return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, rv)); }
         }
@@ -1725,7 +1725,7 @@ RESULT korb_re_str_gsub(CTX *c, korb_value *slots, korb_ref self, korb_slice a, 
     if (!in_place) return nr;
     slots[3] = nr.value; const KorbString *res = VAL2STR(slots[3]); const uint32_t w = res->len;
     KorbString *s2 = korb_str_ensure(c, slots + 4, self, w); res = VAL2STR(slots[3]);
-    memcpy(korb_strbuf_data(s2->buf), korb_strbuf_data(res->buf), w); s2->len = w; korb_strbuf_data(s2->buf)[w] = '\0';
+    memcpy(korb_str_ptr(s2), korb_str_ptr(res), w); s2->len = w; korb_str_ptr(s2)[w] = '\0';
     if (replaced) KORB_STR_ENC_SET(KORB_REF_GET(self), renc);   /* gsub! widens self's encoding too */
     return RESULT_OK(replaced ? KORB_REF_GET(self) : KORB_NIL);
 }
@@ -1760,7 +1760,7 @@ RESULT korb_re_str_split(CTX *c, korb_value *slots, korb_ref self, korb_value re
         if (rr.value != KORB_TRUE) break;
         const long b0 = m.starts[0], e0 = m.ends[0];
         if (start == b0 && b0 == e0) {                       /* zero-width match at the search start */
-            const unsigned char *d = (const unsigned char *)korb_strbuf_data(VAL2STR(slots[0])->buf);
+            const unsigned char *d = (const unsigned char *)korb_str_ptr(VAL2STR(slots[0]));
             if (last_null == 1) {
                 const uint32_t cl = korb_re_char_len(c->vm, KORB_STR_ENC(slots[0]), d, (uint32_t)beg, (uint32_t)len);
                 CHECK(korb_re_split_emit(c, slots + 5, res, &slots[0], beg, cl, &empty_count));
@@ -1809,7 +1809,7 @@ RESULT korb_re_str_span(CTX *c, korb_value *slots, korb_ref self, korb_value re,
     if (slots[2] != KORB_NIL) {
         if (SYMBOL_P(slots[2]) || KORB_STRING_P(slots[2])) {
             const char *nm; uint32_t nl;
-            if (SYMBOL_P(slots[2])) { nm = korb_sym_name(c->vm, SYM2ID(slots[2])); nl = (uint32_t)strlen(nm); } else { nm = korb_strbuf_data(VAL2STR(slots[2])->buf); nl = VAL2STR(slots[2])->len; }
+            if (SYMBOL_P(slots[2])) { nm = korb_sym_name(c->vm, SYM2ID(slots[2])); nl = (uint32_t)strlen(nm); } else { nm = korb_str_ptr(VAL2STR(slots[2])); nl = VAL2STR(slots[2])->len; }
             gi = korb_md_name_idx(c, slots[3], nm, nl);
             if (gi < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
         } else {
@@ -1849,7 +1849,7 @@ RESULT korb_re_str_aref(CTX *c, korb_value *slots, korb_ref self, korb_value re,
     if (slots[2] != KORB_UNDEF) {
         if (SYMBOL_P(slots[2]) || KORB_STRING_P(slots[2])) {
             const char *nm; uint32_t nl;
-            if (SYMBOL_P(slots[2])) { nm = korb_sym_name(c->vm, SYM2ID(slots[2])); nl = (uint32_t)strlen(nm); } else { nm = korb_strbuf_data(VAL2STR(slots[2])->buf); nl = VAL2STR(slots[2])->len; }
+            if (SYMBOL_P(slots[2])) { nm = korb_sym_name(c->vm, SYM2ID(slots[2])); nl = (uint32_t)strlen(nm); } else { nm = korb_str_ptr(VAL2STR(slots[2])); nl = VAL2STR(slots[2])->len; }
             gi = korb_md_name_idx(c, slots[3], nm, nl);
             if (gi < 0) return korb_raise(c, slots, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
         } else {
@@ -1968,8 +1968,8 @@ static RESULT korb_m_re_escape(CTX *c, korb_value *slots, korb_ref self, korb_sl
     char *buf = NULL; size_t z = 0; FILE *ms = open_memstream(&buf, &z);
     bool wbe = false;
     const uint32_t wunit = korb_re_enc_unit(c->vm, KORB_STR_ENC(slots[0]), &wbe);
-    if (UNLIKELY(wunit)) korb_re_escape_wide(ms, (const unsigned char *)korb_strbuf_data(s->buf), s->len, wunit, wbe);
-    else for (uint32_t i = 0; i < s->len; i++) korb_re_escape_byte(ms, (unsigned char)korb_strbuf_data(s->buf)[i]);
+    if (UNLIKELY(wunit)) korb_re_escape_wide(ms, (const unsigned char *)korb_str_ptr(s), s->len, wunit, wbe);
+    else for (uint32_t i = 0; i < s->len; i++) korb_re_escape_byte(ms, (unsigned char)korb_str_ptr(s)[i]);
     fclose(ms);
     /* The escape keeps the source's encoding, except that an all-ASCII input
      * yields US-ASCII whatever it was tagged with (CRuby). */
@@ -1988,7 +1988,7 @@ static __attribute__((noinline)) int korb_re_valid_wide(const struct korb_vm *co
     if (unit == 0) return 2;
     const KorbString *const ps = VAL2STR(src);
     korb_re_wide_buf pw;
-    if (!korb_re_wide_decode((const unsigned char *)korb_strbuf_data(ps->buf), ps->len, unit, be, false, &pw)) return -1;
+    if (!korb_re_wide_decode((const unsigned char *)korb_str_ptr(ps), ps->len, unit, be, false, &pw)) return -1;
     const bool ok = vf(pw.u8, pw.len, flags);
     free(pw.u8);
     return ok ? 1 : 0;
@@ -2045,12 +2045,12 @@ static RESULT korb_m_re_new(CTX *c, korb_value *slots, korb_ref self, korb_slice
         else if (KORB_STRING_P(opt)) {                    /* a String of flag chars: i/m/x */
             const KorbString *fs = VAL2STR(opt);
             for (uint32_t k = 0; k < fs->len; k++) {
-                switch (korb_strbuf_data(fs->buf)[k]) {
+                switch (korb_str_ptr(fs)[k]) {
                   case 'i': flags |= 4u;  break;          /* IGNORECASE */
                   case 'm': flags |= 16u; break;          /* MULTILINE */
                   case 'x': flags |= 8u;  break;          /* EXTENDED */
                   default:                            /* CRuby names the whole option string, not the offending char */
-                    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown regexp option: %.*s", (int)fs->len, korb_strbuf_data(fs->buf));
+                    return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unknown regexp option: %.*s", (int)fs->len, korb_str_ptr(fs));
                 }
             }
         }
@@ -2098,12 +2098,12 @@ static RESULT korb_m_re_new(CTX *c, korb_value *slots, korb_ref self, korb_slice
         const unsigned vflags = ((se == KORB_ENC_BINARY || (se >= KORB_ENC_OTHER_MIN && KORB_ENC_SB(c->vm, se))) &&
                                  !korb_str_bytes_ascii(slots[0])) ? (flags | 128u) : flags;   /* see korb_re_pat_bytewise_p */
         if (UNLIKELY(wv < 0)) return korb_raise(c, slots, KORB_E_REGEXP, 0, "invalid multibyte character");
-        if (wv == 0 || (wv == 2 && !vf(korb_strbuf_data(ps->buf), ps->len, vflags))) {
+        if (wv == 0 || (wv == 2 && !vf(korb_str_ptr(ps), ps->len, vflags))) {
             /* the engine's own reason, quoted like CRuby ("<why>: /<pattern>/") */
             char why[288]; const char *const m = korb_re_error(c->vm);
             const KorbString *const ps2 = VAL2STR(slots[0]);
             snprintf(why, sizeof why, "%s: /%.*s/", m ? m : "invalid regular expression",
-                     (int)ps2->len, korb_strbuf_data(ps2->buf));
+                     (int)ps2->len, korb_str_ptr(ps2));
             return korb_raise(c, slots, KORB_E_REGEXP, 0, "%s", why);
         }
     }
@@ -2179,7 +2179,7 @@ static bool korb_re_part_enc(CTX *c, korb_value *slots, korb_ref reref, uint32_t
     char nb[64];                                   /* the registry takes a NUL-terminated name */
     const KorbString *const ns = VAL2STR(slots[0]);
     uint32_t n = ns->len < sizeof nb - 1 ? ns->len : (uint32_t)(sizeof nb - 1);
-    memcpy(nb, korb_strbuf_data(ns->buf), n); nb[n] = '\0';
+    memcpy(nb, korb_str_ptr(ns), n); nb[n] = '\0';
     *idx = korb_enc_index_for_name(c->vm, nb);
     slots[0] = KORB_REF_GET(reref);
     const RESULT fr = korb_send(c, slots + 1, korb_intern_lit(c->vm, "fixed_encoding?", 15), 0, 0);
@@ -2250,7 +2250,7 @@ static RESULT korb_m_re_union(CTX *c, korb_value *slots, korb_ref self, korb_sli
             bool nonascii = false, pbe = false;
             korb_re_wide_buf pw;
             if (UNLIKELY(korb_re_enc_unit(c->vm, KORB_STR_ENC(slots[4]), &pbe)) &&   /* escaped as UTF-8, re-encoded below */
-                korb_re_wide_decode((const unsigned char *)korb_strbuf_data(s2->buf), s2->len,
+                korb_re_wide_decode((const unsigned char *)korb_str_ptr(s2), s2->len,
                                     korb_re_enc_unit(c->vm, KORB_STR_ENC(slots[4]), &pbe), pbe, false, &pw)) {
                 for (uint32_t j = 0; j < pw.len; j++) {
                     const unsigned char ch = (unsigned char)pw.u8[j];
@@ -2259,7 +2259,7 @@ static RESULT korb_m_re_union(CTX *c, korb_value *slots, korb_ref self, korb_sli
                 free(pw.u8);
             } else
             for (uint32_t j = 0; j < s2->len; j++) {
-                const unsigned char ch = (unsigned char)korb_strbuf_data(s2->buf)[j];
+                const unsigned char ch = (unsigned char)korb_str_ptr(s2)[j];
                 if (ch >= 0x80) nonascii = true;
                 korb_re_escape_byte(ms, ch);
             }
@@ -2312,7 +2312,7 @@ static RESULT korb_m_re_last_match(CTX *c, korb_value *slots, korb_ref self, kor
     if (SYMBOL_P(k) || KORB_STRING_P(k)) {                /* a name, as MatchData#[] takes one */
         const char *nm; uint32_t nl;
         if (SYMBOL_P(k)) { nm = korb_sym_name(c->vm, SYM2ID(k)); nl = (uint32_t)strlen(nm); }
-        else { nm = korb_strbuf_data(VAL2STR(k)->buf); nl = VAL2STR(k)->len; }
+        else { nm = korb_str_ptr(VAL2STR(k)); nl = VAL2STR(k)->len; }
         const int gi = korb_md_name_idx(c, slots[0], nm, nl);
         if (gi < 0) return korb_raise(c, slots + 1, KORB_E_INDEX, 0, "undefined group name reference: %.*s", (int)nl, nm);
         return korb_md_group(c, slots + 1, slots[0], gi);

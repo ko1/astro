@@ -787,9 +787,9 @@ rb_to_id(KVALUE h)
     CTX *const c = kcx_c();
     const korb_value v = K(h);
     if (SYMBOL_P(v)) return kcx_id_out(SYM2ID(v));
-    if (KORB_STRING_P(v)) return kcx_id_out(korb_intern(c->vm, korb_strbuf_data(VAL2STR(v)->buf), VAL2STR(v)->len));
+    if (KORB_STRING_P(v)) return kcx_id_out(korb_intern(c->vm, korb_str_ptr(VAL2STR(v)), VAL2STR(v)->len));
     const korb_value s = kcx_send_name(c, v, "to_str", 0, NULL);
-    return kcx_id_out(korb_intern(c->vm, korb_strbuf_data(VAL2STR(s)->buf), VAL2STR(s)->len));
+    return kcx_id_out(korb_intern(c->vm, korb_str_ptr(VAL2STR(s)), VAL2STR(s)->len));
 }
 KCX_API KVALUE rb_to_symbol(KVALUE h) { return rb_id2sym(rb_to_id(h)); }
 KCX_API KVALUE rb_check_id(volatile KVALUE *namep) { return rb_to_id(*namep); }
@@ -844,8 +844,8 @@ rb_num2ulong(KVALUE h)
     if (KORB_BIGNUM_P(v)) {
         const korb_value s = kcx_send_name(c, v, "to_s", 0, NULL);
         errno = 0;
-        const unsigned long long u = strtoull(korb_strbuf_data(VAL2STR(s)->buf), NULL, 10);
-        if (errno || korb_strbuf_data(VAL2STR(s)->buf)[0] == '-')
+        const unsigned long long u = strtoull(korb_str_ptr(VAL2STR(s)), NULL, 10);
+        if (errno || korb_str_ptr(VAL2STR(s))[0] == '-')
             kcx_throw(c, kcx_raise_c(c, KORB_E_RANGE, "bignum out of range of unsigned long"));
         return (unsigned long)u;
     }
@@ -859,7 +859,7 @@ static int kcx_bignum_range(KVALUE h, bool is_unsigned)
     if (is_unsigned) {
         CTX *const c = kcx_c();
         const korb_value s = kcx_send_name(c, v, "to_s", 0, NULL);
-        const char *const p = korb_strbuf_data(VAL2STR(s)->buf);
+        const char *const p = korb_str_ptr(VAL2STR(s));
         errno = 0;
         const unsigned long long u = strtoull(p[0] == '-' ? p + 1 : p, NULL, 10);
         return errno || (p[0] == '-' && u > (1ULL << 63)) ? 1 : 0;
@@ -973,7 +973,7 @@ kcx_coerce_name(CTX *c, korb_value v, char *out, size_t sz)
 {
     if (AROH_IS_GC_OBJECT(v) && !KORB_FLOAT_P(v)) { korb_class_qname_into(c, korb_class_obj_of(c, v), out, sz); return; }
     const korb_value s = kcx_send_name(c, v, "inspect", 0, NULL);
-    snprintf(out, sz, "%.*s", (int)VAL2STR(s)->len, korb_strbuf_data(VAL2STR(s)->buf));
+    snprintf(out, sz, "%.*s", (int)VAL2STR(s)->len, korb_str_ptr(VAL2STR(s)));
 }
 /* CRuby's do_coerce: y.coerce(x) => [x', y'].  false when y cannot coerce (and !err) */
 static bool
@@ -1032,8 +1032,8 @@ rb_str_new(const char *ptr, long len)
     if (len < 0) kcx_throw(c, kcx_raise_c(c, KORB_E_ARGUMENT, "negative string size (or size too big)"));
     korb_value *const s = kcx_slots(c);
     KorbString *const str = korb_str_alloc(c, s, (uint32_t)len);
-    if (ptr) memcpy(korb_strbuf_data(str->buf), ptr, (size_t)len);
-    else memset(korb_strbuf_data(str->buf), 0, (size_t)len);
+    if (ptr) memcpy(korb_str_ptr(str), ptr, (size_t)len);
+    else memset(korb_str_ptr(str), 0, (size_t)len);
     KORB_STR_ENC_SET((korb_value)str, KORB_ENC_BINARY);   /* CRuby: rb_str_new is ASCII-8BIT */
     return W((korb_value)str);
 }
@@ -1050,7 +1050,7 @@ rb_str_buf_new(long capa)
     CTX *const c = kcx_c();
     KorbString *const str = korb_str_alloc(c, kcx_slots(c), (uint32_t)(capa > 0 ? capa : 0));
     str->len = 0;
-    korb_strbuf_data(str->buf)[0] = '\0';
+    korb_str_ptr(str)[0] = '\0';
     KORB_STR_ENC_SET((korb_value)str, KORB_ENC_BINARY);
     return W((korb_value)str);
 }
@@ -1080,7 +1080,7 @@ rb_str_cmp(KVALUE a, KVALUE b)
 {
     const KorbString *const x = VAL2STR(K(a)), *const y = VAL2STR(K(b));
     const uint32_t n = x->len < y->len ? x->len : y->len;
-    const int r = memcmp(korb_strbuf_data(x->buf), korb_strbuf_data(y->buf), n);
+    const int r = memcmp(korb_str_ptr(x), korb_str_ptr(y), n);
     if (r) return r < 0 ? -1 : 1;
     return x->len == y->len ? 0 : x->len < y->len ? -1 : 1;
 }
@@ -1105,7 +1105,7 @@ rb_must_asciicompat(KVALUE str)
     CTX *const c = kcx_c();
     if (korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(K(str)))) return;
     const korb_value e = kcx_send_name(c, kcx_send_name(c, K(str), "encoding", 0, NULL), "to_s", 0, NULL);
-    rb_raise(rb_eEncCompatError, "ASCII incompatible encoding: %.*s", (int)VAL2STR(e)->len, korb_strbuf_data(VAL2STR(e)->buf));
+    rb_raise(rb_eEncCompatError, "ASCII incompatible encoding: %.*s", (int)VAL2STR(e)->len, korb_str_ptr(VAL2STR(e)));
 }
 KCX_API KVALUE rb_str_intern(KVALUE str) { return rb_to_symbol(str); }
 KCX_API KVALUE rb_str_inspect(KVALUE str) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(str), "inspect", 0, NULL)); }
@@ -1116,9 +1116,9 @@ rb_str_resize(KVALUE str, long len)
     korb_value *const s = kcx_slots(c);
     s[0] = K(str);
     KorbString *const x = korb_str_ensure(c, s + 1, KORB_REF_AT(&s[0]), (uint32_t)len);
-    if ((uint32_t)len > x->len) memset(korb_strbuf_data(x->buf) + x->len, 0, (size_t)len - x->len);
+    if ((uint32_t)len > x->len) memset(korb_str_ptr(x) + x->len, 0, (size_t)len - x->len);
     x->len = (uint32_t)len;
-    korb_strbuf_data(x->buf)[len] = '\0';
+    korb_str_ptr(x)[len] = '\0';
     return str;
 }
 KCX_API void
@@ -1126,7 +1126,7 @@ rb_str_set_len(KVALUE str, long len)
 {
     KorbString *const x = VAL2STR(K(str));
     x->len = (uint32_t)len;
-    korb_strbuf_data(x->buf)[len] = '\0';
+    korb_str_ptr(x)[len] = '\0';
 }
 KCX_API KVALUE
 rb_check_string_type(KVALUE h)
@@ -1171,7 +1171,7 @@ KCX_API ARO_BORROW char *rb_string_ptr(KVALUE h)
     CTX *const c = kcx_c();
     korb_value *const cell = (korb_value *)(uintptr_t)h;
     KorbString *s = VAL2STR(*cell);
-    if (aro_gc_pinned_p(s->buf)) return korb_strbuf_data(s->buf);
+    if (s->buf && aro_gc_pinned_p(s->buf)) return korb_str_ptr(s);
     if (c->cext_top) kcx_frame_hold(c->cext_top, cell);       /* a root across the copy */
     korb_value *const slots = kcx_slots(c);
     c->slots_top = slots;
@@ -1180,7 +1180,7 @@ KCX_API ARO_BORROW char *rb_string_ptr(KVALUE h)
     if (!nb) kcx_throw(c, kcx_raise_c(c, KORB_E_NOTIMPL, "C extensions need the copy GC (BARUBY_GC=5)"));
     nb->head.flags = KORB_OBJ_STR_BUF;
     s = VAL2STR(*cell);                                       /* the alloc may have collected */
-    memcpy(korb_strbuf_data(nb), korb_strbuf_data(s->buf), (size_t)s->len + 1);
+    memcpy(korb_strbuf_data(nb), korb_str_ptr(s), (size_t)s->len + 1);
     ARO_STORE(c, s, (korb_value *)(uintptr_t)&s->buf, (korb_value)(uintptr_t)nb);
     return korb_strbuf_data(nb);
 }
@@ -1220,7 +1220,7 @@ kcx_vformat(CTX *c, const char *fmt, va_list ap, size_t *outlen)
             p++;
             const KVALUE h = va_arg(ap, KVALUE);
             const korb_value v = kcx_send_name(c, K(h), plus ? "inspect" : "to_s", 0, NULL);
-            if (KORB_STRING_P(v)) kcx_buf_put(&b, &n, &cap, korb_strbuf_data(VAL2STR(v)->buf), VAL2STR(v)->len);
+            if (KORB_STRING_P(v)) kcx_buf_put(&b, &n, &cap, korb_str_ptr(VAL2STR(v)), VAL2STR(v)->len);
             continue;
         }
         char spec[64]; size_t sl = (size_t)(p - start); if (sl >= sizeof spec) sl = sizeof spec - 1;
@@ -1751,7 +1751,7 @@ rb_io_puts(int argc, const KVALUE *argv, KVALUE out)
         rb_io_write(out, line);
         const korb_value lv = K(line);
         const KorbString *const ls = VAL2STR(lv);
-        if (ls->len == 0 || korb_strbuf_data(ls->buf)[ls->len - 1] != '\n') rb_io_write(out, rb_str_new_cstr("\n"));
+        if (ls->len == 0 || korb_str_ptr(ls)[ls->len - 1] != '\n') rb_io_write(out, rb_str_new_cstr("\n"));
     }
     return KQnil;
 }
@@ -2172,7 +2172,7 @@ rb_class2name(KVALUE k)
 {
     CTX *const c = kcx_c();
     const korb_value n = K(rb_class_path(k));
-    return korb_sym_name(c->vm, korb_intern(c->vm, korb_strbuf_data(VAL2STR(n)->buf), VAL2STR(n)->len));   /* interned = immortal */
+    return korb_sym_name(c->vm, korb_intern(c->vm, korb_str_ptr(VAL2STR(n)), VAL2STR(n)->len));   /* interned = immortal */
 }
 KCX_API const char *rb_obj_classname(KVALUE o) { return rb_class2name(rb_obj_class(o)); }
 /* These are C in CRuby and do not dispatch: an extension may define #freeze / #kind_of?
@@ -2972,7 +2972,7 @@ kcx_abs_bytes(KVALUE val, size_t *len, int *sign)
     *sign = FIXNUM_P(v) ? (FIX2LONG(v) > 0) - (FIX2LONG(v) < 0) : korb_int_cmp(v, zero);
     const KVALUE sixteen = (KVALUE)LONG2FIX(16);
     const korb_value hex = kcx_send_name(c, kcx_send_name(c, v, "abs", 0, NULL), "to_s", 1, &sixteen);
-    const char *const h = korb_strbuf_data(VAL2STR(hex)->buf);
+    const char *const h = korb_str_ptr(VAL2STR(hex));
     const size_t hl = VAL2STR(hex)->len;
     *len = (hl + 1) / 2;
     uint8_t *const out = ruby_xcalloc(*len ? *len : 1, 1);
@@ -3170,7 +3170,7 @@ rb_to_encoding_index(KVALUE obj)
     if (v == KORB_NIL) return -1;
     if (!KORB_STRING_P(v)) v = kcx_send_name(c, v, "to_s", 0, NULL);   /* Encoding#to_s is its name */
     char nm[128];
-    snprintf(nm, sizeof nm, "%.*s", (int)VAL2STR(v)->len, korb_strbuf_data(VAL2STR(v)->buf));
+    snprintf(nm, sizeof nm, "%.*s", (int)VAL2STR(v)->len, korb_str_ptr(VAL2STR(v)));
     const uint32_t known = korb_enc_index_known(c->vm, nm);
     return known != UINT32_MAX ? (int)known : (int)korb_enc_index_for_name(c->vm, nm);
 }
@@ -3185,7 +3185,7 @@ KCX_API struct rb_encoding_kx *
 rb_find_encoding(KVALUE obj)
 {
     if (!KORB_STRING_P(K(obj))) return rb_to_encoding(obj);
-    const char *const p = korb_strbuf_data(VAL2STR(K(obj))->buf);
+    const char *const p = korb_str_ptr(VAL2STR(K(obj)));
     char nm[128];
     snprintf(nm, sizeof nm, "%.*s", (int)VAL2STR(K(obj))->len, p);
     return rb_enc_find(nm);
@@ -3261,7 +3261,7 @@ KCX_API int
 {
     const KVALUE s = rb_enc_uint_chr(code, enc);
     const KorbString *const str = VAL2STR(K(s));
-    memcpy(buf, korb_strbuf_data(str->buf), str->len);
+    memcpy(buf, korb_str_ptr(str), str->len);
     return (int)str->len;
 }
 KCX_API int
@@ -3342,7 +3342,7 @@ rb_enc_str_coderange(KVALUE str)
     const korb_value v = K(str);
     const KorbString *const s = VAL2STR(v);
     const uint32_t i = KORB_STR_ENC(v);
-    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    const unsigned char *const p = (const unsigned char *)korb_str_ptr(s);
     if (korb_enc_ascii_compat_idx(c->vm, i)) {
         uint32_t k = 0;
         while (k < s->len && p[k] < 0x80) k++;

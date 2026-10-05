@@ -411,7 +411,7 @@ ARO_BORROW static void korb_tc_cstr(korb_value v, char *out, size_t cap)
 {
     const KorbString *const s = VAL2STR(v);
     size_t n = s->len; if (n > cap - 1) n = cap - 1;
-    memcpy(out, korb_strbuf_data(s->buf), n);
+    memcpy(out, korb_str_ptr(s), n);
     out[n] = '\0';
 }
 
@@ -460,7 +460,7 @@ static RESULT korb_bi_transcode(CTX *c, korb_value *slots, korb_slice args)
     if (KORB_STRING_P(KORB_SLICE_GET(args, 4))) {
         const KorbString *const rs = VAL2STR(KORB_SLICE_GET(args, 4));
         repl_len = rs->len < sizeof replb ? rs->len : (uint32_t)sizeof replb;
-        memcpy(replb, korb_strbuf_data(rs->buf), repl_len);
+        memcpy(replb, korb_str_ptr(rs), repl_len);
     }
 
     korb_sword_t maxb = -1;
@@ -475,7 +475,7 @@ static RESULT korb_bi_transcode(CTX *c, korb_value *slots, korb_slice args)
     const size_t slen = s->len;
     unsigned char *const src = malloc(slen + 1);
     if (!src) abort();
-    memcpy(src, korb_strbuf_data(s->buf), slen);
+    memcpy(src, korb_str_ptr(s), slen);
     src[slen] = 0;
 
     struct korb_tc_out out = { NULL, 0, 0 };
@@ -596,7 +596,7 @@ static RESULT korb_tc_convert(CTX *c, korb_value *slots, korb_value src, const c
     const size_t slen = s->len;
     unsigned char *const buf = malloc(slen + 1);
     if (!buf) abort();
-    memcpy(buf, korb_strbuf_data(s->buf), slen);
+    memcpy(buf, korb_str_ptr(s), slen);
     struct korb_tc_out out = { NULL, 0, 0 };
     uint8_t dmode = KTC_JIS_ASCII, smode = KTC_JIS_ASCII;
     size_t i = 0;
@@ -725,7 +725,7 @@ static RESULT korb_bi_enc_sync(CTX *c, korb_value *slots, korb_slice a)
                 char eb[64];
                 uint32_t el = VAL2STR(nm.value)->len;
                 if (el >= sizeof eb) el = sizeof eb - 1;
-                memcpy(eb, korb_strbuf_data(VAL2STR(nm.value)->buf), el);
+                memcpy(eb, korb_str_ptr(VAL2STR(nm.value)), el);
                 eb[el] = '\0';
                 idx = korb_enc_index_pub(c->vm, eb);
             }

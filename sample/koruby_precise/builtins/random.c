@@ -108,7 +108,7 @@ static korb_value korb_seed_sym(struct korb_vm *const vm) { return ID2SYM(korb_i
 static KorbMT *korb_default_rng(struct korb_vm *vm);   /* fwd */
 ARO_BORROW static KorbMT *korb_rng_of(CTX *const c, korb_value rndobj) {
     const korb_value s = korb_ivar_get(c, rndobj, korb_mt_sym(c->vm));
-    return KORB_STRING_P(s) ? (KorbMT *)korb_strbuf_data(VAL2STR(s)->buf) : NULL;
+    return KORB_STRING_P(s) ? (KorbMT *)korb_str_ptr(VAL2STR(s)) : NULL;
 }
 /* True if v is a Random instance (its class is, or derives from, Random). */
 /* n bytes of OS entropy into buf; the bytes it could not get (0 = none) are left to the caller.
@@ -311,7 +311,7 @@ static RESULT korb_rand_core_x(CTX *c, korb_value *slots, KorbMT *st, korb_value
             if (KORB_STRING_P(slots[0])) {                /* copy out: korb_raise allocates */
                 const KorbString *const rs = VAL2STR(slots[0]);
                 const uint32_t n = rs->len < sizeof rb - 1 ? rs->len : (uint32_t)(sizeof rb - 1);
-                memcpy(rb, korb_strbuf_data(rs->buf), n); rb[n] = '\0';
+                memcpy(rb, korb_str_ptr(rs), n); rb[n] = '\0';
             }
             return korb_raise(c, slots + 1, KORB_E_ARGUMENT, 0, "invalid argument - %s", rb);
         }
@@ -444,7 +444,7 @@ static RESULT korb_m_random_init(CTX *c, korb_value *slots, korb_ref self, korb_
     CHECK(korb_ivar_set(c, slots, self, korb_seed_sym(c->vm), seed));   /* @__seed (may GC; seed re-read below) */
     KorbString *const s = korb_str_alloc(c, slots, (uint32_t)sizeof(KorbMT));   /* binary state buffer (may GC) */
     slots[0] = (korb_value)s;                                                /* root */
-    KorbMT *const st = (KorbMT *)korb_strbuf_data(s->buf);
+    KorbMT *const st = (KorbMT *)korb_str_ptr(s);
     const korb_value seed2 = korb_ivar_get(c, KORB_REF_GET(self), korb_seed_sym(c->vm));   /* re-read post-GC */
     korb_mt_seed_int(st, seed2);
     CHECK(korb_ivar_set(c, slots + 1, self, korb_mt_sym(c->vm), slots[0]));

@@ -46,7 +46,7 @@ korb_bi_yaml_parse(CTX *c, korb_value *slots, korb_slice args)
     const size_t slen = ss->len;
     unsigned char *const src = malloc(slen + 1);
     if (!src) { fprintf(stderr, "koruby_precise: oom (yaml source)\n"); abort(); }
-    memcpy(src, korb_strbuf_data(ss->buf), slen);
+    memcpy(src, korb_str_ptr(ss), slen);
     src[slen] = '\0';
 
     yaml_parser_t parser;
@@ -199,7 +199,7 @@ static char *korb_yaml_dup(korb_value v)
     const KorbString *const s = VAL2STR(v);
     char *const p = malloc(s->len + 1);
     if (!p) { fprintf(stderr, "koruby_precise: oom (yaml arg)\n"); abort(); }
-    memcpy(p, korb_strbuf_data(s->buf), s->len); p[s->len] = '\0';
+    memcpy(p, korb_str_ptr(s), s->len); p[s->len] = '\0';
     return p;
 }
 
@@ -306,7 +306,7 @@ korb_bi_yaml_emit(CTX *c, korb_value *slots, korb_slice args)
                 const KorbString *const sv = VAL2STR(f[1]);
                 const bool bad = (enc == KORB_ENC_BINARY) ? false
                                : (enc >= KORB_ENC_OTHER_MIN)
-                                   ? !korb_enc_bytes_valid(c->vm, enc, korb_strbuf_data(sv->buf), sv->len)
+                                   ? !korb_enc_bytes_valid(c->vm, enc, korb_str_ptr(sv), sv->len)
                                    : !korb_str_utf8_valid(sv);
                 if (bad) {
                     snprintf(errbuf, sizeof errbuf, "invalid byte sequence in %s", korb_enc_name_of(c->vm, enc));

@@ -242,7 +242,7 @@ static RESULT korb_m_digest_of(CTX *c, korb_value *slots, korb_slice a, const in
     uint32_t n;
     {   /* the input bytes are borrowed from a movable String: no alloc in here */
         const KorbString *const ks = VAL2STR(s);
-        n = korb_dg_run(kind, (const uint8_t *)korb_strbuf_data(ks->buf), ks->len, out);
+        n = korb_dg_run(kind, (const uint8_t *)korb_str_ptr(ks), ks->len, out);
     }
     const RESULT r = korb_str_new(c, slots, (const char *)out, n);
     if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_ENC_BINARY);

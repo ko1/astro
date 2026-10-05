@@ -315,8 +315,10 @@ typedef struct KorbStrBuf {
 typedef struct KorbString {
     AroObjectHeader head;
     uint32_t len, capa;          /* byte length / buffer capacity (excl. NUL) */
-    KorbStrBuf *ARO_GC_EDGE buf; /* separately-alloc'd so <<,[]= can grow in place */
+    KorbStrBuf *ARO_GC_EDGE buf; /* separately-alloc'd so <<,[]= can grow in place; NULL: the bytes follow the object */
 } KorbString;
+/* A String of up to this many bytes keeps them in the object (CRuby's embedded RString): one allocation. */
+#define KORB_STR_EMBED_MAX 39u
 
 /* heap-boxed double (no GC edges). */
 typedef struct KorbFloat {
@@ -931,7 +933,10 @@ static inline ARO_BORROW korb_value *korb_ary_ptr(const KorbArray *a) {
 static inline void *korb_ary_owner(const KorbArray *a) {
     return (a->head.flags & KORB_FL_ARY_EMBED) ? (void *)(uintptr_t)a : (void *)a->items_priv;
 }
-static inline ARO_BORROW char  *korb_str_data   (korb_value v)           { return korb_strbuf_data(VAL2STR(v)->buf); }
+static inline ARO_BORROW char *korb_str_ptr(const KorbString *s) {
+    return s->buf ? korb_strbuf_data(s->buf) : (char *)(uintptr_t)(s + 1);
+}
+static inline ARO_BORROW char  *korb_str_data   (korb_value v)           { return korb_str_ptr(VAL2STR(v)); }
 #define VAL2RANGE(v)       ((KorbRange *)(uintptr_t)KORB_SC(v))
 #define VAL2OBJ(v)         ((KorbObject *)(uintptr_t)KORB_SC(v))
 #define VAL2CLASS(v)       ((KorbClass *)(uintptr_t)KORB_SC(v))
@@ -2128,7 +2133,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
       }                                                                      \
       case KORB_OBJ_STRING: {                                                \
         KorbString *_s = (KorbString *)(payload);                            \
-        ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_s->buf);                  \
+        if (_s->buf) ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_s->buf);     \
         (void)(payload_size);                                                \
         break;                                                               \
       }                                                                      \

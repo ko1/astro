@@ -451,7 +451,7 @@ static RESULT korb_m_env_except(CTX *c, korb_value *slots, korb_ref self, korb_s
         bool excluded = false;                              /* skip keys named in the args */
         for (uint32_t i = 0; i < KORB_SLICE_LEN(a); i++) {
             const korb_value one = KORB_SLICE_GET(a, i);
-            if (KORB_STRING_P(one) && VAL2STR(one)->len == klen && memcmp(korb_strbuf_data(VAL2STR(one)->buf), key, klen) == 0) { excluded = true; break; }
+            if (KORB_STRING_P(one) && VAL2STR(one)->len == klen && memcmp(korb_str_ptr(VAL2STR(one)), key, klen) == 0) { excluded = true; break; }
         }
         if (excluded) continue;
         slots[1] = UNWRAP(korb_env_str_new(c, slots + 1, key, klen));

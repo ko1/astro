@@ -81,7 +81,7 @@ static RESULT korb_m_obj_method_missing(CTX *c, korb_value *slots, korb_ref self
     const korb_value name = KORB_SLICE_LEN(a) >= 1 ? KORB_SLICE_GET(a, 0) : KORB_NIL;
     char nmbuf[256];   /* copy the method name: korb_recv_desc may dispatch #name → GC → move a String arg */
     if (SYMBOL_P(name))       snprintf(nmbuf, sizeof nmbuf, "%s", korb_sym_name(c->vm, SYM2ID(name)));
-    else if (KORB_STRING_P(name)) snprintf(nmbuf, sizeof nmbuf, "%.*s", (int)VAL2STR(name)->len, korb_strbuf_data(VAL2STR(name)->buf));
+    else if (KORB_STRING_P(name)) snprintf(nmbuf, sizeof nmbuf, "%.*s", (int)VAL2STR(name)->len, korb_str_ptr(VAL2STR(name)));
     else                      snprintf(nmbuf, sizeof nmbuf, "(unknown)");
     const char *const nm = nmbuf;
     const korb_value recv = KORB_REF_GET(self);
@@ -184,7 +184,7 @@ static RESULT korb_m_obj_cmp(CTX *c, korb_value *slots, korb_ref self, korb_slic
 /* resolve a Symbol/String name arg to the ivar-key Symbol (`:@x`, `"@x"`). */
 static bool korb_name_to_sym(CTX *c, korb_value name, korb_value *out) {
     if (SYMBOL_P(name)) { *out = name; return true; }
-    if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); *out = ID2SYM(korb_intern_enc(c->vm, korb_strbuf_data(s->buf), s->len, KORB_STR_ENC(name))); return true; }
+    if (KORB_STRING_P(name)) { const KorbString *s = VAL2STR(name); *out = ID2SYM(korb_intern_enc(c->vm, korb_str_ptr(s), s->len, KORB_STR_ENC(name))); return true; }
     return false;
 }
 /* valid instance-variable name: '@' + (letter|'_'|non-ASCII) + (alnum|'_'|

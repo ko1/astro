@@ -906,7 +906,7 @@ static RESULT korb_join_rec(CTX *c, korb_value *slots, FILE *ms, korb_ref aref, 
             if (!*first && KORB_STRING_P(KORB_REF_GET(sepref))) {
                 korb_join_enc_merge(c, KORB_REF_GET(sepref), enc, asc, bad);
                 const KorbString *const sep = VAL2STR(KORB_REF_GET(sepref));
-                fwrite(korb_strbuf_data(sep->buf), 1, sep->len, ms);
+                fwrite(korb_str_ptr(sep), 1, sep->len, ms);
             }
             bool inner_first = true;
             rr = korb_join_rec(c, slots + 1, ms, KORB_REF_AT(&slots[0]), sepref, &inner_first, enc, asc, bad);
@@ -917,12 +917,12 @@ static RESULT korb_join_rec(CTX *c, korb_value *slots, FILE *ms, korb_ref aref, 
         if (!*first && KORB_STRING_P(KORB_REF_GET(sepref))) {
             korb_join_enc_merge(c, KORB_REF_GET(sepref), enc, asc, bad);
             const KorbString *const sep = VAL2STR(KORB_REF_GET(sepref));
-            fwrite(korb_strbuf_data(sep->buf), 1, sep->len, ms);
+            fwrite(korb_str_ptr(sep), 1, sep->len, ms);
         }
         const korb_value sv = KORB_STRING_P(scalar) ? scalar : (KORB_STRING_P(slots[0]) ? slots[0] : KORB_NIL);
         if (sv != KORB_NIL) {
             korb_join_enc_merge(c, sv, enc, asc, bad);
-            fwrite(korb_strbuf_data(VAL2STR(sv)->buf), 1, VAL2STR(sv)->len, ms);   /* String element / #to_str result */
+            fwrite(korb_str_ptr(VAL2STR(sv)), 1, VAL2STR(sv)->len, ms);   /* String element / #to_str result */
         }
         else korb_fprint_to_s_s(c, slots + 1, ms, slots[0]);           /* immediate / builtin / non-String #to_s (slots: a Class may override it) */
         *first = false;
@@ -980,11 +980,11 @@ static RESULT korb_m_ary_join(CTX *c, korb_value *slots, korb_ref self, korb_sli
             KorbString *const out = korb_str_alloc(c, slots + 2, (uint32_t)total);
             const KorbArray *const a2 = VAL2ARY(slots[1]);       /* re-read after the alloc */
             const korb_value *const it2 = korb_ary_ptr(a2);
-            char *dst = korb_strbuf_data(out->buf);
+            char *dst = korb_str_ptr(out);
             for (uint32_t k = 0; k < a2->len; k++) {
-                if (k != 0 && seplen != 0) { memcpy(dst, korb_strbuf_data(VAL2STR(slots[0])->buf), seplen); dst += seplen; }
+                if (k != 0 && seplen != 0) { memcpy(dst, korb_str_ptr(VAL2STR(slots[0])), seplen); dst += seplen; }
                 const KorbString *const e = VAL2STR(it2[k]);
-                memcpy(dst, korb_strbuf_data(e->buf), e->len); dst += e->len;
+                memcpy(dst, korb_str_ptr(e), e->len); dst += e->len;
             }
             if (jenc != KORB_JOIN_ENC_NONE) KORB_STR_ENC_SET((korb_value)out, jenc);
             return RESULT_OK((korb_value)out);
@@ -1956,7 +1956,7 @@ static RESULT korb_m_num_ge(CTX *c, korb_value *slots, korb_ref self, korb_slice
 /* extract the operator mid from a sym-form reduce arg (Symbol or String). */
 static bool korb_reduce_op(CTX *c, korb_value v, uint32_t *op_mid) {
     if (SYMBOL_P(v))       { *op_mid = SYM2ID(v); return true; }
-    if (KORB_STRING_P(v))  { *op_mid = korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(v)->buf), VAL2STR(v)->len, KORB_STR_ENC(v)); return true; }
+    if (KORB_STRING_P(v))  { *op_mid = korb_intern_enc(c->vm, korb_str_ptr(VAL2STR(v)), VAL2STR(v)->len, KORB_STR_ENC(v)); return true; }
     return false;
 }
 /* Resolve a reduce/inject operator arg → mid: Symbol/String, or #to_str-coercible
@@ -1969,7 +1969,7 @@ static RESULT korb_reduce_resolve_op(CTX *c, korb_value *slots, korb_value v, ui
         slots[0] = v;
         RESULT sr = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(sr.state != KORB_NORMAL)) { *ok = false; return sr; }
-        if (KORB_STRING_P(sr.value)) { *op_mid = korb_intern_enc(c->vm, korb_strbuf_data(VAL2STR(sr.value)->buf), VAL2STR(sr.value)->len, KORB_STR_ENC(sr.value)); return RESULT_OK(KORB_NIL); }
+        if (KORB_STRING_P(sr.value)) { *op_mid = korb_intern_enc(c->vm, korb_str_ptr(VAL2STR(sr.value)), VAL2STR(sr.value)->len, KORB_STR_ENC(sr.value)); return RESULT_OK(KORB_NIL); }
     }
     *ok = false;
     return korb_raise_not_sym(c, slots, v);

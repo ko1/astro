@@ -431,13 +431,13 @@ static RESULT korb_m_sock_hostbyaddr(CTX *c, korb_value *slots, korb_ref self, k
         if (UNLIKELY(alen != 16)) return korb_raise_resolution_error_code(c, slots, "host not found", 0);
         struct sockaddr_in6 *const s6 = (struct sockaddr_in6 *)&ss;
         s6->sin6_family = AF_INET6;
-        memcpy(&s6->sin6_addr, korb_strbuf_data(VAL2STR(av)->buf), 16);
+        memcpy(&s6->sin6_addr, korb_str_ptr(VAL2STR(av)), 16);
         sl = sizeof *s6;
     } else {
         if (UNLIKELY(alen != 4)) return korb_raise_resolution_error_code(c, slots, "host not found", 0);
         struct sockaddr_in *const s4 = (struct sockaddr_in *)&ss;
         s4->sin_family = AF_INET;
-        memcpy(&s4->sin_addr, korb_strbuf_data(VAL2STR(av)->buf), 4);
+        memcpy(&s4->sin_addr, korb_str_ptr(VAL2STR(av)), 4);
         sl = sizeof *s4;
         fam = AF_INET;
     }
@@ -580,7 +580,7 @@ static RESULT korb_m_sock_setopt(CTX *c, korb_value *slots, korb_ref self, korb_
     const korb_value v = KORB_SLICE_GET(a, 3);
     if (KORB_STRING_P(v)) {   /* a packed struct (SO_LINGER, ip_mreq, …) goes through verbatim */
         const KorbString *const sv = VAL2STR(v);
-        if (setsockopt(fd, lv, nm, korb_strbuf_data(sv->buf), (socklen_t)sv->len) != 0)
+        if (setsockopt(fd, lv, nm, korb_str_ptr(sv), (socklen_t)sv->len) != 0)
             return korb_raise_errno(c, slots, errno, "setsockopt", "");
         return RESULT_OK(LONG2FIX(0));
     }

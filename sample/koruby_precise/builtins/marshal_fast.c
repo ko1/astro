@@ -297,7 +297,7 @@ korb_bi_marshal_fast_load(CTX *c, korb_value *slots, korb_slice args)
     if (!KORB_STRING_P(src)) return RESULT_OK(KORB_NIL);
     const KorbString *const s = VAL2STR(src);
     if (s->len < 3) return RESULT_OK(KORB_NIL);
-    const unsigned char *const d0 = (const unsigned char *)korb_strbuf_data(s->buf);
+    const unsigned char *const d0 = (const unsigned char *)korb_str_ptr(s);
     if (d0[0] != 4 || d0[1] != 8) return RESULT_OK(KORB_NIL);   /* version errors are the Ruby loader's */
     unsigned char *const copy = malloc(s->len);
     if (!copy) return RESULT_OK(KORB_NIL);
@@ -549,7 +549,7 @@ static bool korb_mdump_obj(CTX *const c, struct korb_mdump *const st, const korb
         const uint32_t e = KORB_STR_ENC(v);
         const KorbString *const s = VAL2STR(v);
         if (e != KORB_ENC_BINARY && !korb_mdump_byte(st, 'I')) return false;
-        if (!korb_mdump_byte(st, '"') || !korb_mdump_long(st, s->len) || !korb_mdump_put(st, korb_strbuf_data(s->buf), s->len)) return false;
+        if (!korb_mdump_byte(st, '"') || !korb_mdump_long(st, s->len) || !korb_mdump_put(st, korb_str_ptr(s), s->len)) return false;
         if (e == KORB_ENC_BINARY) return true;
         return korb_mdump_long(st, 1) && korb_mdump_sym(c->vm, st, korb_intern_lit(c->vm, "E", 1)) &&
                korb_mdump_byte(st, e == KORB_ENC_UTF8 ? 'T' : 'F');

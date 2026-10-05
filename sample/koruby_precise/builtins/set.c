@@ -974,7 +974,7 @@ static RESULT korb_m_deprecate_constant(CTX *c, korb_value *slots, korb_ref self
 static RESULT korb_set_visibility1(CTX *c, korb_value *slots, korb_value selfv, KorbClass *k, korb_value arg, uint8_t vis) {
     uint32_t mid;
     if (SYMBOL_P(arg)) mid = SYM2ID(arg);
-    else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern_enc(c->vm, korb_strbuf_data(s->buf), s->len, KORB_STR_ENC(arg)); }
+    else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern_enc(c->vm, korb_str_ptr(s), s->len, KORB_STR_ENC(arg)); }
     else return korb_raise_not_sym(c, slots, arg);
     for (uint32_t j = 0; j < k->method_cnt; j++)
         if (k->methods[j]->mid == mid) { k->methods[j]->visibility = vis; return RESULT_OK(KORB_NIL); }
@@ -1137,7 +1137,7 @@ static RESULT korb_set_class_visibility(CTX *c, korb_value *slots, korb_ref self
         const korb_value arg = array_arg ? korb_ary_ptr(VAL2ARY(slots[1]))[i] : KORB_SLICE_GET(a, i);
         uint32_t mid;
         if (SYMBOL_P(arg)) mid = SYM2ID(arg);
-        else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern_enc(c->vm, korb_strbuf_data(s->buf), s->len, KORB_STR_ENC(arg)); }
+        else if (KORB_STRING_P(arg)) { const KorbString *s = VAL2STR(arg); mid = korb_intern_enc(c->vm, korb_str_ptr(s), s->len, KORB_STR_ENC(arg)); }
         else return korb_raise_not_sym(c, slots + 2, arg);
         KorbClass *const k = VAL2CLASS(slots[0]);          /* re-read (a slot-array grow below may move nothing, but be safe) */
         bool set = false;
@@ -1276,7 +1276,7 @@ static RESULT korb_m_class_attr_n(CTX *c, korb_value *slots, korb_ref self, korb
                 sym = sr.value;
             } else return korb_raise_not_sym(c, slots, KORB_SLICE_GET(a, i));   /* the probe dispatched: re-read */
         }
-        if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern_enc(vm, korb_strbuf_data(VAL2STR(sym)->buf), VAL2STR(sym)->len, KORB_STR_ENC(sym)));
+        if (KORB_STRING_P(sym)) sym = ID2SYM(korb_intern_enc(vm, korb_str_ptr(VAL2STR(sym)), VAL2STR(sym)->len, KORB_STR_ENC(sym)));
         const char *nm = korb_sym_name(vm, SYM2ID(sym));
         char buf[256]; snprintf(buf, sizeof buf, "@%s", nm); uint32_t ivar = korb_intern(vm, buf, strlen(buf));
         if (reader) { const uint32_t rid = korb_intern(vm, nm, strlen(nm)); KORB_ATTR_DEF(rid, 0); CHECK(korb_ary_push_val(c, slots + 2, res, ID2SYM(rid))); CHECK(korb_fire_method_added(c, slots + 2, slots[0], rid)); }
@@ -1455,7 +1455,7 @@ static RESULT korb_m_module_set_temp_name(CTX *c, korb_value *slots, korb_ref se
     const KorbString *const s = VAL2STR(nm);
     if (UNLIKELY(s->len == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "empty class/module name");
     {   /* reject a valid constant path (each ::-segment is [A-Z][A-Za-z0-9_]*) to avoid confusion */
-        const char *const d = korb_strbuf_data(s->buf); const uint32_t len = s->len; uint32_t i = 0; bool cpath = true;
+        const char *const d = korb_str_ptr(s); const uint32_t len = s->len; uint32_t i = 0; bool cpath = true;
         if (len >= 2 && d[0] == ':' && d[1] == ':') i = 2;          /* "::A" is a constant path too */
         for (;;) {
             if (i >= len || !(d[i] >= 'A' && d[i] <= 'Z')) { cpath = false; break; }
@@ -1467,7 +1467,7 @@ static RESULT korb_m_module_set_temp_name(CTX *c, korb_value *slots, korb_ref se
         }
         if (cpath) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "the temporary name must not be a constant path to avoid confusion");
     }
-    VAL2CLASS(sv)->temp_name_sym = korb_intern(c->vm, korb_strbuf_data(s->buf), s->len); KORB_NAMING_CHANGED(c->vm);
+    VAL2CLASS(sv)->temp_name_sym = korb_intern(c->vm, korb_str_ptr(s), s->len); KORB_NAMING_CHANGED(c->vm);
     return RESULT_OK(sv);
 }
 /* Module#name → the class/module name (a frozen String), nil if anonymous. */
@@ -1495,7 +1495,7 @@ static RESULT korb_m_class_name_build(CTX *c, korb_value *slots, korb_ref self) 
         const KorbString *const s = VAL2STR(r.value);
         const uint32_t len = s->len, enc = KORB_STR_ENC(r.value);
         if (LIKELY(len < sizeof buf)) {
-            memcpy(buf, korb_strbuf_data(s->buf), len);
+            memcpy(buf, korb_str_ptr(s), len);
             return RESULT_OK(korb_fstr_get(c, slots, buf, len, enc));
         }
         ((AroObjectHeader *)(uintptr_t)r.value)->flags |= KORB_FL_FROZEN;   /* CRuby: Module#name is frozen */
@@ -1578,7 +1578,7 @@ static RESULT korb_m_class_to_s(CTX *c, korb_value *slots, korb_ref self, korb_s
             if (!KORB_STRING_P(slots[0])) { slots[0] = UNWRAP(korb_send(c, slots + 1, korb_intern_lit(c->vm, "to_s", 4), 0, 0)); }
             if (!KORB_STRING_P(slots[0])) return RESULT_OK(slots[0]);
             const uint32_t il = VAL2STR(slots[0])->len;
-            const char *const ib = korb_strbuf_data(VAL2STR(slots[0])->buf);
+            const char *const ib = korb_str_ptr(VAL2STR(slots[0]));
             char *const b = malloc((size_t)il + 11);
             if (!b) abort();
             memcpy(b, "#<Class:", 8); memcpy(b + 8, ib, il); b[8 + il] = '>';
@@ -2571,7 +2571,7 @@ static RESULT korb_m_mod_const_source_location(CTX *c, korb_value *slots, korb_r
     }
     const char *nm; uint32_t nlen;
     if (SYMBOL_P(name)) { nm = korb_sym_name(vm, SYM2ID(name)); nlen = (uint32_t)strlen(nm); }
-    else { const KorbString *const ns = VAL2STR(name); nm = korb_strbuf_data(ns->buf); nlen = ns->len; }
+    else { const KorbString *const ns = VAL2STR(name); nm = korb_str_ptr(ns); nlen = ns->len; }
     /* a String name may be scoped ("A::B" / "::Top"): walk to the owner of the
      * final segment and answer for that one */
     korb_value scope = KORB_REF_GET(self);
@@ -2631,7 +2631,7 @@ static RESULT korb_m_mod_const_reg_loc(CTX *c, korb_value *slots, korb_ref self,
     if (SYMBOL_P(nv) && KORB_STRING_P(fv) && FIXNUM_P(lv)) {
         const KorbString *const fs = VAL2STR(fv);
         korb_const_reg_loc(c->vm, SYM2ID(nv), KORB_REF_GET(self),
-                           korb_intern(c->vm, korb_strbuf_data(fs->buf), fs->len), (uint32_t)FIX2LONG(lv));
+                           korb_intern(c->vm, korb_str_ptr(fs), fs->len), (uint32_t)FIX2LONG(lv));
     }
     return RESULT_OK(KORB_NIL);
 }
@@ -2658,7 +2658,7 @@ static RESULT korb_m_class_const_get(CTX *c, korb_value *slots, korb_ref self, k
     else                { len = VAL2STR(name)->len; }
     if (len >= sizeof buf) len = sizeof buf - 1;
     if (SYMBOL_P(name)) memcpy(buf, korb_sym_name(vm, SYM2ID(name)), len);
-    else                memcpy(buf, korb_strbuf_data(VAL2STR(name)->buf), len);
+    else                memcpy(buf, korb_str_ptr(VAL2STR(name)), len);
     buf[len] = 0;
 
     /* Only a String name is parsed for `::` scope separators; a Symbol name is
@@ -2873,7 +2873,7 @@ static RESULT korb_m_class_const_defined(CTX *c, korb_value *slots, korb_ref sel
         const uint32_t nenc = KORB_STR_ENC(name);         /* each segment keeps the name's encoding */
         char nbuf[512];                                   /* a copy: running an autoload below can move the String */
         if (UNLIKELY(s->len >= sizeof nbuf)) return RESULT_OK(KORB_FALSE);
-        memcpy(nbuf, korb_strbuf_data(s->buf), s->len);
+        memcpy(nbuf, korb_str_ptr(s), s->len);
         const char *p = nbuf; uint32_t len = s->len;
         const uint32_t whole_len = s->len;                /* "", "A::", "::" name the whole string in the error */
         /* scoped name "A::B::C" / leading "::Top": each segment is resolved in
@@ -3106,7 +3106,7 @@ static RESULT korb_obj_eval_impl(CTX *c, korb_value *slots, korb_ref self, korb_
             }
             const KorbString *const fs = VAL2STR(slots[0]);
             const uint32_t n = fs->len < sizeof fbuf - 1 ? fs->len : (uint32_t)(sizeof fbuf - 1);
-            memcpy(fbuf, korb_strbuf_data(fs->buf), n); fbuf[n] = '\0';
+            memcpy(fbuf, korb_str_ptr(fs), n); fbuf[n] = '\0';
             fname = korb_sym_name(c->vm, korb_intern(c->vm, fbuf, n));   /* interned → outlives this frame, like the AST */
         }
         if (KORB_SLICE_LEN(a) >= 3) {
@@ -3370,7 +3370,7 @@ static RESULT korb_m_exc_inspect(CTX *c, korb_value *slots, korb_ref self, korb_
         const RESULT cr = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
         if (KORB_STRING_P(cr.value))
-            snprintf(cnbuf, sizeof cnbuf, "%.*s", (int)VAL2STR(cr.value)->len, korb_strbuf_data(VAL2STR(cr.value)->buf));
+            snprintf(cnbuf, sizeof cnbuf, "%.*s", (int)VAL2STR(cr.value)->len, korb_str_ptr(VAL2STR(cr.value)));
     }
     slots[0] = KORB_REF_GET(self);                      /* the send above may have moved it */
     RESULT tr = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
@@ -3382,7 +3382,7 @@ static RESULT korb_m_exc_inspect(CTX *c, korb_value *slots, korb_ref self, korb_
     char *const buf = malloc(need);
     if (!buf) abort();
     int n = (mlen == 0) ? snprintf(buf, need, "%s", cnbuf)      /* empty message → bare class name */
-                        : snprintf(buf, need, "#<%s: %.*s>", cnbuf, (int)mlen, korb_strbuf_data(ms->buf));
+                        : snprintf(buf, need, "#<%s: %.*s>", cnbuf, (int)mlen, korb_str_ptr(ms));
     RESULT r = korb_str_new(c, slots + 1, buf, (uint32_t)n);
     free(buf);
     return r;

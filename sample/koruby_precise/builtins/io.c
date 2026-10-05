@@ -571,7 +571,7 @@ static RESULT korb_io_read_bytes(CTX *c, korb_value *slots, KorbIORep *rep, uint
             size_t chunk = want - len;
             if (!rep->nonblk) CHECK(korb_io_slow_wait(c, slots + 1, rep, &chunk));   /* may GC: sref is rooted */
             KorbString *const s = VAL2STR(KORB_REF_GET(sref));
-            const ssize_t n = read(rep->fd, korb_strbuf_data(s->buf) + len, chunk);
+            const ssize_t n = read(rep->fd, korb_str_ptr(s) + len, chunk);
             if (n < 0) {
                 if (errno == EINTR) continue;
                 if (korb_io_would_block(errno) && rep->nonblk) {
@@ -594,14 +594,14 @@ static RESULT korb_io_read_bytes(CTX *c, korb_value *slots, KorbIORep *rep, uint
         if (avail == 0) break;
         const uint32_t take = (want - len) < avail ? (want - len) : avail;
         KorbString *const s = VAL2STR(KORB_REF_GET(sref));   /* re-derive: the fill may have moved it */
-        memcpy(korb_strbuf_data(s->buf) + len, rep->rbuf + rep->rpos, take);
+        memcpy(korb_str_ptr(s) + len, rep->rbuf + rep->rpos, take);
         rep->rpos += take;
         len += take;
         s->len = len;
     }
     KorbString *const s = VAL2STR(KORB_REF_GET(sref));
     s->len = len;                                         /* shrink in place; capa stays */
-    korb_strbuf_data(s->buf)[len] = '\0';
+    korb_str_ptr(s)[len] = '\0';
     *got_out = len;
     return RESULT_OK(KORB_REF_GET(sref));
 }
@@ -619,14 +619,14 @@ static RESULT korb_io_read_all_bytes(CTX *c, korb_value *slots, KorbIORep *rep) 
         /* keep s->len in step: korb_str_ensure's grow copies only s->len bytes,
            so a stale 0 here would drop everything read so far. */
         KorbString *const s = korb_str_ensure(c, slots + 1, sref, len + avail);
-        memcpy(korb_strbuf_data(s->buf) + len, rep->rbuf + rep->rpos, avail);
+        memcpy(korb_str_ptr(s) + len, rep->rbuf + rep->rpos, avail);
         rep->rpos += avail;
         len += avail;
         s->len = len;
     }
     KorbString *s = VAL2STR(KORB_REF_GET(sref));
     s->len = len;
-    korb_strbuf_data(s->buf)[len] = '\0';
+    korb_str_ptr(s)[len] = '\0';
     return RESULT_OK(KORB_REF_GET(sref));
 }
 
@@ -643,7 +643,7 @@ static RESULT korb_io_emit(CTX *c, korb_value *slots, korb_value v, KorbIORep *r
     }
     if (KORB_STRING_P(v)) {
         const KorbString *const s = VAL2STR(v);
-        KORB_IO_WR(c, slots, rep, korb_strbuf_data(s->buf), s->len);
+        KORB_IO_WR(c, slots, rep, korb_str_ptr(s), s->len);
         *nbytes += s->len;
     }
     return RESULT_OK(KORB_NIL);
@@ -710,7 +710,7 @@ static RESULT korb_m_io_tty_set(CTX *c, korb_value *slots, korb_ref self, korb_s
     if (!KORB_STRING_P(sv) || VAL2STR(sv)->len != sizeof(struct termios))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid terminal state");
     struct termios t;
-    memcpy(&t, korb_strbuf_data(VAL2STR(sv)->buf), sizeof t);
+    memcpy(&t, korb_str_ptr(VAL2STR(sv)), sizeof t);
     if (tcsetattr(fd, TCSANOW, &t) != 0) return korb_raise_errno(c, slots, errno, "tcsetattr", "");
     return RESULT_OK(KORB_REF_GET(self));
 }
@@ -769,7 +769,7 @@ static RESULT korb_bi_termios_op(CTX *c, korb_value *slots, korb_slice args) {
     if (!KORB_STRING_P(sv) || VAL2STR(sv)->len != sizeof(struct termios) || !FIXNUM_P(KORB_SLICE_GET(args, 1)))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid terminal state");
     struct termios t;
-    memcpy(&t, korb_strbuf_data(VAL2STR(sv)->buf), sizeof t);
+    memcpy(&t, korb_str_ptr(VAL2STR(sv)), sizeof t);
     const korb_value arg = KORB_SLICE_GET(args, 2);
     switch (FIX2LONG(KORB_SLICE_GET(args, 1))) {
       case 0: return RESULT_OK((t.c_lflag & ECHO) ? KORB_TRUE : KORB_FALSE);
@@ -859,7 +859,7 @@ static RESULT korb_m_io_printf(CTX *c, korb_value *slots, korb_ref self, korb_sl
         slots[1] = fr.value;
         CHECK(korb_send(c, slots + 2, korb_intern_lit(c->vm, "write", 5), 0, 1));
     }
-    else if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); KORB_IO_WR(c, slots + 1, rep2, korb_strbuf_data(s->buf), s->len); }
+    else if (KORB_STRING_P(fr.value)) { const KorbString *const s = VAL2STR(fr.value); KORB_IO_WR(c, slots + 1, rep2, korb_str_ptr(s), s->len); }
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_io_capture_default_internal(CTX *c, korb_value *slots, korb_ref io);   /* fwd (defined below) */
@@ -948,7 +948,7 @@ static RESULT korb_m_file_initialize(CTX *c, korb_value *slots, korb_ref self, k
  * conversion through UTF-8, where a byte above 0x7F is undefined. */
 static RESULT korb_io_check_ascii_only(CTX *c, korb_value *slots, korb_value v) {
     const KorbString *const s = VAL2STR(v);
-    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    const unsigned char *const p = (const unsigned char *)korb_str_ptr(s);
     for (uint32_t k = 0; k < s->len; k++) {
         if (p[k] < 0x80) continue;
         char em[64];
@@ -978,7 +978,7 @@ static RESULT korb_m_io_wnl_reset(CTX *c, korb_value *slots, korb_ref self, korb
  * argument untouched when there is nothing to convert, so that case allocates nothing. */
 static RESULT korb_io_apply_newline(CTX *c, korb_value *slots, korb_value v, int nl) {
     const KorbString *s = VAL2STR(v);
-    const char *const d = korb_strbuf_data(s->buf);
+    const char *const d = korb_str_ptr(s);
     const char hit = nl == 3 ? '\r' : '\n';
     uint32_t nlf = 0;
     for (uint32_t k = 0; k < s->len; k++) if (d[k] == hit) nlf++;
@@ -986,8 +986,8 @@ static RESULT korb_io_apply_newline(CTX *c, korb_value *slots, korb_value v, int
     slots[0] = v;                                        /* the alloc below moves the source */
     KorbString *const r = korb_str_alloc(c, slots + 1, s->len + (nl == 1 ? nlf : 0));
     s = VAL2STR(slots[0]);
-    const char *const src = korb_strbuf_data(s->buf);
-    char *const out = korb_strbuf_data(r->buf);
+    const char *const src = korb_str_ptr(s);
+    char *const out = korb_str_ptr(r);
     uint32_t o = 0;
     for (uint32_t k = 0; k < s->len; k++) {
         if (src[k] != hit) { out[o++] = src[k]; continue; }
@@ -996,7 +996,7 @@ static RESULT korb_io_apply_newline(CTX *c, korb_value *slots, korb_value v, int
         out[o++] = (nl == 1) ? '\n' : '\r';
     }
     r->len = o;
-    korb_strbuf_data(r->buf)[o] = '\0';
+    korb_str_ptr(r)[o] = '\0';
     KORB_STR_ENC_SET((korb_value)r, KORB_STR_ENC(slots[0]));
     return RESULT_OK((korb_value)r);
 }
@@ -1262,11 +1262,11 @@ korb_io_read_sep(CTX *c, korb_value *slots, KorbIORep *rep, korb_ref sepref, con
         if (!la->slurp) {   /* copy only up to a separator inside this chunk, not the whole buffer */
             const KorbString *const sp = VAL2STR(KORB_REF_GET(sepref));
             const char *const at = rep->rbuf + rep->rpos;
-            const char *const hit = sp->len ? memmem(at, take, korb_strbuf_data(sp->buf), sp->len) : NULL;
+            const char *const hit = sp->len ? memmem(at, take, korb_str_ptr(sp), sp->len) : NULL;
             if (hit) take = (uint32_t)(hit - at) + sp->len;
         }
         KorbString *s = korb_str_ensure(c, slots + 1, sref, len + take);   /* may GC; rep is libc-stable */
-        memcpy(korb_strbuf_data(s->buf) + len, rep->rbuf + rep->rpos, take);
+        memcpy(korb_str_ptr(s) + len, rep->rbuf + rep->rpos, take);
         rep->rpos += take;
         len += take;
         s->len = len;
@@ -1276,9 +1276,9 @@ korb_io_read_sep(CTX *c, korb_value *slots, KorbIORep *rep, korb_ref sepref, con
             if (len >= sl) {
                 /* a match may straddle the chunk boundary, so start (sl-1) bytes
                  * back into what was already accumulated */
-                const char *const data = korb_strbuf_data(VAL2STR(KORB_REF_GET(sref))->buf);
+                const char *const data = korb_str_ptr(VAL2STR(KORB_REF_GET(sref)));
                 const uint32_t from = (len - take >= sl - 1) ? (len - take) - (sl - 1) : 0;
-                const char *const hit = memmem(data + from, len - from, korb_strbuf_data(sp->buf), sl);
+                const char *const hit = memmem(data + from, len - from, korb_str_ptr(sp), sl);
                 if (hit) {
                     const uint32_t end = (uint32_t)(hit - data) + sl;
                     rep->rpos -= len - end;            /* hand the overshoot back to the buffer */
@@ -1293,7 +1293,7 @@ korb_io_read_sep(CTX *c, korb_value *slots, KorbIORep *rep, korb_ref sepref, con
     if (la->limit >= 0 && len == (uint32_t)la->limit) {
         /* a byte limit must not split a character: take the continuation bytes of
          * a truncated UTF-8 sequence as well (CRuby) */
-        const char *d = korb_strbuf_data(VAL2STR(KORB_REF_GET(sref))->buf);
+        const char *d = korb_str_ptr(VAL2STR(KORB_REF_GET(sref)));
         uint32_t st = len;                              /* start of the last sequence */
         while (st > 0 && ((unsigned char)d[st - 1] & 0xC0) == 0x80) st--;
         if (st > 0) {
@@ -1307,7 +1307,7 @@ korb_io_read_sep(CTX *c, korb_value *slots, KorbIORep *rep, korb_ref sepref, con
                 uint32_t take = need - have;
                 if (take > avail) take = avail;
                 KorbString *const s2 = korb_str_ensure(c, slots + 1, sref, len + take);
-                memcpy(korb_strbuf_data(s2->buf) + len, rep->rbuf + rep->rpos, take);
+                memcpy(korb_str_ptr(s2) + len, rep->rbuf + rep->rpos, take);
                 rep->rpos += take; len += take; have += take; s2->len = len;
             }
         }
@@ -1325,16 +1325,16 @@ korb_io_read_sep(CTX *c, korb_value *slots, KorbIORep *rep, korb_ref sepref, con
     }
     if (la->chomp && !la->slurp) {                     /* drop the separator we just matched */
         const uint32_t sl = VAL2STR(KORB_REF_GET(sepref))->len;
-        const char *const data = korb_strbuf_data(VAL2STR(KORB_REF_GET(sref))->buf);
+        const char *const data = korb_str_ptr(VAL2STR(KORB_REF_GET(sref)));
         if (la->paragraph) { while (len > 0 && data[len - 1] == '\n') len--; }
-        else if (len >= sl && !memcmp(data + len - sl, korb_strbuf_data(VAL2STR(KORB_REF_GET(sepref))->buf), sl)) {
+        else if (len >= sl && !memcmp(data + len - sl, korb_str_ptr(VAL2STR(KORB_REF_GET(sepref))), sl)) {
             len -= sl;
             if (sl == 1 && data[len] == '\n' && len > 0 && data[len - 1] == '\r') len--;   /* "\r\n" */
         }
     }
     KorbString *const s = VAL2STR(KORB_REF_GET(sref));
     s->len = len;
-    korb_strbuf_data(s->buf)[len] = '\0';
+    korb_str_ptr(s)[len] = '\0';
     return RESULT_OK(KORB_REF_GET(sref));
 }
 
@@ -1809,10 +1809,10 @@ static RESULT korb_m_io_each_char(CTX *c, korb_value *slots, korb_ref self, korb
         korb_ref arr = KORB_REF_AT(&slots[1]);
         const KorbString *s = VAL2STR(KORB_REF_GET(sref));
         for (uint32_t i = 0; i < s->len; ) {
-            const unsigned char b = (unsigned char)korb_strbuf_data(s->buf)[i];
+            const unsigned char b = (unsigned char)korb_str_ptr(s)[i];
             uint32_t cl = b < 0x80 ? 1 : b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
             if (i + cl > s->len) cl = 1;
-            char cbuf[8]; memcpy(cbuf, korb_strbuf_data(s->buf) + i, cl);   /* copy before str_new's alloc moves `s` */
+            char cbuf[8]; memcpy(cbuf, korb_str_ptr(s) + i, cl);   /* copy before str_new's alloc moves `s` */
             slots[2] = UNWRAP(korb_str_new(c, slots + 2, cbuf, cl));
             CHECK(korb_ary_push_val(c, slots + 3, arr, slots[2]));
             s = VAL2STR(KORB_REF_GET(sref));            /* re-read: push GC'd */
@@ -1822,10 +1822,10 @@ static RESULT korb_m_io_each_char(CTX *c, korb_value *slots, korb_ref self, korb
     }
     const KorbString *s = VAL2STR(KORB_REF_GET(sref));
     for (uint32_t i = 0; i < s->len; ) {
-        const unsigned char b = (unsigned char)korb_strbuf_data(s->buf)[i];
+        const unsigned char b = (unsigned char)korb_str_ptr(s)[i];
         uint32_t cl = b < 0x80 ? 1 : b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
         if (i + cl > s->len) cl = 1;
-        char cbuf[8]; memcpy(cbuf, korb_strbuf_data(s->buf) + i, cl);   /* copy before str_new's alloc moves `s` */
+        char cbuf[8]; memcpy(cbuf, korb_str_ptr(s) + i, cl);   /* copy before str_new's alloc moves `s` */
         slots[1] = korb_str_new(c, slots + 1, cbuf, cl).value;
         RESULT yr = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
         if (yr.state != KORB_NORMAL) return yr;
@@ -1891,7 +1891,7 @@ static uint32_t korb_io_ask_enc(CTX *c, korb_value *slots, korb_ref io, const ch
         char nb[64];
         const KorbString *const ns = VAL2STR(r.value);
         uint32_t n = ns->len < sizeof nb - 1 ? ns->len : (uint32_t)(sizeof nb - 1);
-        memcpy(nb, korb_strbuf_data(ns->buf), n); nb[n] = '\0';
+        memcpy(nb, korb_str_ptr(ns), n); nb[n] = '\0';
         idx = korb_enc_index_pub(c->vm, nb);
     }
     return idx;
@@ -2027,7 +2027,7 @@ static RESULT korb_io_mode_coerce(CTX *c, korb_value *slots, korb_value *mv, cha
 #define KORB_IO_BAD_MODE(sl)                                                              \
     (KORB_STRING_P(*mv)                                                                   \
        ? korb_raise(c, (sl), KORB_E_ARGUMENT, 0, "invalid access mode %.*s",               \
-                    (int)VAL2STR(*mv)->len, korb_strbuf_data(VAL2STR(*mv)->buf))          \
+                    (int)VAL2STR(*mv)->len, korb_str_ptr(VAL2STR(*mv)))          \
        : korb_raise(c, (sl), KORB_E_ARGUMENT, 0, "invalid access mode"))
     if (LIKELY(korb_io_mode_arg(*mv, mode, cap))) return RESULT_OK(KORB_TRUE);
     if (KORB_STRING_P(*mv) || FIXNUM_P(*mv)) return KORB_IO_BAD_MODE(slots);
@@ -2352,7 +2352,7 @@ static RESULT korb_m_io_sysread(CTX *c, korb_value *slots, korb_ref self, korb_s
         /* re-derive each round: the park below may GC and move the String.
            read(2) itself allocates nothing, so the borrow is safe up to it. */
         KorbString *const sb = VAL2STR(slots[0]);
-        r = read(rep->fd, korb_strbuf_data(sb->buf), (size_t)want);
+        r = read(rep->fd, korb_str_ptr(sb), (size_t)want);
         if (r >= 0) break;
         if (errno == EINTR) continue;
         /* sysread blocks in CRuby; on a descriptor koruby made non-blocking we
@@ -2370,7 +2370,7 @@ static RESULT korb_m_io_sysread(CTX *c, korb_value *slots, korb_ref self, korb_s
     }
     KorbString *const s = VAL2STR(slots[0]);
     s->len = (uint32_t)r;
-    korb_strbuf_data(s->buf)[r] = '\0';
+    korb_str_ptr(s)[r] = '\0';
     KORB_STR_ENC_SET(slots[0], KORB_ENC_BINARY);
     if (KORB_SLICE_LEN(a) >= 2 && KORB_SLICE_GET(a, 1) != KORB_NIL) {   /* sysread(n, buf) fills and returns buf */
         korb_value bv = KORB_SLICE_GET(a, 1);
@@ -2388,8 +2388,8 @@ static RESULT korb_m_io_sysread(CTX *c, korb_value *slots, korb_ref self, korb_s
         korb_ref bref = KORB_REF_AT(&slots[1]);
         KORB_CHECK_FROZEN(c, slots + 2, KORB_REF_GET(bref));
         KorbString *const dst = korb_str_ensure(c, slots + 2, bref, (uint32_t)r);   /* may move slots[0] */
-        memcpy(korb_strbuf_data(dst->buf), korb_strbuf_data(VAL2STR(slots[0])->buf), (size_t)r);
-        dst->len = (uint32_t)r; korb_strbuf_data(dst->buf)[r] = '\0';   /* the buffer keeps its encoding (CRuby) */
+        memcpy(korb_str_ptr(dst), korb_str_ptr(VAL2STR(slots[0])), (size_t)r);
+        dst->len = (uint32_t)r; korb_str_ptr(dst)[r] = '\0';   /* the buffer keeps its encoding (CRuby) */
         return RESULT_OK(KORB_REF_GET(bref));
     }
     return RESULT_OK(slots[0]);
@@ -2671,7 +2671,7 @@ static RESULT korb_m_io_pread(CTX *c, korb_value *slots, korb_ref self, korb_sli
     ssize_t r;
     do {
         KorbString *const sb = VAL2STR(slots[0]);                 /* re-derive: nothing allocs in between */
-        r = pread(rep->fd, korb_strbuf_data(sb->buf), (size_t)want, (off_t)off);
+        r = pread(rep->fd, korb_str_ptr(sb), (size_t)want, (off_t)off);
     } while (r < 0 && errno == EINTR);
     if (r < 0) return korb_raise_errno(c, slots + 1, errno, "pread", "");
     /* re-read the buffer argument: the alloc above may have moved it */
@@ -2682,7 +2682,7 @@ static RESULT korb_m_io_pread(CTX *c, korb_value *slots, korb_ref self, korb_sli
     }
     { KorbString *const s = VAL2STR(slots[0]);
       s->len = (uint32_t)r;
-      korb_strbuf_data(s->buf)[r] = '\0'; }
+      korb_str_ptr(s)[r] = '\0'; }
     if (bufv2 == KORB_NIL) return RESULT_OK(slots[0]);
     slots[1] = bufv2;                                             /* replace into the caller's buffer, keeping its encoding */
     if (UNLIKELY(!KORB_STRING_P(slots[1]))) {                     /* a buffer may be any #to_str object */
@@ -2714,7 +2714,7 @@ static RESULT korb_m_io_ioctl(CTX *c, korb_value *slots, korb_ref self, korb_sli
             CHECK(korb_io_fill_buf(c, slots + 2, KORB_REF_AT(&slots[0]), KORB_SLICE_MAKE(&slots[1], 1)));
         }
         KorbString *const sb = VAL2STR(slots[0]);      /* no alloc from here to the call */
-        r = ioctl(rep->fd, (unsigned long)req, korb_strbuf_data(sb->buf));
+        r = ioctl(rep->fd, (unsigned long)req, korb_str_ptr(sb));
     } else {
         korb_sword_t iv = 0;
         if (av != KORB_NIL) CHECK(korb_io_arg_int(c, slots, av, &iv));
@@ -2742,7 +2742,7 @@ static RESULT korb_m_io_fcntl(CTX *c, korb_value *slots, korb_ref self, korb_sli
             CHECK(korb_io_fill_buf(c, slots + 2, KORB_REF_AT(&slots[0]), KORB_SLICE_MAKE(&slots[1], 1)));
         }
         KorbString *const sb = VAL2STR(slots[0]);                 /* no alloc from here to the call */
-        r = fcntl(korb_io_rep(c, KORB_REF_GET(self))->fd, (int)cmd, korb_strbuf_data(sb->buf));
+        r = fcntl(korb_io_rep(c, KORB_REF_GET(self))->fd, (int)cmd, korb_str_ptr(sb));
     } else {
         korb_sword_t iv = 0;
         if (av == KORB_TRUE) iv = 1;
@@ -2886,7 +2886,7 @@ static RESULT korb_m_io_s_new_fd(CTX *c, korb_value *slots, korb_ref self, korb_
             if (modev == KORB_NIL) modev = mo;
         }
         /* a "w:ENC" mode string and an encoding option are also mutually exclusive */
-        if (KORB_STRING_P(modev) && memchr(korb_strbuf_data(VAL2STR(modev)->buf), ':', VAL2STR(modev)->len)) {
+        if (KORB_STRING_P(modev) && memchr(korb_str_ptr(VAL2STR(modev)), ':', VAL2STR(modev)->len)) {
             static const struct { const char *nm; uint32_t len; } ek[] = {
                 { "encoding", 8 }, { "external_encoding", 17 }, { "internal_encoding", 17 } };
             for (size_t k = 0; k < 3; k++)
@@ -2895,7 +2895,7 @@ static RESULT korb_m_io_s_new_fd(CTX *c, korb_value *slots, korb_ref self, korb_
         }
         char mbuf[32] = "";                                        /* "wb" + binmode: / "wt" + textmode: / both */
         if (KORB_STRING_P(modev))
-            snprintf(mbuf, sizeof mbuf, "%.*s", (int)VAL2STR(modev)->len, korb_strbuf_data(VAL2STR(modev)->buf));
+            snprintf(mbuf, sizeof mbuf, "%.*s", (int)VAL2STR(modev)->len, korb_str_ptr(VAL2STR(modev)));
         CHECK(korb_io_check_bt_opts(c, slots, mbuf, opts));
     }
     /* slots[0] = opts, slots[1] = the (possibly coerced) mode value — both
@@ -3098,7 +3098,7 @@ static RESULT korb_m_file_open(CTX *c, korb_value *slots, korb_ref self, korb_sl
             }
             const KorbString *const ms = VAL2STR(mv);
             const uint32_t ml = ms->len < sizeof modestr - 1 ? ms->len : (uint32_t)(sizeof modestr - 1);
-            memcpy(modestr, korb_strbuf_data(ms->buf), ml); modestr[ml] = '\0';
+            memcpy(modestr, korb_str_ptr(ms), ml); modestr[ml] = '\0';
             have_modestr = true;
         }
     }

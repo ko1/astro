@@ -16,7 +16,7 @@ static RESULT korb_m_str_to_s(CTX *c, korb_value *slots, korb_ref self, korb_sli
     const uint32_t len = VAL2STR(v)->len;
     char *const bytes = malloc(len ? len : 1);
     if (!bytes) abort();
-    memcpy(bytes, korb_strbuf_data(VAL2STR(v)->buf), len);
+    memcpy(bytes, korb_str_ptr(VAL2STR(v)), len);
     RESULT r = korb_str_new(c, slots, bytes, len);
     free(bytes);
     if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, KORB_STR_ENC(KORB_REF_GET(self)));
@@ -30,7 +30,7 @@ static RESULT korb_str_enc_notimpl(CTX *c, korb_value *slots, korb_value v);    
  * the content is pure ASCII, so such a string needs no per-encoding hook. */
 static bool korb_str_bytes_ascii(korb_value v) {
     const KorbString *const s = VAL2STR(v);
-    const char *const d = korb_strbuf_data(s->buf);
+    const char *const d = korb_str_ptr(s);
     for (uint32_t i = 0; i < s->len; i++) if ((unsigned char)d[i] >= 0x80) return false;
     return true;
 }
@@ -182,7 +182,7 @@ static RESULT korb_m_str_force_encoding(CTX *c, korb_value *slots, korb_ref self
     }
     { const KorbString *es = VAL2STR(enc);
       uint32_t l = es->len < sizeof nbuf - 1 ? es->len : (uint32_t)sizeof nbuf - 1;
-      memcpy(nbuf, korb_strbuf_data(es->buf), l); }
+      memcpy(nbuf, korb_str_ptr(es), l); }
     /* A name no registry knows is an ArgumentError in CRuby, and an alias has to
      * land on the canonical encoding — both answers live in Encoding.find
      * (prelude).  Ask it once per distinct name; a name already in the registry
@@ -199,7 +199,7 @@ static RESULT korb_m_str_force_encoding(CTX *c, korb_value *slots, korb_ref self
                 const KorbString *const cs = VAL2STR(nm);
                 const uint32_t l = cs->len < sizeof nbuf - 1 ? cs->len : (uint32_t)sizeof nbuf - 1;
                 memset(nbuf, 0, sizeof nbuf);
-                memcpy(nbuf, korb_strbuf_data(cs->buf), l);
+                memcpy(nbuf, korb_str_ptr(cs), l);
             }
             slots[0] = 0; slots[1] = 0;
         }
@@ -225,7 +225,7 @@ static uint32_t korb_utf8_seq_len(const unsigned char *p, uint32_t i, uint32_t n
     return need + 1;
 }
 static bool korb_str_utf8_valid(const KorbString *s) {
-    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    const unsigned char *const p = (const unsigned char *)korb_str_ptr(s);
     const uint32_t n = s->len;
     uint32_t i = 0;
     while (i < n) {
@@ -284,14 +284,14 @@ static RESULT korb_m_str_valid_encoding(CTX *c, korb_value *slots, korb_ref self
     const uint32_t enc = KORB_STR_ENC(v);
     if (enc == KORB_ENC_BINARY) return RESULT_OK(KORB_TRUE);   /* every byte legal */
     if (enc == KORB_ENC_USASCII) { const KorbString *s = VAL2STR(v);
-        for (uint32_t i = 0; i < s->len; i++) if ((unsigned char)korb_strbuf_data(s->buf)[i] >= 0x80) return RESULT_OK(KORB_FALSE);
+        for (uint32_t i = 0; i < s->len; i++) if ((unsigned char)korb_str_ptr(s)[i] >= 0x80) return RESULT_OK(KORB_FALSE);
         return RESULT_OK(KORB_TRUE); }
     if (enc >= KORB_ENC_OTHER_MIN) {   /* "other": CRuby's byte structure, else the transcoder's tables */
         const KorbString *const s = VAL2STR(v);
         const signed char (*const trans)[256] = korb_enc_trans_of(c->vm, enc);
         if (trans != NULL)
-            return RESULT_OK(korb_enc_trans_valid(trans, (const unsigned char *)korb_strbuf_data(s->buf), s->len) ? KORB_TRUE : KORB_FALSE);
-        return RESULT_OK(korb_enc_bytes_valid(c->vm, enc, korb_strbuf_data(s->buf), s->len) ? KORB_TRUE : KORB_FALSE);
+            return RESULT_OK(korb_enc_trans_valid(trans, (const unsigned char *)korb_str_ptr(s), s->len) ? KORB_TRUE : KORB_FALSE);
+        return RESULT_OK(korb_enc_bytes_valid(c->vm, enc, korb_str_ptr(s), s->len) ? KORB_TRUE : KORB_FALSE);
     }
     return RESULT_OK(korb_str_utf8_valid(VAL2STR(v)) ? KORB_TRUE : KORB_FALSE);
 }
@@ -301,12 +301,12 @@ static RESULT korb_m_str_valid_encoding(CTX *c, korb_value *slots, korb_ref self
 static bool korb_str_enc_valid(const struct korb_vm *vm, const KorbString *s, uint32_t enc) {
     if (enc == KORB_ENC_USASCII) {
         for (uint32_t i = 0; i < s->len; i++)
-            if ((unsigned char)korb_strbuf_data(s->buf)[i] >= 0x80) return false;
+            if ((unsigned char)korb_str_ptr(s)[i] >= 0x80) return false;
         return true;
     }
     if (enc >= KORB_ENC_OTHER_MIN) {
         const signed char (*const trans)[256] = korb_enc_trans_of(vm, enc);
-        return trans == NULL || korb_enc_trans_valid(trans, (const unsigned char *)korb_strbuf_data(s->buf), s->len);
+        return trans == NULL || korb_enc_trans_valid(trans, (const unsigned char *)korb_str_ptr(s), s->len);
     }
     if (enc == KORB_ENC_BINARY) return true;
     return korb_str_utf8_valid(s);
@@ -321,7 +321,7 @@ static RESULT korb_m_str_scrub(CTX *c, korb_value *slots, korb_ref self, korb_sl
         const KorbString *const s = VAL2STR(KORB_REF_GET(self));
         KorbString *r = korb_str_alloc(c, slots, s->len);
         const KorbString *const s2 = VAL2STR(KORB_REF_GET(self));   /* re-read after alloc */
-        memcpy(korb_strbuf_data(r->buf), korb_strbuf_data(s2->buf), s2->len);
+        memcpy(korb_str_ptr(r), korb_str_ptr(s2), s2->len);
         KORB_STR_ENC_SET((korb_value)r, enc);
         return RESULT_OK((korb_value)r);
     }
@@ -335,9 +335,9 @@ static RESULT korb_m_str_scrub(CTX *c, korb_value *slots, korb_ref self, korb_sl
         const KorbString *const rs = VAL2STR(KORB_SLICE_GET(a, 0));
         if (UNLIKELY(!korb_str_enc_valid(c->vm, rs, KORB_STR_ENC(KORB_SLICE_GET(a, 0)))))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "replacement must be valid byte sequence '%.*s'",
-                              (int)(rs->len < 32 ? rs->len : 32), korb_strbuf_data(rs->buf));
+                              (int)(rs->len < 32 ? rs->len : 32), korb_str_ptr(rs));
         replen = rs->len < sizeof repbuf ? rs->len : (uint32_t)sizeof repbuf;
-        memcpy(repbuf, korb_strbuf_data(rs->buf), replen); rep = repbuf;
+        memcpy(repbuf, korb_str_ptr(rs), replen); rep = repbuf;
     }
     const bool use_blk = !use_arg && block != NULL;
     size_t cap = VAL2STR(KORB_REF_GET(self))->len + 4, len = 0;
@@ -347,7 +347,7 @@ static RESULT korb_m_str_scrub(CTX *c, korb_value *slots, korb_ref self, korb_sl
     uint32_t i = 0;
     while (i < VAL2STR(KORB_REF_GET(self))->len) {   /* re-read every iteration: block calls may GC-move the buffer */
         const KorbString *const s = VAL2STR(KORB_REF_GET(self));
-        const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+        const unsigned char *const p = (const unsigned char *)korb_str_ptr(s);
         const uint32_t n = s->len;
         const int32_t tl = trans != NULL ? korb_enc_trans_len(trans, p, i, n) : 0;
         const uint32_t l = trans != NULL ? (tl > 0 ? (uint32_t)tl : 0u)
@@ -370,7 +370,7 @@ static RESULT korb_m_str_scrub(CTX *c, korb_value *slots, korb_ref self, korb_sl
                 return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, br.value));
             }
             const KorbString *const bs = VAL2STR(br.value);
-            SCRUB_PUT(korb_strbuf_data(bs->buf), bs->len);
+            SCRUB_PUT(korb_str_ptr(bs), bs->len);
         } else {
             SCRUB_PUT(rep, replen);
         }
@@ -387,7 +387,7 @@ static RESULT korb_m_str_b(CTX *c, korb_value *slots, korb_ref self, korb_slice 
     (void)a;
     uint32_t len = SELF_STR->len;
     KorbString *r = korb_str_alloc(c, slots, len);
-    memcpy(korb_strbuf_data(r->buf), korb_strbuf_data(SELF_STR->buf), len);   /* SELF_STR re-read after alloc */
+    memcpy(korb_str_ptr(r), korb_str_ptr(SELF_STR), len);   /* SELF_STR re-read after alloc */
     KORB_STR_ENC_SET((korb_value)r, KORB_ENC_BINARY);
     return RESULT_OK((korb_value)r);
 }
@@ -419,13 +419,13 @@ static RESULT korb_m_str_uminus(CTX *c, korb_value *slots, korb_ref self, korb_s
         }
         return r;
     }
-    { const korb_value hit = korb_fstr_find(vm, korb_strbuf_data(s->buf), len, enc); if (hit) return RESULT_OK(hit); }
+    { const korb_value hit = korb_fstr_find(vm, korb_str_ptr(s), len, enc); if (hit) return RESULT_OK(hit); }
     /* CRuby never adopts the receiver: a frozen string that is not already a
      * pool entry gets a fresh one (`"x".dup.freeze` then `-it` are different
      * objects).  Only a literal's compile-time `.freeze` is the entry itself. */
     char *const bytes = malloc(len ? len : 1);          /* stable across the pool's alloc (self may move) */
     if (!bytes) abort();
-    memcpy(bytes, korb_strbuf_data(s->buf), len);
+    memcpy(bytes, korb_str_ptr(s), len);
     const korb_value r = korb_fstr_get(c, slots, bytes, len, enc);
     free(bytes);
     return RESULT_OK(r);
@@ -450,7 +450,7 @@ static RESULT korb_m_str_to_sym(CTX *c, korb_value *slots, korb_ref self, korb_s
     const KorbString *const s = VAL2STR(sv);
     const uint32_t enc = KORB_STR_ENC(sv);
     if (UNLIKELY(!korb_str_enc_valid(c->vm, s, enc))) {
-        const char *const d = korb_strbuf_data(s->buf);
+        const char *const d = korb_str_ptr(s);
         char esc[128];
         uint32_t o = 0;
         for (uint32_t i = 0; i < s->len && o + 5 < sizeof esc; i++) {   /* CRuby quotes the name inspect-style */
@@ -467,7 +467,7 @@ static RESULT korb_m_str_to_sym(CTX *c, korb_value *slots, korb_ref self, korb_s
             ARO_STORE(c, VAL2EXC(r.value), (korb_value *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
         return r;
     }
-    return RESULT_OK(ID2SYM(korb_intern_enc(c->vm, korb_strbuf_data(s->buf), s->len, enc)));
+    return RESULT_OK(ID2SYM(korb_intern_enc(c->vm, korb_str_ptr(s), s->len, enc)));
 }
 /* Validate case-mapping options (the mapping itself stays ASCII-only).  op:
  * 0=upcase 1=downcase 2=capitalize 3=swapcase.  Accepts () | :ascii | :turkic |
@@ -644,7 +644,7 @@ static RESULT korb_str_case_wide(CTX *c, korb_value *sp, korb_ref self, int op, 
     if (!ok) return RESULT_OK(KORB_NIL);
     char *buf; uint32_t blen;
     { const KorbString *const u = VAL2STR(sp[0]);
-      korb_case_transform_buf(c->vm, KORB_ENC_UTF8, korb_strbuf_data(u->buf), u->len, op, mode, &buf, &blen); }
+      korb_case_transform_buf(c->vm, KORB_ENC_UTF8, korb_str_ptr(u), u->len, op, mode, &buf, &blen); }
     const RESULT nr = korb_str_new(c, sp + 1, buf, blen);
     free(buf);
     if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
@@ -666,7 +666,7 @@ static bool korb_str_case_invalid(CTX *c, korb_value v)
      * own, and an out-of-repertoire byte is simply left alone. */
     if (KORB_ENC_SB(c->vm, enc)) return false;
     const KorbString *const s = VAL2STR(v);
-    if (enc >= KORB_ENC_OTHER_MIN) return !korb_enc_bytes_valid(c->vm, enc, korb_strbuf_data(s->buf), s->len);
+    if (enc >= KORB_ENC_OTHER_MIN) return !korb_enc_bytes_valid(c->vm, enc, korb_str_ptr(s), s->len);
     return !korb_str_utf8_valid(s);
 }
 static RESULT korb_str_transform(CTX *c, korb_value *slots, korb_ref self, int op, int mode) {
@@ -688,14 +688,14 @@ static RESULT korb_str_transform(CTX *c, korb_value *slots, korb_ref self, int o
             if (UNLIKELY(wr.state != KORB_NORMAL) || wr.value != KORB_NIL) return wr;
         }
         char *buf; uint32_t blen;
-        korb_case_transform_buf(c->vm, KORB_STR_ENC(KORB_REF_GET(self)), korb_strbuf_data(s->buf), len, op, mode, &buf, &blen);
+        korb_case_transform_buf(c->vm, KORB_STR_ENC(KORB_REF_GET(self)), korb_str_ptr(s), len, op, mode, &buf, &blen);
         RESULT nr = korb_str_new(c, slots, buf, blen);
         free(buf);
         if (LIKELY(nr.state == KORB_NORMAL))
             KORB_STR_ENC_SET(nr.value, KORB_STR_ENC(KORB_REF_GET(self)));
         return nr;
     }
-    for (uint32_t i = 0; i < len; i++) korb_strbuf_data(r->buf)[i] = korb_strbuf_data(s->buf)[len - 1 - i];   /* reverse */
+    for (uint32_t i = 0; i < len; i++) korb_str_ptr(r)[i] = korb_str_ptr(s)[len - 1 - i];   /* reverse */
     return RESULT_OK((korb_value)r);
 }
 static RESULT korb_m_str_upcase(CTX *c, korb_value *slots, korb_ref self, korb_slice a)     { RESULT o = korb_str_case_opts(c, slots, a, 0); if (UNLIKELY(o.state != KORB_NORMAL)) return o; return korb_str_transform(c, slots, self, 0, (int)FIX2LONG(o.value)); }
@@ -995,7 +995,7 @@ static bool korb_str_char_head_p(const struct korb_vm *vm, korb_value sv, uint32
     if (off == 0 || off >= s->len) return true;
     const uint32_t enc = KORB_STR_ENC(sv);
     if (KORB_ENC_SB(vm, enc)) return true;
-    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    const unsigned char *const p = (const unsigned char *)korb_str_ptr(s);
     if (enc == KORB_ENC_UTF8) return (p[off] & 0xC0) != 0x80;
     bool be = true;
     const uint32_t unit = korb_enc_fixed_unit(vm, enc, &be);
@@ -1020,7 +1020,7 @@ static int korb_fixed_ascget(const unsigned char *p, uint32_t o, uint32_t unit, 
  * rather than a raw \n byte (CRuby smart_chomp). */
 static uint32_t korb_str_trailing_nl(const struct korb_vm *vm, korb_value sv) {
     const KorbString *const s = VAL2STR(sv);
-    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    const unsigned char *const p = (const unsigned char *)korb_str_ptr(s);
     const uint32_t len = s->len;
     bool be = true;
     const uint32_t u = korb_enc_fixed_unit(vm, KORB_STR_ENC(sv), &be);
@@ -1040,7 +1040,7 @@ static uint32_t korb_str_trailing_nl(const struct korb_vm *vm, korb_value sv) {
 /* Byte count of the last character (for #chop), \r\n counted as one. */
 static uint32_t korb_str_last_char_bytes(const struct korb_vm *vm, korb_value sv) {
     const KorbString *const s = VAL2STR(sv);
-    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    const unsigned char *const p = (const unsigned char *)korb_str_ptr(s);
     const uint32_t len = s->len;
     if (len == 0) return 0;
     const uint32_t nl = korb_str_trailing_nl(vm, sv);
@@ -1068,7 +1068,7 @@ korb_str_slice_new(CTX *c, korb_value *slots, korb_ref sref, uint32_t start, uin
 {
     KorbString *r = korb_str_alloc(c, slots, len);
     const KorbString *s = VAL2STR(KORB_REF_GET(sref));   /* re-read: GC may have moved it */
-    memcpy(korb_strbuf_data(r->buf), korb_strbuf_data(s->buf) + start, len);
+    memcpy(korb_str_ptr(r), korb_str_ptr(s) + start, len);
     KORB_STR_ENC_SET((korb_value)r, KORB_STR_ENC(KORB_REF_GET(sref)));   /* a slice keeps the source encoding */
     return RESULT_OK((korb_value)r);
 }
@@ -1086,8 +1086,8 @@ static RESULT korb_str_append_str(CTX *c, korb_value *slots, korb_ref self, korb
     uint32_t on = VAL2STR(KORB_REF_GET(other))->len;
     KorbString *s = korb_str_ensure(c, slots, self, VAL2STR(KORB_REF_GET(self))->len + on);
     const KorbString *o = VAL2STR(KORB_REF_GET(other));   /* re-read after grow */
-    memcpy(korb_strbuf_data(s->buf) + s->len, korb_strbuf_data(o->buf), on);
-    s->len += on; korb_strbuf_data(s->buf)[s->len] = '\0';
+    memcpy(korb_str_ptr(s) + s->len, korb_str_ptr(o), on);
+    s->len += on; korb_str_ptr(s)[s->len] = '\0';
     return RESULT_OK(KORB_REF_GET(self));
 }
 /* append one element (String or Integer codepoint) onto self */
@@ -1184,8 +1184,8 @@ static RESULT korb_m_str_concat(CTX *c, korb_value *slots, korb_ref self, korb_s
         if (UNLIKELY(KORB_SLICE_GET(a, j) == KORB_REF_GET(self))) {   /* self-arg → append the original bytes only */
             KorbString *s = korb_str_ensure(c, slots, self, VAL2STR(KORB_REF_GET(self))->len + self_len0);
             const KorbString *o = VAL2STR(KORB_REF_GET(self));        /* re-read after grow (s == o) */
-            memcpy(korb_strbuf_data(s->buf) + s->len, korb_strbuf_data(o->buf), self_len0);    /* dest past src by >= self_len0 → no overlap */
-            s->len += self_len0; korb_strbuf_data(s->buf)[s->len] = '\0';
+            memcpy(korb_str_ptr(s) + s->len, korb_str_ptr(o), self_len0);    /* dest past src by >= self_len0 → no overlap */
+            s->len += self_len0; korb_str_ptr(s)[s->len] = '\0';
         }
         else CHECK(korb_str_append_one(c, slots, self, KORB_SLICE_REF(a, j)));
     }
@@ -1212,7 +1212,7 @@ static RESULT korb_str_init_encoding(CTX *c, korb_value *slots, korb_ref self, k
     }
     char nm[64]; const KorbString *es = VAL2STR(ev);
     const uint32_t nl = es->len < sizeof nm - 1 ? es->len : (uint32_t)sizeof nm - 1;
-    memcpy(nm, korb_strbuf_data(es->buf), nl); nm[nl] = '\0';
+    memcpy(nm, korb_str_ptr(es), nl); nm[nl] = '\0';
     KORB_STR_ENC_SET(KORB_REF_GET(self), korb_enc_index_for_name(c->vm, nm));
     return RESULT_OK(KORB_NIL);
 }
@@ -1273,21 +1273,21 @@ static RESULT korb_m_str_prepend(CTX *c, korb_value *slots, korb_ref self, korb_
     uint32_t slen = VAL2STR(KORB_REF_GET(self))->len;
     korb_str_ensure(c, slots + 1, self, slen + pn);              /* single grow; args pinned in arr */
     KorbString *s = VAL2STR(KORB_REF_GET(self));
-    memmove(korb_strbuf_data(s->buf) + pn, korb_strbuf_data(s->buf), slen);
+    memmove(korb_str_ptr(s) + pn, korb_str_ptr(s), slen);
     uint32_t off = 0;
     const KorbArray *ca = VAL2ARY(slots[0]);
     for (uint32_t j = 0; j < ca->len; j++) {
         const KorbString *o = VAL2STR(korb_ary_ptr(ca)[j]);
-        memcpy(korb_strbuf_data(s->buf) + off, korb_strbuf_data(o->buf), o->len); off += o->len;
+        memcpy(korb_str_ptr(s) + off, korb_str_ptr(o), o->len); off += o->len;
     }
-    s->len = slen + pn; korb_strbuf_data(s->buf)[s->len] = '\0';
+    s->len = slen + pn; korb_str_ptr(s)[s->len] = '\0';
     return RESULT_OK(KORB_REF_GET(self));
 }
 static RESULT korb_m_str_clear(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     KORB_CHECK_FROZEN(c, slots, KORB_REF_GET(self));
     (void)c;(void)slots;(void)a;
     KorbString *s = VAL2STR(KORB_REF_GET(self));
-    s->len = 0; korb_strbuf_data(s->buf)[0] = '\0';
+    s->len = 0; korb_str_ptr(s)[0] = '\0';
     return RESULT_OK(KORB_REF_GET(self));
 }
 /* in-place case/reverse (op: 0 upcase 1 downcase 2 capitalize 3 swapcase 4 reverse);
@@ -1310,10 +1310,10 @@ static RESULT korb_str_transform_bang(CTX *c, korb_value *slots, korb_ref self, 
         const uint32_t enc = KORB_STR_ENC(KORB_REF_GET(self));
         uint32_t wi = len, i = 0;
         while (i < len) {                              /* same char stepping as #reverse */
-            const uint32_t clen = korb_str_char_bytes(c->vm, enc, (const unsigned char *)korb_strbuf_data(s->buf), i, len);
-            wi -= clen; memcpy(tmp + wi, korb_strbuf_data(s->buf) + i, clen); i += clen;
+            const uint32_t clen = korb_str_char_bytes(c->vm, enc, (const unsigned char *)korb_str_ptr(s), i, len);
+            wi -= clen; memcpy(tmp + wi, korb_str_ptr(s) + i, clen); i += clen;
         }
-        memcpy(korb_strbuf_data(s->buf), tmp, len); free(tmp);
+        memcpy(korb_str_ptr(s), tmp, len); free(tmp);
         return RESULT_OK(KORB_REF_GET(self));
     }
     if (UNLIKELY(!korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(KORB_REF_GET(self))))) {
@@ -1323,7 +1323,7 @@ static RESULT korb_str_transform_bang(CTX *c, korb_value *slots, korb_ref self, 
             slots[0] = wr.value;                       /* rooted: the splice below allocates */
             s = VAL2STR(KORB_REF_GET(self));
             const KorbString *const m = VAL2STR(slots[0]);
-            if (m->len == s->len && memcmp(korb_strbuf_data(m->buf), korb_strbuf_data(s->buf), m->len) == 0)
+            if (m->len == s->len && memcmp(korb_str_ptr(m), korb_str_ptr(s), m->len) == 0)
                 return RESULT_OK(KORB_NIL);
             s->len = 0;
             CHECK(korb_str_append_str(c, slots + 1, self, KORB_REF_AT(&slots[0])));
@@ -1333,13 +1333,13 @@ static RESULT korb_str_transform_bang(CTX *c, korb_value *slots, korb_ref self, 
     /* the mapped bytes can be longer ("ß".upcase! is "SS"), so build into a
      * scratch buffer and splice the result back in */
     char *buf; uint32_t blen;
-    changed = korb_case_transform_buf(c->vm, KORB_STR_ENC(KORB_REF_GET(self)), korb_strbuf_data(s->buf), len, op, mode, &buf, &blen);
+    changed = korb_case_transform_buf(c->vm, KORB_STR_ENC(KORB_REF_GET(self)), korb_str_ptr(s), len, op, mode, &buf, &blen);
     if (!changed) { free(buf); return RESULT_OK(KORB_NIL); }
     if (blen <= len) {
         s = VAL2STR(KORB_REF_GET(self));
-        memcpy(korb_strbuf_data(s->buf), buf, blen);
+        memcpy(korb_str_ptr(s), buf, blen);
         s->len = blen;
-        korb_strbuf_data(s->buf)[blen] = '\0';
+        korb_str_ptr(s)[blen] = '\0';
         free(buf);
         return RESULT_OK(KORB_REF_GET(self));
     }
@@ -1368,9 +1368,9 @@ static RESULT korb_str_splice(CTX *c, korb_value *slots, korb_ref self, uint32_t
     uint32_t newlen = slen - (be - bs) + rn;
     KorbString *s = korb_str_ensure(c, slots, self, newlen);   /* alloc; self+repl rooted */
     s = VAL2STR(KORB_REF_GET(self));
-    memmove(korb_strbuf_data(s->buf) + bs + rn, korb_strbuf_data(s->buf) + be, slen - be);
-    if (rn) { const KorbString *r = VAL2STR(KORB_REF_GET(replref)); memcpy(korb_strbuf_data(s->buf) + bs, korb_strbuf_data(r->buf), rn); }
-    s->len = newlen; korb_strbuf_data(s->buf)[newlen] = '\0';
+    memmove(korb_str_ptr(s) + bs + rn, korb_str_ptr(s) + be, slen - be);
+    if (rn) { const KorbString *r = VAL2STR(KORB_REF_GET(replref)); memcpy(korb_str_ptr(s) + bs, korb_str_ptr(r), rn); }
+    s->len = newlen; korb_str_ptr(s)[newlen] = '\0';
     KORB_STR_ENC_SET(KORB_REF_GET(self), renc);
     return RESULT_OK(KORB_REF_GET(self));
 }
@@ -1468,7 +1468,7 @@ RESULT korb_re_lastmatch_detach(CTX *c, korb_value *slots);   /* regexp.c: $~ ge
 /* Character count of the whole string — an O(n) walk, so the span code pulls it
  * only when a negative or open bound actually needs it. */
 static uint32_t korb_span_ncp(CTX *const c, const KorbString *const s, const uint32_t enc, uint32_t *const cache) {
-    if (*cache == UINT32_MAX) *cache = korb_enc_charcount(c->vm, enc, korb_strbuf_data(s->buf), s->len);
+    if (*cache == UINT32_MAX) *cache = korb_enc_charcount(c->vm, enc, korb_str_ptr(s), s->len);
     return *cache;
 }
 static RESULT korb_str_target_span(CTX *c, korb_value *slots, korb_ref self, korb_value idx, korb_value len_v, bool *found, uint32_t *bs, uint32_t *be, bool write) {
@@ -1494,7 +1494,7 @@ static RESULT korb_str_target_span(CTX *c, korb_value *slots, korb_ref self, kor
     *found = true;
     if (KORB_STRING_P(idx)) {                          /* substring target */
         const KorbString *sub = VAL2STR(idx);
-        int32_t at = korb_byte_find(korb_strbuf_data(s->buf), s->len, korb_strbuf_data(sub->buf), sub->len);
+        int32_t at = korb_byte_find(korb_str_ptr(s), s->len, korb_str_ptr(sub), sub->len);
         if (at < 0) {
             *found = false;
             if (write) return korb_raise(c, slots, KORB_E_INDEX, 0, "string not matched");
@@ -1536,11 +1536,11 @@ static RESULT korb_str_target_span(CTX *c, korb_value *slots, korb_ref self, kor
      * the last byte already satisfies every bound below and the O(n) character
      * count is never needed. */
     if (LIKELY(st >= 0 && ln >= 0 && st <= (korb_sword_t)s->len)) {
-        const uint32_t bs0 = korb_enc_step_fwd(c->vm, enc, korb_strbuf_data(s->buf), s->len, 0, (uint32_t)st);
+        const uint32_t bs0 = korb_enc_step_fwd(c->vm, enc, korb_str_ptr(s), s->len, 0, (uint32_t)st);
         if (LIKELY(bs0 < s->len)) {
             if (ln > (korb_sword_t)s->len) ln = (korb_sword_t)s->len;   /* stepping clamps at len anyway */
             *bs = bs0;
-            *be = korb_enc_step_fwd(c->vm, enc, korb_strbuf_data(s->buf), s->len, bs0, (uint32_t)ln);
+            *be = korb_enc_step_fwd(c->vm, enc, korb_str_ptr(s), s->len, bs0, (uint32_t)ln);
             return RESULT_OK(KORB_NIL);
         }
     }
@@ -1554,8 +1554,8 @@ static RESULT korb_str_target_span(CTX *c, korb_value *slots, korb_ref self, kor
     if (single && write && st == (korb_sword_t)ncp) ln = 0;              /* str[len]=x → append (empty span at end) */
     if (ln > (korb_sword_t)ncp) ln = (korb_sword_t)ncp;                  /* before st + ln, which would overflow */
     if (st + ln > (korb_sword_t)ncp) ln = (korb_sword_t)ncp - st;
-    *bs = korb_enc_byteoff(c->vm, enc, korb_strbuf_data(s->buf), s->len, (uint32_t)st);
-    *be = korb_enc_byteoff(c->vm, enc, korb_strbuf_data(s->buf), s->len, (uint32_t)(st + ln));
+    *bs = korb_enc_byteoff(c->vm, enc, korb_str_ptr(s), s->len, (uint32_t)st);
+    *be = korb_enc_byteoff(c->vm, enc, korb_str_ptr(s), s->len, (uint32_t)(st + ln));
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_str_aset(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
@@ -1626,7 +1626,7 @@ static uint32_t korb_utf8_dec_last(const char *p, uint32_t start, uint32_t end, 
 /* strip's trimmed-span scan (mode 0 both / 1 left / 2 right): whitespace, or
  * with selector args the codepoints matched by every set. */
 static void korb_str_strip_span(const struct korb_vm *vm, uint32_t enc, const KorbString *s, korb_slice a, int mode, uint32_t *lo_out, uint32_t *hi_out) {
-    const char *const d = korb_strbuf_data(s->buf);
+    const char *const d = korb_str_ptr(s);
     uint32_t lo = 0, hi = s->len;
     const bool has_set = KORB_SLICE_LEN(a) >= 1;
     bool be_;
@@ -1669,7 +1669,7 @@ static RESULT korb_str_strip_enc_check(CTX *c, korb_value *slots, korb_value v, 
     if (KORB_STR_ENC(v) != KORB_ENC_UTF8) return RESULT_OK(KORB_NIL);
     const KorbString *const s = VAL2STR(v);
     if (korb_str_utf8_valid(s)) return RESULT_OK(KORB_NIL);
-    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    const unsigned char *const p = (const unsigned char *)korb_str_ptr(s);
     if (mode != 2) {
         uint32_t i = 0;
         while (i < s->len && p[i] <= ' ') i++;         /* leading ASCII spaces */
@@ -1688,8 +1688,8 @@ static RESULT korb_str_strip_bang(CTX *c, korb_value *slots, korb_ref self, korb
     korb_str_strip_span(c->vm, KORB_STR_ENC(KORB_REF_GET(self)), s, a, mode, &lo, &hi);
     if (lo == 0 && hi == s->len) return RESULT_OK(KORB_NIL);   /* unchanged */
     uint32_t nlen = hi - lo;
-    if (lo) memmove(korb_strbuf_data(s->buf), korb_strbuf_data(s->buf) + lo, nlen);
-    s->len = nlen; korb_strbuf_data(s->buf)[nlen] = '\0';
+    if (lo) memmove(korb_str_ptr(s), korb_str_ptr(s) + lo, nlen);
+    s->len = nlen; korb_str_ptr(s)[nlen] = '\0';
     return RESULT_OK(KORB_REF_GET(self));
 }
 static RESULT korb_m_str_strip_b(CTX *c, korb_value *slots, korb_ref self, korb_slice a)  { return korb_str_strip_bang(c, slots, self, a, 0); }
@@ -1716,31 +1716,31 @@ static RESULT korb_m_str_chomp_b(CTX *c, korb_value *slots, korb_ref self, korb_
         korb_value sv = KORB_SLICE_GET(a, 0);
         if (sv == KORB_NIL) return RESULT_OK(KORB_NIL);   /* nil sep → no-op → nil */
         const KorbString *sep = VAL2STR(sv);
-        if (sep->len == 1 && korb_strbuf_data(sep->buf)[0] == '\n')   /* "\n" = universal: \r\n, \n, or \r */
+        if (sep->len == 1 && korb_str_ptr(sep)[0] == '\n')   /* "\n" = universal: \r\n, \n, or \r */
             n -= korb_str_trailing_nl(c->vm, KORB_REF_GET(self));
-        else if (sep->len == 0) { while (n >= 1 && korb_strbuf_data(s->buf)[n-1] == '\n') { if (n >= 2 && korb_strbuf_data(s->buf)[n-2] == '\r') n--; n--; } }
-        else if (n >= sep->len && memcmp(korb_strbuf_data(s->buf) + n - sep->len, korb_strbuf_data(sep->buf), sep->len) == 0) n -= sep->len;
+        else if (sep->len == 0) { while (n >= 1 && korb_str_ptr(s)[n-1] == '\n') { if (n >= 2 && korb_str_ptr(s)[n-2] == '\r') n--; n--; } }
+        else if (n >= sep->len && memcmp(korb_str_ptr(s) + n - sep->len, korb_str_ptr(sep), sep->len) == 0) n -= sep->len;
         if (n == s->len) return RESULT_OK(KORB_NIL);
-        s->len = n; korb_strbuf_data(s->buf)[n] = '\0';
+        s->len = n; korb_str_ptr(s)[n] = '\0';
         return RESULT_OK(KORB_REF_GET(self));
     }
     {   /* no arg → $/ (usually "\n"; nil → no-op; custom → that separator) */
         const korb_value rs = korb_const_get(c->vm, korb_intern_lit(c->vm, "$/", 2));
         if (rs == KORB_NIL) return RESULT_OK(KORB_NIL);
-        if (KORB_STRING_P(rs) && !(VAL2STR(rs)->len == 1 && korb_strbuf_data(VAL2STR(rs)->buf)[0] == '\n')) {
+        if (KORB_STRING_P(rs) && !(VAL2STR(rs)->len == 1 && korb_str_ptr(VAL2STR(rs))[0] == '\n')) {
             const KorbString *sep = VAL2STR(rs);
             s = VAL2STR(KORB_REF_GET(self));
-            if (sep->len == 0) { while (n >= 1 && korb_strbuf_data(s->buf)[n-1] == '\n') { if (n >= 2 && korb_strbuf_data(s->buf)[n-2] == '\r') n--; n--; } }
-            else if (n >= sep->len && memcmp(korb_strbuf_data(s->buf) + n - sep->len, korb_strbuf_data(sep->buf), sep->len) == 0) n -= sep->len;
+            if (sep->len == 0) { while (n >= 1 && korb_str_ptr(s)[n-1] == '\n') { if (n >= 2 && korb_str_ptr(s)[n-2] == '\r') n--; n--; } }
+            else if (n >= sep->len && memcmp(korb_str_ptr(s) + n - sep->len, korb_str_ptr(sep), sep->len) == 0) n -= sep->len;
             if (n == s->len) return RESULT_OK(KORB_NIL);
-            s->len = n; korb_strbuf_data(s->buf)[n] = '\0';
+            s->len = n; korb_str_ptr(s)[n] = '\0';
             return RESULT_OK(KORB_REF_GET(self));
         }
     }
     { const uint32_t nl = korb_str_trailing_nl(c->vm, KORB_REF_GET(self));
       if (nl == 0) return RESULT_OK(KORB_NIL);
       n -= nl; }
-    s->len = n; korb_strbuf_data(s->buf)[n] = '\0';
+    s->len = n; korb_str_ptr(s)[n] = '\0';
     return RESULT_OK(KORB_REF_GET(self));
 }
 static RESULT korb_m_str_chop_b(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
@@ -1749,7 +1749,7 @@ static RESULT korb_m_str_chop_b(CTX *c, korb_value *slots, korb_ref self, korb_s
     KorbString *s = VAL2STR(KORB_REF_GET(self));
     if (s->len == 0) return RESULT_OK(KORB_NIL);
     const uint32_t n = s->len - korb_str_last_char_bytes(c->vm, KORB_REF_GET(self));
-    s->len = n; korb_strbuf_data(s->buf)[n] = '\0';
+    s->len = n; korb_str_ptr(s)[n] = '\0';
     return RESULT_OK(KORB_REF_GET(self));
 }
 
@@ -1808,7 +1808,7 @@ static bool korb_str_sets_match_cp(korb_slice a, uint32_t cp, const bool bytes) 
         const korb_value sv = KORB_SLICE_GET(a, j);
         if (!KORB_STRING_P(sv)) continue;
         const KorbString *set = VAL2STR(sv);
-        if (!korb_charset_match_cp(korb_strbuf_data(set->buf), set->len, cp, bytes)) return false;
+        if (!korb_charset_match_cp(korb_str_ptr(set), set->len, cp, bytes)) return false;
     }
     return true;
 }
@@ -1852,7 +1852,7 @@ static RESULT korb_str_sets_validate(CTX *c, korb_value *slots, korb_slice a) {
         /* CRuby decodes the set char by char, so malformed bytes are an error */
         if (UNLIKELY(KORB_STR_ENC(sv) == KORB_ENC_UTF8 && !korb_str_utf8_valid(VAL2STR(sv))))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in UTF-8");
-        if (korb_charset_bad_range(korb_strbuf_data(VAL2STR(sv)->buf), VAL2STR(sv)->len, &lo, &hi))
+        if (korb_charset_bad_range(korb_str_ptr(VAL2STR(sv)), VAL2STR(sv)->len, &lo, &hi))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid range \"%c-%c\" in string transliteration", lo, hi);
     }
     return RESULT_OK(KORB_NIL);
@@ -1890,16 +1890,16 @@ static RESULT korb_str_delfix(CTX *c, korb_value *slots, korb_ref self, korb_sli
     if (p->len > 0 && p->len <= s->len) {
         const uint32_t cut = (mode == 0) ? p->len : s->len - p->len;
         if (korb_str_char_head_p(c->vm, KORB_REF_GET(self), cut)) {
-            if (mode == 0 && memcmp(korb_strbuf_data(s->buf), korb_strbuf_data(p->buf), p->len) == 0) { bs = cut; match = true; }
-            else if (mode == 1 && memcmp(korb_strbuf_data(s->buf) + cut, korb_strbuf_data(p->buf), p->len) == 0) { be = cut; match = true; }
+            if (mode == 0 && memcmp(korb_str_ptr(s), korb_str_ptr(p), p->len) == 0) { bs = cut; match = true; }
+            else if (mode == 1 && memcmp(korb_str_ptr(s) + cut, korb_str_ptr(p), p->len) == 0) { be = cut; match = true; }
         }
     }
     if (!in_place) return korb_str_slice_new(c, slots, self, bs, be - bs);
     if (!match) return RESULT_OK(KORB_NIL);
     KorbString *m = VAL2STR(KORB_REF_GET(self));
     uint32_t nlen = be - bs;
-    if (bs) memmove(korb_strbuf_data(m->buf), korb_strbuf_data(m->buf) + bs, nlen);
-    m->len = nlen; korb_strbuf_data(m->buf)[nlen] = '\0';
+    if (bs) memmove(korb_str_ptr(m), korb_str_ptr(m) + bs, nlen);
+    m->len = nlen; korb_str_ptr(m)[nlen] = '\0';
     return RESULT_OK(KORB_REF_GET(self));
 }
 static RESULT korb_m_str_delete_prefix(CTX *c, korb_value *slots, korb_ref self, korb_slice a)   { return korb_str_delfix(c, slots, self, a, 0, false); }
@@ -1949,19 +1949,19 @@ static RESULT korb_str_delete_into(CTX *c, korb_value *slots, korb_ref self, kor
     uint32_t w = 0;
     const bool bytes = KORB_ENC_SB(c->vm, KORB_STR_ENC(KORB_REF_GET(self)));
     for (uint32_t i = 0; i < n; ) {                     /* iterate by character */
-        uint32_t cl; const uint32_t cp = korb_str_dec1(korb_strbuf_data(s->buf) + i, n - i, &cl, bytes);
+        uint32_t cl; const uint32_t cp = korb_str_dec1(korb_str_ptr(s) + i, n - i, &cl, bytes);
         if (cl == 0) cl = 1;
-        if (!korb_str_sets_match_cp(a, cp, bytes)) { memcpy(korb_strbuf_data(r->buf) + w, korb_strbuf_data(s->buf) + i, cl); w += cl; }
+        if (!korb_str_sets_match_cp(a, cp, bytes)) { memcpy(korb_str_ptr(r) + w, korb_str_ptr(s) + i, cl); w += cl; }
         i += cl;
     }
-    r->len = w; korb_strbuf_data(r->buf)[w] = '\0';
+    r->len = w; korb_str_ptr(r)[w] = '\0';
     if (!in_place) { KORB_STR_ENC_SET((korb_value)r, KORB_STR_ENC(KORB_REF_GET(self))); return RESULT_OK((korb_value)r); }
     bool changed = (w != n);
     slots[0] = (korb_value)r;
     KorbString *s2 = korb_str_ensure(c, slots + 1, self, w);
     r = VAL2STR(slots[0]);
-    memcpy(korb_strbuf_data(s2->buf), korb_strbuf_data(r->buf), w);
-    s2->len = w; korb_strbuf_data(s2->buf)[w] = '\0';
+    memcpy(korb_str_ptr(s2), korb_str_ptr(r), w);
+    s2->len = w; korb_str_ptr(s2)[w] = '\0';
     return RESULT_OK(changed ? KORB_REF_GET(self) : KORB_NIL);
 }
 static RESULT korb_m_str_delete(CTX *c, korb_value *slots, korb_ref self, korb_slice a)   { return korb_str_delete_into(c, slots, self, a, false); }
@@ -2041,7 +2041,7 @@ static RESULT korb_tr_hash_keys_ok(CTX *c, korb_value *slots, const KorbArray *p
     for (uint32_t k = 0; k < pairs->len / 2; k++) {
         const KorbString *const ks = VAL2STR(korb_ary_ptr(pairs)[2 * k]);
         uint32_t cl = 0;
-        if (ks->len) (void)korb_utf8_dec1(korb_strbuf_data(ks->buf), ks->len, &cl);
+        if (ks->len) (void)korb_utf8_dec1(korb_str_ptr(ks), ks->len, &cl);
         if (UNLIKELY(ks->len == 0 || cl != ks->len))
             return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "keys must be of size 1");
     }
@@ -2055,16 +2055,16 @@ static void korb_tr_hash_scan(FILE *ms, const KorbString *s, const KorbArray *pa
 {
     const uint32_t n = pairs->len / 2;
     for (uint32_t i = 0; i < s->len; ) {
-        uint32_t cl; (void)korb_utf8_dec1(korb_strbuf_data(s->buf) + i, s->len - i, &cl);
-        const char *const cp_bytes = korb_strbuf_data(s->buf) + i;
+        uint32_t cl; (void)korb_utf8_dec1(korb_str_ptr(s) + i, s->len - i, &cl);
+        const char *const cp_bytes = korb_str_ptr(s) + i;
         uint32_t hit = n;
         for (uint32_t k = 0; k < n; k++) {
             const KorbString *const ks = VAL2STR(korb_ary_ptr(pairs)[2 * k]);
-            if (ks->len == cl && memcmp(korb_strbuf_data(ks->buf), cp_bytes, cl) == 0) { hit = k; break; }
+            if (ks->len == cl && memcmp(korb_str_ptr(ks), cp_bytes, cl) == 0) { hit = k; break; }
         }
         if (hit == n) { fwrite(cp_bytes, 1, cl, ms); i += cl; continue; }
         const KorbString *const vs = VAL2STR(korb_ary_ptr(pairs)[2 * hit + 1]);
-        if (vs->len) fwrite(korb_strbuf_data(vs->buf), 1, vs->len, ms);
+        if (vs->len) fwrite(korb_str_ptr(vs), 1, vs->len, ms);
         *changed = true;
         i += cl;
     }
@@ -2186,12 +2186,12 @@ static RESULT korb_m_str_tr(CTX *c, korb_value *slots, korb_ref self, korb_slice
     const KorbString *fs = VAL2STR(fv), *ts = VAL2STR(tv);
     const bool bytes = KORB_ENC_SB(c->vm, KORB_STR_ENC(KORB_REF_GET(self)));   /* binary / Latin-1: tr works on bytes */
     { uint32_t rlo, rhi;
-      if (UNLIKELY(korb_charset_bad_range_cp(korb_strbuf_data(fs->buf), fs->len, &rlo, &rhi, bytes) || korb_charset_bad_range_cp(korb_strbuf_data(ts->buf), ts->len, &rlo, &rhi, bytes)))
+      if (UNLIKELY(korb_charset_bad_range_cp(korb_str_ptr(fs), fs->len, &rlo, &rhi, bytes) || korb_charset_bad_range_cp(korb_str_ptr(ts), ts->len, &rlo, &rhi, bytes)))
           return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid range in string transliteration"); }
-    bool neg = fs->len > 1 && korb_strbuf_data(fs->buf)[0] == '^';   /* a lone "^" is the literal char, not a complement */
+    bool neg = fs->len > 1 && korb_str_ptr(fs)[0] == '^';   /* a lone "^" is the literal char, not a complement */
     uint32_t fromx[1024], tox[1024];
-    uint32_t fn = korb_tr_expand_cp(korb_strbuf_data(fs->buf) + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 1024, bytes);
-    uint32_t tn = korb_tr_expand_cp(korb_strbuf_data(ts->buf), ts->len, tox, 1024, bytes);
+    uint32_t fn = korb_tr_expand_cp(korb_str_ptr(fs) + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 1024, bytes);
+    uint32_t tn = korb_tr_expand_cp(korb_str_ptr(ts), ts->len, tox, 1024, bytes);
     const KorbString *s = VAL2STR(KORB_REF_GET(self));      /* no GC during the scan */
     /* each input char (>= 1 byte) becomes at most one 4-byte char: no stdio stream needed (it was fwrite per char) */
     char sbuf[1024];
@@ -2200,11 +2200,11 @@ static RESULT korb_m_str_tr(CTX *c, korb_value *slots, korb_ref self, korb_slice
     if (!buf) { fprintf(stderr, "koruby_precise: oom (tr)\n"); abort(); }
     size_t sz = 0;
     for (uint32_t i = 0; i < s->len; ) {
-        uint32_t cl; const uint32_t cp = korb_str_dec1(korb_strbuf_data(s->buf) + i, s->len - i, &cl, bytes);
+        uint32_t cl; const uint32_t cp = korb_str_dec1(korb_str_ptr(s) + i, s->len - i, &cl, bytes);
         int idx = -1;
         for (uint32_t k = 0; k < fn; k++) if (fromx[k] == cp) { idx = (int)k; break; }
         bool match = neg ? (idx < 0) : (idx >= 0);
-        if (!match) { memcpy(buf + sz, korb_strbuf_data(s->buf) + i, cl); sz += cl; i += cl; continue; }   /* pass through verbatim */
+        if (!match) { memcpy(buf + sz, korb_str_ptr(s) + i, cl); sz += cl; i += cl; continue; }   /* pass through verbatim */
         i += cl;
         if (tn == 0) continue;                              /* delete */
         const uint32_t out_cp = neg ? tox[tn - 1] : tox[(uint32_t)idx < tn ? (uint32_t)idx : tn - 1];
@@ -2239,22 +2239,22 @@ static RESULT korb_m_str_tr_s(CTX *c, korb_value *slots, korb_ref self, korb_sli
     const KorbString *fs = VAL2STR(fv), *ts = VAL2STR(tv);
     const bool bytes = KORB_ENC_SB(c->vm, KORB_STR_ENC(KORB_REF_GET(self)));   /* binary / Latin-1: tr works on bytes */
     { uint32_t rlo, rhi;
-      if (UNLIKELY(korb_charset_bad_range_cp(korb_strbuf_data(fs->buf), fs->len, &rlo, &rhi, bytes) || korb_charset_bad_range_cp(korb_strbuf_data(ts->buf), ts->len, &rlo, &rhi, bytes)))
+      if (UNLIKELY(korb_charset_bad_range_cp(korb_str_ptr(fs), fs->len, &rlo, &rhi, bytes) || korb_charset_bad_range_cp(korb_str_ptr(ts), ts->len, &rlo, &rhi, bytes)))
           return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid range in string transliteration"); }
-    bool neg = fs->len > 1 && korb_strbuf_data(fs->buf)[0] == '^';   /* a lone "^" is the literal char, not a complement */
+    bool neg = fs->len > 1 && korb_str_ptr(fs)[0] == '^';   /* a lone "^" is the literal char, not a complement */
     uint32_t fromx[1024], tox[1024];
-    uint32_t fn = korb_tr_expand_cp(korb_strbuf_data(fs->buf) + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 1024, bytes);
-    uint32_t tn = korb_tr_expand_cp(korb_strbuf_data(ts->buf), ts->len, tox, 1024, bytes);
+    uint32_t fn = korb_tr_expand_cp(korb_str_ptr(fs) + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 1024, bytes);
+    uint32_t tn = korb_tr_expand_cp(korb_str_ptr(ts), ts->len, tox, 1024, bytes);
     char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
     if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
     const KorbString *s = VAL2STR(KORB_REF_GET(self));      /* no GC during the scan */
     bool prev_tr = false; int64_t prev_out = -1;
     for (uint32_t i = 0; i < s->len; ) {
-        uint32_t cl; const uint32_t cp = korb_str_dec1(korb_strbuf_data(s->buf) + i, s->len - i, &cl, bytes);
+        uint32_t cl; const uint32_t cp = korb_str_dec1(korb_str_ptr(s) + i, s->len - i, &cl, bytes);
         int idx = -1;
         for (uint32_t k = 0; k < fn; k++) if (fromx[k] == cp) { idx = (int)k; break; }
         bool match = neg ? (idx < 0) : (idx >= 0);
-        if (!match) { fwrite(korb_strbuf_data(s->buf) + i, 1, cl, ms); i += cl; prev_tr = false; prev_out = -1; continue; }
+        if (!match) { fwrite(korb_str_ptr(s) + i, 1, cl, ms); i += cl; prev_tr = false; prev_out = -1; continue; }
         i += cl;
         if (tn == 0) { prev_tr = false; prev_out = -1; continue; }   /* delete */
         const uint32_t outc = neg ? tox[tn - 1] : tox[(uint32_t)idx < tn ? (uint32_t)idx : tn - 1];
@@ -2318,9 +2318,9 @@ static RESULT korb_str_gsub_into(CTX *c, korb_value *slots, korb_ref self, korb_
     }
     if (block != NULL && KORB_SLICE_LEN(a) < 2) {    /* gsub(pat) { |match| ... } — block yields (a replacement arg wins over a block) */
         const KorbString *ps = VAL2STR(pv);
-        const uint32_t pn = ps->len; char *const pat = malloc(pn ? pn : 1); memcpy(pat, korb_strbuf_data(ps->buf), pn);
+        const uint32_t pn = ps->len; char *const pat = malloc(pn ? pn : 1); memcpy(pat, korb_str_ptr(ps), pn);
         const KorbString *s0 = VAL2STR(KORB_REF_GET(self));
-        const uint32_t sn = s0->len; char *const src = malloc(sn ? sn : 1); memcpy(src, korb_strbuf_data(s0->buf), sn);  /* stable across block GC */
+        const uint32_t sn = s0->len; char *const src = malloc(sn ? sn : 1); memcpy(src, korb_str_ptr(s0), sn);  /* stable across block GC */
         char *buf = NULL; size_t sz = 0; FILE *ms = open_memstream(&buf, &sz);
         uint32_t i = 0; bool replaced = false;
         while (i < sn || (pn == 0 && i == sn && (global || !replaced))) {
@@ -2334,7 +2334,7 @@ static RESULT korb_str_gsub_into(CTX *c, korb_value *slots, korb_ref self, korb_
                 RESULT yr = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
                 if (UNLIKELY(yr.state != KORB_NORMAL)) { free(pat); free(src); fclose(ms); free(buf); return yr; }
                 slots[0] = yr.value;
-                if (KORB_STRING_P(slots[0])) { const KorbString *r = VAL2STR(slots[0]); fwrite(korb_strbuf_data(r->buf), 1, r->len, ms); }
+                if (KORB_STRING_P(slots[0])) { const KorbString *r = VAL2STR(slots[0]); fwrite(korb_str_ptr(r), 1, r->len, ms); }
                 else korb_fprint_to_s(c, ms, slots[0]);
                 replaced = true;
                 if (pn == 0) { if (i < sn) fputc(src[i], ms); i++; }   /* empty match: still advance one char */
@@ -2351,7 +2351,7 @@ static RESULT korb_str_gsub_into(CTX *c, korb_value *slots, korb_ref self, korb_
         slots[0] = nr.value;
         const KorbString *res = VAL2STR(slots[0]); const uint32_t w = res->len;
         KorbString *s2 = korb_str_ensure(c, slots + 1, self, w); res = VAL2STR(slots[0]);
-        memcpy(korb_strbuf_data(s2->buf), korb_strbuf_data(res->buf), w); s2->len = w; korb_strbuf_data(s2->buf)[w] = '\0';
+        memcpy(korb_str_ptr(s2), korb_str_ptr(res), w); s2->len = w; korb_str_ptr(s2)[w] = '\0';
         return RESULT_OK(replaced ? KORB_REF_GET(self) : KORB_NIL);
     }
     if (UNLIKELY(KORB_SLICE_LEN(a) < 2))
@@ -2367,11 +2367,11 @@ static RESULT korb_str_gsub_into(CTX *c, korb_value *slots, korb_ref self, korb_
     }
     /* snapshot pattern + replacement bytes into stable C buffers (survive grows) */
     const KorbString *ps = VAL2STR(pv);
-    uint32_t pn = ps->len; char *pat = malloc(pn ? pn : 1); memcpy(pat, korb_strbuf_data(ps->buf), pn);
+    uint32_t pn = ps->len; char *pat = malloc(pn ? pn : 1); memcpy(pat, korb_str_ptr(ps), pn);
     char *rep; uint32_t rn; bool rep_backref = false;
     if (KORB_STRING_P(rv)) {
         const KorbString *rs = VAL2STR(rv);
-        rn = rs->len; rep = malloc(rn ? rn : 1); memcpy(rep, korb_strbuf_data(rs->buf), rn);
+        rn = rs->len; rep = malloc(rn ? rn : 1); memcpy(rep, korb_str_ptr(rs), rn);
         rep_backref = memchr(rep, '\\', rn) != NULL;  /* expand \0/\&/\`/\'/\\ per match (CRuby does this for String patterns too) */
     } else if (KORB_HASH_P(rv)) {                     /* hash: matched substring → hash[match].to_s ("" if absent) */
         int32_t idx = korb_hash_find(VAL2HASH(rv), pv);   /* literal pattern → key is the whole match */
@@ -2393,15 +2393,15 @@ static RESULT korb_str_gsub_into(CTX *c, korb_value *slots, korb_ref self, korb_
     uint32_t i = 0, sn = s->len; bool replaced = false;
     while (i < sn || (pn == 0 && i == sn && (global || !replaced))) {
         const bool hit = pn == 0 ? (global || !replaced)
-                                 : (i + pn <= sn && memcmp(korb_strbuf_data(s->buf) + i, pat, pn) == 0 && (global || !replaced));
+                                 : (i + pn <= sn && memcmp(korb_str_ptr(s) + i, pat, pn) == 0 && (global || !replaced));
         if (hit) {
-            if (rep_backref) korb_str_gsub_emit(ms, rep, rn, korb_strbuf_data(s->buf), i, i + pn, sn);
+            if (rep_backref) korb_str_gsub_emit(ms, rep, rn, korb_str_ptr(s), i, i + pn, sn);
             else fwrite(rep, 1, rn, ms);
             replaced = true;
-            if (pn == 0) { if (i < sn) fputc(korb_strbuf_data(s->buf)[i], ms); i++; }   /* empty match: emit the replacement then advance a char */
+            if (pn == 0) { if (i < sn) fputc(korb_str_ptr(s)[i], ms); i++; }   /* empty match: emit the replacement then advance a char */
             else i += pn;
         } else {
-            if (i < sn) fputc(korb_strbuf_data(s->buf)[i], ms);
+            if (i < sn) fputc(korb_str_ptr(s)[i], ms);
             i++;
         }
     }
@@ -2416,8 +2416,8 @@ static RESULT korb_str_gsub_into(CTX *c, korb_value *slots, korb_ref self, korb_
     uint32_t w = res->len;
     KorbString *s2 = korb_str_ensure(c, slots + 1, self, w);
     res = VAL2STR(slots[0]);
-    memcpy(korb_strbuf_data(s2->buf), korb_strbuf_data(res->buf), w);
-    s2->len = w; korb_strbuf_data(s2->buf)[w] = '\0';
+    memcpy(korb_str_ptr(s2), korb_str_ptr(res), w);
+    s2->len = w; korb_str_ptr(s2)[w] = '\0';
     return RESULT_OK(replaced ? KORB_REF_GET(self) : KORB_NIL);
 }
 static RESULT korb_m_str_gsub(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself)   { return korb_str_gsub_into(c, slots, self, a, true, false, block, def_env, cself); }
@@ -2430,7 +2430,7 @@ static RESULT korb_m_str_ascii_only(CTX *c, korb_value *slots, korb_ref self, ko
     if (!korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(KORB_REF_GET(self)))) return RESULT_OK(KORB_FALSE);
     const KorbString *s = VAL2STR(KORB_REF_GET(self));
     for (uint32_t i = 0; i < s->len; i++)
-        if ((unsigned char)korb_strbuf_data(s->buf)[i] >= 0x80) return RESULT_OK(KORB_FALSE);
+        if ((unsigned char)korb_str_ptr(s)[i] >= 0x80) return RESULT_OK(KORB_FALSE);
     return RESULT_OK(KORB_TRUE);
 }
 /* partition/rpartition with a Regexp separator: first (or last) match wins;
@@ -2447,7 +2447,7 @@ static RESULT korb_str_partition_re(CTX *c, korb_value *slots, korb_ref self, ko
         if (!reverse) break;
         const KorbString *const s = VAL2STR(KORB_REF_GET(self));   /* one char on: later overlapping matches must win */
         start = (size_t)m.starts[0] + ((size_t)m.starts[0] < s->len
-              ? korb_str_char_bytes(c->vm, KORB_STR_ENC(KORB_REF_GET(self)), (const unsigned char *)korb_strbuf_data(s->buf), (uint32_t)m.starts[0], s->len) : 1);
+              ? korb_str_char_bytes(c->vm, KORB_STR_ENC(KORB_REF_GET(self)), (const unsigned char *)korb_str_ptr(s), (uint32_t)m.starts[0], s->len) : 1);
         if (start > s->len) break;
     }
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 3));
@@ -2494,7 +2494,7 @@ static RESULT korb_m_str_rpartition(CTX *c, korb_value *slots, korb_ref self, ko
     int32_t at = -1;
     if (sep->len == 0) at = (int32_t)s->len;
     else for (int32_t i = (int32_t)s->len - (int32_t)sep->len; i >= 0; i--)
-        if (memcmp(korb_strbuf_data(s->buf) + i, korb_strbuf_data(sep->buf), sep->len) == 0) { at = i; break; }
+        if (memcmp(korb_str_ptr(s) + i, korb_str_ptr(sep), sep->len) == 0) { at = i; break; }
     uint32_t pre_e, post_s;
     if (at < 0) { pre_e = 0; post_s = 0; }            /* not found → ["","",self] */
     else { pre_e = (uint32_t)at; post_s = (uint32_t)at + sep->len; }
@@ -2530,7 +2530,7 @@ static RESULT korb_m_str_partition(CTX *c, korb_value *slots, korb_ref self, kor
     }
     slots[0] = sv;                                     /* the (possibly coerced) separator, kept for the result */
     const KorbString *s = VAL2STR(KORB_REF_GET(self)), *sep = VAL2STR(slots[0]);
-    int32_t at = (s->len >= sep->len) ? korb_byte_find(korb_strbuf_data(s->buf), s->len, korb_strbuf_data(sep->buf), sep->len) : -1;
+    int32_t at = (s->len >= sep->len) ? korb_byte_find(korb_str_ptr(s), s->len, korb_str_ptr(sep), sep->len) : -1;
     uint32_t post_s = (at < 0) ? 0 : (uint32_t)at + sep->len;   /* before any alloc (sep moves under moving GC) */
     slots[1] = UNWRAP(korb_ary_new(c, slots + 1, 3));
     korb_ref dst = KORB_REF_AT(&slots[1]);
@@ -2553,7 +2553,7 @@ static RESULT korb_m_str_to_f(CTX *c, korb_value *slots, korb_ref self, korb_sli
     (void)a;
     CHECK(korb_str_need_ascii_compat(c, slots, KORB_REF_GET(self)));
     const KorbString *const s = VAL2STR(KORB_REF_GET(self));
-    const char *const d = korb_strbuf_data(s->buf);
+    const char *const d = korb_str_ptr(s);
     const uint32_t len = s->len;
     char buf[320]; uint32_t j = 0, i = 0;
     #define KORB_DIG(ch) ((ch) >= '0' && (ch) <= '9')
@@ -2601,7 +2601,7 @@ static RESULT korb_m_str_count(CTX *c, korb_value *slots, korb_ref self, korb_sl
     korb_sword_t cnt = 0;
     const bool bytes = KORB_ENC_SB(c->vm, KORB_STR_ENC(KORB_REF_GET(self)));
     for (uint32_t i = 0; i < s->len; ) {                  /* iterate by character */
-        uint32_t cl; const uint32_t cp = korb_str_dec1(korb_strbuf_data(s->buf) + i, s->len - i, &cl, bytes);
+        uint32_t cl; const uint32_t cp = korb_str_dec1(korb_str_ptr(s) + i, s->len - i, &cl, bytes);
         if (korb_str_sets_match_cp(a, cp, bytes)) cnt++;
         i += cl ? cl : 1;
     }
@@ -2620,7 +2620,7 @@ static RESULT korb_m_str_sum(CTX *c, korb_value *slots, korb_ref self, korb_slic
     }
     const KorbString *s = VAL2STR(KORB_REF_GET(self));        /* re-read: the coercion may have moved self */
     korb_sword_t sum = 0;
-    for (uint32_t i = 0; i < s->len; i++) sum += (unsigned char)korb_strbuf_data(s->buf)[i];
+    for (uint32_t i = 0; i < s->len; i++) sum += (unsigned char)korb_str_ptr(s)[i];
     if (bits > 0 && bits < 64) sum &= ((korb_sword_t)1 << bits) - 1;
     return RESULT_OK(LONG2FIX(sum));
 }
@@ -2639,22 +2639,22 @@ static RESULT korb_str_squeeze_into(CTX *c, korb_value *slots, korb_ref self, ko
     uint32_t w = 0; int64_t prev = -1;
     const bool bytes = KORB_ENC_SB(c->vm, KORB_STR_ENC(KORB_REF_GET(self)));
     for (uint32_t i = 0; i < n; ) {                        /* iterate by character */
-        uint32_t cl; const uint32_t cp = korb_str_dec1(korb_strbuf_data(s->buf) + i, n - i, &cl, bytes);
+        uint32_t cl; const uint32_t cp = korb_str_dec1(korb_str_ptr(s) + i, n - i, &cl, bytes);
         if (cl == 0) cl = 1;
         bool squeezable = !has_set || korb_str_sets_match_cp(a, cp, bytes);
-        if (!(squeezable && (int64_t)cp == prev)) { memcpy(korb_strbuf_data(r->buf) + w, korb_strbuf_data(s->buf) + i, cl); w += cl; }
+        if (!(squeezable && (int64_t)cp == prev)) { memcpy(korb_str_ptr(r) + w, korb_str_ptr(s) + i, cl); w += cl; }
         prev = squeezable ? (int64_t)cp : -1;
         i += cl;
     }
-    r->len = w; korb_strbuf_data(r->buf)[w] = '\0';
+    r->len = w; korb_str_ptr(r)[w] = '\0';
     if (!in_place) { KORB_STR_ENC_SET((korb_value)r, KORB_STR_ENC(KORB_REF_GET(self))); return RESULT_OK((korb_value)r); }
     /* copy back into self */
     slots[0] = (korb_value)r;
     bool changed = (w != n);
     KorbString *s2 = korb_str_ensure(c, slots + 1, self, w);
     r = VAL2STR(slots[0]);
-    memcpy(korb_strbuf_data(s2->buf), korb_strbuf_data(r->buf), w);
-    s2->len = w; korb_strbuf_data(s2->buf)[w] = '\0';
+    memcpy(korb_str_ptr(s2), korb_str_ptr(r), w);
+    s2->len = w; korb_str_ptr(s2)[w] = '\0';
     return RESULT_OK(changed ? KORB_REF_GET(self) : KORB_NIL);
 }
 static RESULT korb_m_str_squeeze(CTX *c, korb_value *slots, korb_ref self, korb_slice a)  { return korb_str_squeeze_into(c, slots, self, a, false); }
@@ -2694,7 +2694,7 @@ static RESULT korb_m_str_include(CTX *c, korb_value *slots, korb_ref self, korb_
       if (UNLIKELY(!korb_str_enc_combine(c->vm, KORB_REF_GET(self), sv, &ce)))
           return korb_raise_enc_compat(c, slots, KORB_STR_ENC(KORB_REF_GET(self)), KORB_STR_ENC(sv)); }
     const KorbString *s = VAL2STR(KORB_REF_GET(self)), *n = VAL2STR(sv);
-    return RESULT_OK(korb_byte_find(korb_strbuf_data(s->buf), s->len, korb_strbuf_data(n->buf), n->len) >= 0 ? KORB_TRUE : KORB_FALSE);
+    return RESULT_OK(korb_byte_find(korb_str_ptr(s), s->len, korb_str_ptr(n), n->len) >= 0 ? KORB_TRUE : KORB_FALSE);
 }
 
 static RESULT korb_m_str_start_with(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
@@ -2725,7 +2725,7 @@ static RESULT korb_m_str_start_with(CTX *c, korb_value *slots, korb_ref self, ko
         const KorbString *p = VAL2STR(pv);
         /* the prefix must end on a character boundary of self (CRuby) */
         if (p->len <= s->len && korb_str_char_head_p(c->vm, KORB_REF_GET(self), p->len) &&
-            memcmp(korb_strbuf_data(s->buf), korb_strbuf_data(p->buf), p->len) == 0) return RESULT_OK(KORB_TRUE);
+            memcmp(korb_str_ptr(s), korb_str_ptr(p), p->len) == 0) return RESULT_OK(KORB_TRUE);
     }
     return RESULT_OK(KORB_FALSE);
 }
@@ -2745,7 +2745,7 @@ static RESULT korb_m_str_end_with(CTX *c, korb_value *slots, korb_ref self, korb
         const KorbString *p = VAL2STR(pv);
         /* the suffix must start on a character boundary of self (CRuby) */
         if (p->len <= s->len && korb_str_char_head_p(c->vm, KORB_REF_GET(self), s->len - p->len) &&
-            memcmp(korb_strbuf_data(s->buf) + s->len - p->len, korb_strbuf_data(p->buf), p->len) == 0) return RESULT_OK(KORB_TRUE);
+            memcmp(korb_str_ptr(s) + s->len - p->len, korb_str_ptr(p), p->len) == 0) return RESULT_OK(KORB_TRUE);
     }
     return RESULT_OK(KORB_FALSE);
 }
@@ -2755,13 +2755,13 @@ static RESULT korb_m_str_end_with(CTX *c, korb_value *slots, korb_ref self, korb
  * every 0x80+ byte — String#index on binary data came back short by the number
  * of continuation-looking bytes before the hit (rubyzip's central directory). */
 static uint32_t korb_str_bchars(CTX *c, korb_value v, uint32_t boff) {
-    return korb_enc_charcount(c->vm, KORB_STR_ENC(v), korb_strbuf_data(VAL2STR(v)->buf), boff);
+    return korb_enc_charcount(c->vm, KORB_STR_ENC(v), korb_str_ptr(VAL2STR(v)), boff);
 }
 static uint32_t korb_str_cbyte(CTX *c, korb_value v, korb_sword_t cidx) {
     const KorbString *const s = VAL2STR(v);
     if (cidx < 0) return 0;
     if (cidx >= (korb_sword_t)s->len) return s->len;   /* a char index never exceeds the byte count */
-    return korb_enc_byteoff(c->vm, KORB_STR_ENC(v), korb_strbuf_data(s->buf), s->len, (uint32_t)cidx);
+    return korb_enc_byteoff(c->vm, KORB_STR_ENC(v), korb_str_ptr(s), s->len, (uint32_t)cidx);
 }
 
 static RESULT korb_m_str_index(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
@@ -2810,10 +2810,10 @@ static RESULT korb_m_str_index(CTX *c, korb_value *slots, korb_ref self, korb_sl
       if (UNLIKELY(!korb_str_enc_combine(c->vm, KORB_REF_GET(self), sv, &ce)))
           return korb_raise_enc_compat(c, slots, KORB_STR_ENC(KORB_REF_GET(self)), KORB_STR_ENC(sv)); }
     const KorbString *const s = VAL2STR(KORB_REF_GET(self)), *n = VAL2STR(sv);   /* re-read s after coercion's GC */
-    int32_t b = korb_byte_find(korb_strbuf_data(s->buf) + boff, s->len - boff, korb_strbuf_data(n->buf), n->len);
+    int32_t b = korb_byte_find(korb_str_ptr(s) + boff, s->len - boff, korb_str_ptr(n), n->len);
     while (b >= 0 && UNLIKELY(!korb_str_char_head_p(c->vm, KORB_REF_GET(self), boff + (uint32_t)b))) {   /* a hit inside a character is no hit (UTF-16 "\0>" …) */
         boff += (uint32_t)b + 1;
-        b = korb_byte_find(korb_strbuf_data(s->buf) + boff, s->len - boff, korb_strbuf_data(n->buf), n->len);
+        b = korb_byte_find(korb_str_ptr(s) + boff, s->len - boff, korb_str_ptr(n), n->len);
     }
     if (b < 0) return RESULT_OK(KORB_NIL);
     return RESULT_OK(LONG2FIX(korb_str_bchars(c, KORB_REF_GET(self), boff + (uint32_t)b)));   /* char index */
@@ -2834,7 +2834,7 @@ static RESULT korb_m_str_to_i(CTX *c, korb_value *slots, korb_ref self, korb_sli
         base = (int)b; have_base = true;
     }
     const KorbString *s = VAL2STR(KORB_REF_GET(self));
-    const char *const d = korb_strbuf_data(s->buf); uint32_t i = 0, end = s->len;
+    const char *const d = korb_str_ptr(s); uint32_t i = 0, end = s->len;
     while (i < end && korb_is_ws((unsigned char)d[i])) i++;
     korb_sword_t sign = 1;
     if (i < end && (d[i] == '+' || d[i] == '-')) { if (d[i] == '-') sign = -1; i++; }
@@ -2937,11 +2937,11 @@ static RESULT korb_str_radix_v(CTX *c, korb_value *slots, const char *const s, c
 }
 static RESULT korb_m_str_hex(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a; const KorbString *s = VAL2STR(KORB_REF_GET(self));
-    return korb_str_radix_v(c, slots, korb_strbuf_data(s->buf), s->len, 16, false);
+    return korb_str_radix_v(c, slots, korb_str_ptr(s), s->len, 16, false);
 }
 static RESULT korb_m_str_oct(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a; const KorbString *s = VAL2STR(KORB_REF_GET(self));
-    return korb_str_radix_v(c, slots, korb_strbuf_data(s->buf), s->len, 8, true);
+    return korb_str_radix_v(c, slots, korb_str_ptr(s), s->len, 8, true);
 }
 
 /* String#to_r — lenient parse of [ws][sign]int['/'int | '.'frac]; non-numeric → (0/1). */
@@ -2992,7 +2992,7 @@ static RESULT korb_m_str_to_r(CTX *c, korb_value *slots, korb_ref self, korb_sli
     (void)a;
     CHECK(korb_str_need_ascii_compat(c, slots, KORB_REF_GET(self)));
     const KorbString *s = VAL2STR(KORB_REF_GET(self));
-    const char *const d = korb_strbuf_data(s->buf); const uint32_t len = s->len; uint32_t i = 0;
+    const char *const d = korb_str_ptr(s); const uint32_t len = s->len; uint32_t i = 0;
     while (i < len && isspace((unsigned char)d[i])) i++;
     bool neg = false;
     if (i < len && (d[i] == '+' || d[i] == '-')) { neg = d[i] == '-'; i++; }
@@ -3077,7 +3077,7 @@ static RESULT korb_m_str_to_c(CTX *c, korb_value *slots, korb_ref self, korb_sli
     char sbuf[512];
     slots[0] = LONG2FIX(0); slots[1] = LONG2FIX(0);
     if (len >= sizeof(sbuf)) return korb_cpx_new(c, slots + 2, slots[0], slots[1]);   /* too long for a Complex literal → (0+0i) */
-    memcpy(sbuf, korb_strbuf_data(s->buf), len);
+    memcpy(sbuf, korb_str_ptr(s), len);
     const char *const d = sbuf;
     while (i < len && isspace((unsigned char)d[i])) i++;
     #define IMAG_UNIT(ch) (((ch) | 0x20) == 'i' || ((ch) | 0x20) == 'j')
@@ -3152,12 +3152,12 @@ static RESULT korb_m_str_chomp(CTX *c, korb_value *slots, korb_ref self, korb_sl
         const KorbString *s = VAL2STR(KORB_REF_GET(self));
         uint32_t len = s->len;
         const KorbString *sep = VAL2STR(sv);
-        if (sep->len == 1 && korb_strbuf_data(sep->buf)[0] == '\n') {   /* "\n" = the universal line ending: \r\n, \n, or \r */
+        if (sep->len == 1 && korb_str_ptr(sep)[0] == '\n') {   /* "\n" = the universal line ending: \r\n, \n, or \r */
             len -= korb_str_trailing_nl(c->vm, KORB_REF_GET(self));
         } else if (sep->len == 0) {                   /* "" → strip all trailing \n / \r\n */
-            while (len >= 2 && korb_strbuf_data(s->buf)[len-2] == '\r' && korb_strbuf_data(s->buf)[len-1] == '\n') len -= 2;
-            while (len >= 1 && korb_strbuf_data(s->buf)[len-1] == '\n') len -= 1;
-        } else if (len >= sep->len && memcmp(korb_strbuf_data(s->buf) + len - sep->len, korb_strbuf_data(sep->buf), sep->len) == 0) {
+            while (len >= 2 && korb_str_ptr(s)[len-2] == '\r' && korb_str_ptr(s)[len-1] == '\n') len -= 2;
+            while (len >= 1 && korb_str_ptr(s)[len-1] == '\n') len -= 1;
+        } else if (len >= sep->len && memcmp(korb_str_ptr(s) + len - sep->len, korb_str_ptr(sep), sep->len) == 0) {
             len -= sep->len;                          /* one trailing occurrence */
         }
         return korb_str_slice_new(c, slots + 2, self, 0, len);   /* slots[0]=self, slots[1]=sep may be live */
@@ -3165,14 +3165,14 @@ static RESULT korb_m_str_chomp(CTX *c, korb_value *slots, korb_ref self, korb_sl
     {   /* no arg → $/ (usually "\n"; nil → unchanged copy; custom → that separator) */
         const korb_value rs = korb_const_get(c->vm, korb_intern_lit(c->vm, "$/", 2));
         if (rs == KORB_NIL) return korb_str_slice_new(c, slots, self, 0, VAL2STR(KORB_REF_GET(self))->len);
-        if (KORB_STRING_P(rs) && !(VAL2STR(rs)->len == 1 && korb_strbuf_data(VAL2STR(rs)->buf)[0] == '\n')) {
+        if (KORB_STRING_P(rs) && !(VAL2STR(rs)->len == 1 && korb_str_ptr(VAL2STR(rs))[0] == '\n')) {
             const KorbString *sep = VAL2STR(rs);
             const KorbString *s2 = VAL2STR(KORB_REF_GET(self));
             uint32_t len2 = s2->len;
             if (sep->len == 0) {
-                while (len2 >= 2 && korb_strbuf_data(s2->buf)[len2-2] == '\r' && korb_strbuf_data(s2->buf)[len2-1] == '\n') len2 -= 2;
-                while (len2 >= 1 && korb_strbuf_data(s2->buf)[len2-1] == '\n') len2 -= 1;
-            } else if (len2 >= sep->len && memcmp(korb_strbuf_data(s2->buf) + len2 - sep->len, korb_strbuf_data(sep->buf), sep->len) == 0)
+                while (len2 >= 2 && korb_str_ptr(s2)[len2-2] == '\r' && korb_str_ptr(s2)[len2-1] == '\n') len2 -= 2;
+                while (len2 >= 1 && korb_str_ptr(s2)[len2-1] == '\n') len2 -= 1;
+            } else if (len2 >= sep->len && memcmp(korb_str_ptr(s2) + len2 - sep->len, korb_str_ptr(sep), sep->len) == 0)
                 len2 -= sep->len;
             return korb_str_slice_new(c, slots, self, 0, len2);
         }
@@ -3277,7 +3277,7 @@ static RESULT korb_m_str_split(CTX *c, korb_value *slots, korb_ref self, korb_sl
                 return korb_raise_enc_compat(c, slots, KORB_STR_ENC(KORB_REF_GET(self)), KORB_STR_ENC(sepv));
         }
         const KorbString *sp = VAL2STR(sepv);
-        if (sp->len == 1 && korb_strbuf_data(sp->buf)[0] == ' ') ws = true;   /* " " behaves as whitespace */
+        if (sp->len == 1 && korb_str_ptr(sp)[0] == ' ') ws = true;   /* " " behaves as whitespace */
     }
     korb_ref sepref = {0};
     if (!ws)                                              /* root sep in a slot ($; has no arg slot to live in) */
@@ -3293,7 +3293,7 @@ static RESULT korb_m_str_split(CTX *c, korb_value *slots, korb_ref self, korb_sl
             bool last_field = (limit > 0 && VAL2ARY(KORB_REF_GET(dst))->len == (uint32_t)limit - 1);
             if (last_field) { CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, cpos, s->len - cpos)))); break; }
             uint32_t cl = korb_str_char_bytes(c->vm, KORB_STR_ENC(KORB_REF_GET(self)),
-                                              (const unsigned char *)korb_strbuf_data(s->buf), cpos, s->len);
+                                              (const unsigned char *)korb_str_ptr(s), cpos, s->len);
             if (!cl) cl = 1;                               /* one character (a broken sequence is one byte) */
             CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, cpos, cl))));
             cpos += cl;
@@ -3309,7 +3309,7 @@ static RESULT korb_m_str_split(CTX *c, korb_value *slots, korb_ref self, korb_sl
         bool last_field = (limit > 0 && VAL2ARY(KORB_REF_GET(dst))->len == (uint32_t)limit - 1);
         if (ws) {
             uint32_t ws_start = pos;
-            while (pos < slen && korb_is_ws((unsigned char)korb_strbuf_data(s->buf)[pos])) pos++;
+            while (pos < slen && korb_is_ws((unsigned char)korb_str_ptr(s)[pos])) pos++;
             if (last_field) {   /* positive limit: remainder (incl. any trailing ws) is the last field, even if empty */
                 CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, slen - pos)))); break;
             }
@@ -3319,12 +3319,12 @@ static RESULT korb_m_str_split(CTX *c, korb_value *slots, korb_ref self, korb_sl
                 break;
             }
             uint32_t start = pos;
-            while (pos < slen && !korb_is_ws((unsigned char)korb_strbuf_data(s->buf)[pos])) pos++;
+            while (pos < slen && !korb_is_ws((unsigned char)korb_str_ptr(s)[pos])) pos++;
             CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, start, pos - start))));
         } else {
             const KorbString *sep = VAL2STR(KORB_REF_GET(sepref));
             uint32_t seplen = sep->len;
-            int32_t found = (!last_field && pos <= slen) ? korb_byte_find(korb_strbuf_data(s->buf) + pos, slen - pos, korb_strbuf_data(sep->buf), seplen) : -1;
+            int32_t found = (!last_field && pos <= slen) ? korb_byte_find(korb_str_ptr(s) + pos, slen - pos, korb_str_ptr(sep), seplen) : -1;
             if (found < 0) {
                 CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, slen - pos))));
                 break;
@@ -3348,7 +3348,7 @@ static RESULT korb_m_str_charlen(CTX *c, korb_value *slots, korb_ref self, korb_
     const korb_value v = KORB_REF_GET(self);
     const KorbString *const s = VAL2STR(v);
     const uint32_t enc = KORB_STR_ENC(v);
-    if (LIKELY(enc == KORB_ENC_UTF8)) return RESULT_OK(LONG2FIX((korb_sword_t)korb_utf8_count(korb_strbuf_data(s->buf), s->len)));
+    if (LIKELY(enc == KORB_ENC_UTF8)) return RESULT_OK(LONG2FIX((korb_sword_t)korb_utf8_count(korb_str_ptr(s), s->len)));
     if (KORB_ENC_SB(c->vm, enc)) return RESULT_OK(LONG2FIX((korb_sword_t)s->len));
     /* the ASCII shortcut is only valid for ASCII-compatible encodings: in
      * UTF-16/32 four ASCII-range bytes are one character, not four */
@@ -3356,7 +3356,7 @@ static RESULT korb_m_str_charlen(CTX *c, korb_value *slots, korb_ref self, korb_
         if (korb_str_bytes_ascii(v)) return RESULT_OK(LONG2FIX((korb_sword_t)s->len));
         return korb_str_enc_notimpl(c, slots, v);
     }
-    const unsigned char *const p = (const unsigned char *)korb_strbuf_data(s->buf);
+    const unsigned char *const p = (const unsigned char *)korb_str_ptr(s);
     korb_sword_t n = 0;
     for (uint32_t i = 0; i < s->len; n++) {
         const uint32_t l = korb_str_char_bytes(c->vm, enc, p, i, s->len);
@@ -3378,8 +3378,8 @@ static RESULT korb_m_str_chars(CTX *c, korb_value *slots, korb_ref self, korb_sl
         const KorbString *s = VAL2STR(KORB_REF_GET(self));
         if (pos >= s->len) break;
         uint32_t cl = 1;                                  /* single-byte enc: 1 byte = 1 char */
-        if (other) cl = korb_str_char_bytes(c->vm, enc, (const unsigned char *)korb_strbuf_data(s->buf), pos, s->len);
-        else if (!single) { cl = korb_utf8_seq_len((const unsigned char *)korb_strbuf_data(s->buf), pos, s->len); if (!cl) cl = 1; }
+        if (other) cl = korb_str_char_bytes(c->vm, enc, (const unsigned char *)korb_str_ptr(s), pos, s->len);
+        else if (!single) { cl = korb_utf8_seq_len((const unsigned char *)korb_str_ptr(s), pos, s->len); if (!cl) cl = 1; }
         if (!cl) cl = 1;
         CHECK(korb_ary_push_val(c, slots + 1, dst, UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, cl))));
         pos += cl;
@@ -3456,7 +3456,7 @@ static RESULT korb_m_str_eql(CTX *c, korb_value *slots, korb_ref self, korb_slic
     if (!KORB_STRING_P(o)) return RESULT_OK(KORB_FALSE);
     const korb_value s = KORB_REF_GET(self);
     const KorbString *const x = VAL2STR(s), *const y = VAL2STR(o);
-    if (x->len != y->len || memcmp(korb_strbuf_data(x->buf), korb_strbuf_data(y->buf), x->len) != 0)
+    if (x->len != y->len || memcmp(korb_str_ptr(x), korb_str_ptr(y), x->len) != 0)
         return RESULT_OK(KORB_FALSE);
     return RESULT_OK(korb_str_comparable(c->vm, s, o) ? KORB_TRUE : KORB_FALSE);
 }
@@ -3495,14 +3495,14 @@ static RESULT korb_m_str_aref(CTX *c, korb_value *slots, korb_ref self, korb_sli
     if (UNLIKELY(KORB_ENC_NEEDS_HOOK(c->vm, enc)) && !korb_enc_char_steppable(c->vm, enc)
         && !korb_str_bytes_ascii(KORB_REF_GET(self))) return korb_str_enc_notimpl(c, slots, KORB_REF_GET(self));
     uint32_t ncp_cache = UINT32_MAX;
-    #define BOFF(ci) korb_enc_byteoff(c->vm, enc, korb_strbuf_data(s->buf), s->len, (uint32_t)(ci))
+    #define BOFF(ci) korb_enc_byteoff(c->vm, enc, korb_str_ptr(s), s->len, (uint32_t)(ci))
     /* ncp <= s->len, so a start byte that lands before the last byte is already
      * in range: the O(n) character count stays unread on every in-range read. */
-    #define STEP(off, n) korb_enc_step_fwd(c->vm, enc, korb_strbuf_data(s->buf), s->len, (off), (uint32_t)(n))
+    #define STEP(off, n) korb_enc_step_fwd(c->vm, enc, korb_str_ptr(s), s->len, (off), (uint32_t)(n))
 
     if (KORB_STRING_P(i0)) {                       /* s[substr] → copy of substr if present */
         const KorbString *sub = VAL2STR(i0);
-        if (korb_byte_find(korb_strbuf_data(s->buf), s->len, korb_strbuf_data(sub->buf), sub->len) < 0) return RESULT_OK(KORB_NIL);
+        if (korb_byte_find(korb_str_ptr(s), s->len, korb_str_ptr(sub), sub->len) < 0) return RESULT_OK(KORB_NIL);
         return korb_str_slice_new(c, slots, KORB_SLICE_REF(a, 0), 0, sub->len);
     }
     if (KORB_RANGE_P(i0)) {
@@ -3604,10 +3604,10 @@ static RESULT korb_m_str_each_codepoint(CTX *c, korb_value *slots, korb_ref self
     for (uint32_t pos = 0; ; ) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
-        uint32_t cl = 1, cp = (unsigned char)korb_strbuf_data(s->buf)[pos];
+        uint32_t cl = 1, cp = (unsigned char)korb_str_ptr(s)[pos];
         if (!sb) {                              /* UTF-16/32, EUC-JP, ... as #codepoints does */
-            if (LIKELY(cenc == KORB_ENC_UTF8)) cp = korb_utf8_decode(korb_strbuf_data(s->buf) + pos, s->len - pos, &cl);
-            else cp = korb_enc_codepoint_at(c->vm, cenc, (const unsigned char *)korb_strbuf_data(s->buf), pos, s->len, &cl);
+            if (LIKELY(cenc == KORB_ENC_UTF8)) cp = korb_utf8_decode(korb_str_ptr(s) + pos, s->len - pos, &cl);
+            else cp = korb_enc_codepoint_at(c->vm, cenc, (const unsigned char *)korb_str_ptr(s), pos, s->len, &cl);
         }
         korb_value cv = LONG2FIX(cp);
         RESULT r = korb_block_yield(c, slots, block, def_env, &cv, 1, captured_self);
@@ -3635,7 +3635,7 @@ static RESULT korb_m_str_succ(CTX *c, korb_value *slots, korb_ref self, korb_sli
     const KorbString *s0 = VAL2STR(KORB_REF_GET(self));
     uint32_t n = s0->len;
     if (n == 0) return korb_str_new(c, slots, "", 0);
-    char *buf = malloc(n + 2); memcpy(buf, korb_strbuf_data(s0->buf), n);
+    char *buf = malloc(n + 2); memcpy(buf, korb_str_ptr(s0), n);
     bool has_alnum = false;
     for (uint32_t i = 0; i < n; i++) {
         unsigned char ch = (unsigned char)buf[i];
@@ -3728,7 +3728,7 @@ static RESULT korb_str_bang_from(CTX *c, korb_value *slots, korb_ref self, RESUL
     slots[0] = newr.value;
     const KorbString *ns = VAL2STR(slots[0]), *os = VAL2STR(KORB_REF_GET(self));
     if (nil_if_unchanged && ns->len == os->len &&
-        (ns->len == 0 || memcmp(korb_strbuf_data(ns->buf), korb_strbuf_data(os->buf), ns->len) == 0))
+        (ns->len == 0 || memcmp(korb_str_ptr(ns), korb_str_ptr(os), ns->len) == 0))
         return RESULT_OK(KORB_NIL);
     VAL2STR(KORB_REF_GET(self))->len = 0;
     return korb_str_append_str(c, slots + 1, self, KORB_REF_AT(&slots[0]));
@@ -3744,12 +3744,12 @@ static RESULT korb_m_str_succ_bang(CTX *c, korb_value *slots, korb_ref self, kor
 static bool korb_str_tr_matched(korb_ref self, korb_value fv) {
     if (!KORB_STRING_P(fv)) return false;
     const KorbString *fs = VAL2STR(fv);
-    bool neg = fs->len > 1 && korb_strbuf_data(fs->buf)[0] == '^';   /* a lone "^" is the literal char, not a complement */
+    bool neg = fs->len > 1 && korb_str_ptr(fs)[0] == '^';   /* a lone "^" is the literal char, not a complement */
     unsigned char fromx[512];
-    uint32_t fn = korb_tr_expand(korb_strbuf_data(fs->buf) + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 512);
+    uint32_t fn = korb_tr_expand(korb_str_ptr(fs) + (neg ? 1 : 0), fs->len - (neg ? 1u : 0u), fromx, 512);
     const KorbString *s = VAL2STR(KORB_REF_GET(self));
     for (uint32_t i = 0; i < s->len; i++) {
-        unsigned char ch = (unsigned char)korb_strbuf_data(s->buf)[i];
+        unsigned char ch = (unsigned char)korb_str_ptr(s)[i];
         int idx = -1;
         for (uint32_t k = 0; k < fn; k++) if (fromx[k] == ch) { idx = (int)k; break; }
         if (neg ? (idx < 0) : (idx >= 0)) return true;
@@ -3797,10 +3797,10 @@ static RESULT korb_str_codepoints_impl(CTX *c, korb_value *slots, korb_ref self,
     for (uint32_t pos = 0; ; ) {
         const KorbString *s = VAL2STR(KORB_REF_GET(self));
         if (pos >= s->len) break;
-        uint32_t cl = 1, cp = (unsigned char)korb_strbuf_data(s->buf)[pos];
+        uint32_t cl = 1, cp = (unsigned char)korb_str_ptr(s)[pos];
         if (!sb) {
-            if (LIKELY(cenc == KORB_ENC_UTF8)) cp = korb_utf8_decode(korb_strbuf_data(s->buf) + pos, s->len - pos, &cl);
-            else cp = korb_enc_codepoint_at(c->vm, cenc, (const unsigned char *)korb_strbuf_data(s->buf), pos, s->len, &cl);
+            if (LIKELY(cenc == KORB_ENC_UTF8)) cp = korb_utf8_decode(korb_str_ptr(s) + pos, s->len - pos, &cl);
+            else cp = korb_enc_codepoint_at(c->vm, cenc, (const unsigned char *)korb_str_ptr(s), pos, s->len, &cl);
         }
         CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX(cp)));
         pos += cl;
@@ -3819,7 +3819,7 @@ static RESULT korb_m_str_each_byte(CTX *c, korb_value *slots, korb_ref self, kor
     for (uint32_t pos = 0; ; pos++) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
-        korb_value bv = LONG2FIX((unsigned char)korb_strbuf_data(s->buf)[pos]);
+        korb_value bv = LONG2FIX((unsigned char)korb_str_ptr(s)[pos]);
         RESULT r = korb_block_yield(c, slots, block, def_env, &bv, 1, captured_self);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
@@ -3830,7 +3830,7 @@ static RESULT korb_m_str_bytes(CTX *c, korb_value *slots, korb_ref self, korb_sl
     uint32_t n = SELF_STR->len;
     korb_ref dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n)));
     for (uint32_t i = 0; i < n; i++)                  /* re-read self each push (buf may move) */
-        CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX((unsigned char)korb_strbuf_data(SELF_STR->buf)[i])));
+        CHECK(korb_ary_push_val(c, slots + 1, dst, LONG2FIX((unsigned char)korb_str_ptr(SELF_STR)[i])));
     return RESULT_OK(KORB_REF_GET(dst));
 }
 /* length of the line starting at pos, including the trailing '\n' if present. */
@@ -3841,7 +3841,7 @@ static uint32_t korb_str_line_len(const KorbString *s, uint32_t pos, const char 
     if (seplen == 0) seplen = 1, sep = "\n";   /* treat "" like \n for our purposes */
     uint32_t e = pos;
     while (e < s->len) {
-        if (e + seplen <= s->len && memcmp(korb_strbuf_data(s->buf) + e, sep, seplen) == 0) { e += seplen; break; }
+        if (e + seplen <= s->len && memcmp(korb_str_ptr(s) + e, sep, seplen) == 0) { e += seplen; break; }
         e++;
     }
     return e - pos;
@@ -3852,7 +3852,7 @@ static uint32_t korb_str_line_len(const KorbString *s, uint32_t pos, const char 
  * that run are skipped (advanced past) but not yielded. */
 static uint32_t korb_str_line_span(const KorbString *s, uint32_t pos, const char *sep, uint32_t seplen, bool chomp, bool universal, uint32_t *adv) {
     if (seplen == 0) {                                     /* paragraph mode */
-        const char *const d = korb_strbuf_data(s->buf);
+        const char *const d = korb_str_ptr(s);
         /* a line terminator is "\n" or "\r\n"; a paragraph ends after the
          * SECOND consecutive one, and the rest of the blank run is skipped. */
         #define KORB_TERM_END(k) ((d[(k)] == '\r' && (k) + 1 < s->len && d[(k) + 1] == '\n') ? (k) + 2                                   : (d[(k)] == '\n' ? (k) + 1 : 0))
@@ -3875,9 +3875,9 @@ static uint32_t korb_str_line_span(const KorbString *s, uint32_t pos, const char
     }
     const uint32_t ll = korb_str_line_len(s, pos, sep, seplen);
     *adv = ll;
-    if (chomp && ll >= seplen && memcmp(korb_strbuf_data(s->buf) + pos + ll - seplen, sep, seplen) == 0) {
+    if (chomp && ll >= seplen && memcmp(korb_str_ptr(s) + pos + ll - seplen, sep, seplen) == 0) {
         uint32_t yl = ll - seplen;                         /* with the default separator, chomp strips \r\n as a unit */
-        if (universal && yl > 0 && korb_strbuf_data(s->buf)[pos + yl - 1] == '\r') yl--;
+        if (universal && yl > 0 && korb_str_ptr(s)[pos + yl - 1] == '\r') yl--;
         return yl;
     }
     return ll;
@@ -3886,11 +3886,11 @@ static uint32_t korb_str_line_span(const KorbString *s, uint32_t pos, const char
 ARO_BORROW static const char *korb_line_sep(CTX *c, korb_slice a, uint32_t *seplen) {
     if (KORB_SLICE_LEN(a) >= 1 && KORB_STRING_P(KORB_SLICE_GET(a, 0))) {
         const KorbString *sp = VAL2STR(KORB_SLICE_GET(a, 0));
-        *seplen = sp->len; return korb_strbuf_data(sp->buf);
+        *seplen = sp->len; return korb_str_ptr(sp);
     }
     if (KORB_SLICE_LEN(a) == 0 || KORB_HASH_P(KORB_SLICE_GET(a, 0))) {   /* no explicit sep → $/ */
         const korb_value rs = korb_const_get(c->vm, korb_intern_lit(c->vm, "$/", 2));
-        if (KORB_STRING_P(rs)) { const KorbString *sp = VAL2STR(rs); *seplen = sp->len; return korb_strbuf_data(sp->buf); }
+        if (KORB_STRING_P(rs)) { const KorbString *sp = VAL2STR(rs); *seplen = sp->len; return korb_str_ptr(sp); }
     }
     *seplen = 1; return "\n";
 }
@@ -3943,7 +3943,7 @@ static RESULT korb_line_sep_conv(CTX *c, korb_value *slots, korb_ref self, korb_
     if (UNLIKELY(!KORB_STRING_P(r.value))) return RESULT_OK(KORB_NIL);
     const KorbString *const cs = VAL2STR(r.value);
     *seplen = cs->len < 64 ? cs->len : 63;
-    memcpy(sepbuf, korb_strbuf_data(cs->buf), *seplen);
+    memcpy(sepbuf, korb_str_ptr(cs), *seplen);
     return RESULT_OK(KORB_NIL);
 }
 /* String#lines / #each_line take no limit, unlike IO#each_line */
@@ -4019,8 +4019,8 @@ static RESULT korb_m_str_each_char(CTX *c, korb_value *slots, korb_ref self, kor
     for (;;) {
         const KorbString *s = SELF_STR;
         if (pos >= s->len) break;
-        uint32_t cl = plain ? korb_utf8_seq_len((const unsigned char *)korb_strbuf_data(s->buf), pos, s->len)
-                            : korb_str_char_bytes(c->vm, enc, (const unsigned char *)korb_strbuf_data(s->buf), pos, s->len);
+        uint32_t cl = plain ? korb_utf8_seq_len((const unsigned char *)korb_str_ptr(s), pos, s->len)
+                            : korb_str_char_bytes(c->vm, enc, (const unsigned char *)korb_str_ptr(s), pos, s->len);
         if (!cl) cl = 1;
         slots[0] = UNWRAP(korb_str_slice_new(c, slots, self, pos, cl));   /* root the char */
         RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
@@ -4051,8 +4051,8 @@ static RESULT korb_m_str_upto(CTX *c, korb_value *slots, korb_ref self, korb_sli
     /* single-byte begin AND end → iterate by byte value (CRuby fast path:
      * "9".upto("A") = 9 : ; < = > ? @ A, NOT succ which would carry "9"→"10"). */
     if (VAL2STR(slots[0])->len == 1 && VAL2STR(slots[1])->len == 1) {
-        const int b = (unsigned char)korb_strbuf_data(VAL2STR(slots[0])->buf)[0];
-        const int e = (unsigned char)korb_strbuf_data(VAL2STR(slots[1])->buf)[0];
+        const int b = (unsigned char)korb_str_ptr(VAL2STR(slots[0]))[0];
+        const int e = (unsigned char)korb_str_ptr(VAL2STR(slots[1]))[0];
         for (int ch = b; ch <= e; ch++) {
             if (excl && ch == e) break;
             const char cc = (char)ch;
@@ -4072,14 +4072,14 @@ static RESULT korb_m_str_upto(CTX *c, korb_value *slots, korb_ref self, korb_sli
         const KorbString *const bs = VAL2STR(slots[0]), *const es = VAL2STR(slots[1]);
         bool digits = bs->len > 0 && es->len > 0 && bs->len < 19 && es->len < 19;
         for (uint32_t i = 0; digits && i < bs->len; i++)
-            digits = korb_strbuf_data(bs->buf)[i] >= '0' && korb_strbuf_data(bs->buf)[i] <= '9';
+            digits = korb_str_ptr(bs)[i] >= '0' && korb_str_ptr(bs)[i] <= '9';
         for (uint32_t i = 0; digits && i < es->len; i++)
-            digits = korb_strbuf_data(es->buf)[i] >= '0' && korb_strbuf_data(es->buf)[i] <= '9';
+            digits = korb_str_ptr(es)[i] >= '0' && korb_str_ptr(es)[i] <= '9';
         if (digits) {
             const int width = (int)bs->len;
             long long bi = 0, ei = 0;
-            for (uint32_t i = 0; i < bs->len; i++) bi = bi * 10 + (korb_strbuf_data(bs->buf)[i] - '0');
-            for (uint32_t i = 0; i < es->len; i++) ei = ei * 10 + (korb_strbuf_data(es->buf)[i] - '0');
+            for (uint32_t i = 0; i < bs->len; i++) bi = bi * 10 + (korb_str_ptr(bs)[i] - '0');
+            for (uint32_t i = 0; i < es->len; i++) ei = ei * 10 + (korb_str_ptr(es)[i] - '0');
             for (; bi <= ei; bi++) {
                 if (excl && bi == ei) break;
                 char nbuf[32];
@@ -4140,15 +4140,15 @@ static RESULT korb_m_str_crypt(CTX *c, korb_value *slots, korb_ref self, korb_sl
     const KorbString *key = SELF_STR, *salt = VAL2STR(KORB_SLICE_GET(a, 0));
     /* CRuby rejects a NUL in either operand and a salt shorter than two
      * (non-NUL) characters before calling crypt(3). */
-    if (memchr(korb_strbuf_data(key->buf), '\0', key->len) != NULL)
+    if (memchr(korb_str_ptr(key), '\0', key->len) != NULL)
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string contains null byte");
-    if (salt->len < 2 || memchr(korb_strbuf_data(salt->buf), '\0', 2) != NULL)
+    if (salt->len < 2 || memchr(korb_str_ptr(salt), '\0', 2) != NULL)
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "salt too short (need >=2 bytes)");
     char kb[4096], sb[512];
     if (key->len >= sizeof(kb) || salt->len >= sizeof(sb))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "string too long for crypt");
-    memcpy(kb, korb_strbuf_data(key->buf), key->len); kb[key->len] = '\0';
-    memcpy(sb, korb_strbuf_data(salt->buf), salt->len); sb[salt->len] = '\0';
+    memcpy(kb, korb_str_ptr(key), key->len); kb[key->len] = '\0';
+    memcpy(sb, korb_str_ptr(salt), salt->len); sb[salt->len] = '\0';
     const char *r = crypt(kb, sb);
     if (!r) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid salt");
     return korb_str_new(c, slots, r, (uint32_t)strlen(r));
@@ -4177,7 +4177,7 @@ static RESULT korb_str_graphemes(CTX *c, korb_value *slots, korb_ref self, NODE 
     uint32_t pos = 0;
     while (pos < VAL2STR(KORB_REF_GET(self))->len) {   /* re-read: a block call may move it */
         const KorbString *const s = VAL2STR(KORB_REF_GET(self));
-        const uint32_t gl = korb_utf8_grapheme_len(korb_strbuf_data(s->buf), pos, s->len);
+        const uint32_t gl = korb_utf8_grapheme_len(korb_str_ptr(s), pos, s->len);
         slots[1] = UNWRAP(korb_str_slice_new(c, slots + 1, self, pos, gl));
         if (block) { CHECK(korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, cself)); }
         else       { CHECK(korb_ary_push_val(c, slots + 2, KORB_REF_AT(&slots[0]), slots[1])); }

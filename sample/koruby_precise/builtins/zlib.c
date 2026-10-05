@@ -19,8 +19,8 @@ static RESULT korb_m_zlib_sum(CTX *c, korb_value *slots, korb_slice a, bool adle
         if (UNLIKELY(!KORB_STRING_P(s)))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, s));
         const KorbString *const ks = VAL2STR(s);
-        sum = adler ? adler32(sum, (const Bytef *)korb_strbuf_data(ks->buf), ks->len)
-                    : crc32(sum, (const Bytef *)korb_strbuf_data(ks->buf), ks->len);
+        sum = adler ? adler32(sum, (const Bytef *)korb_str_ptr(ks), ks->len)
+                    : crc32(sum, (const Bytef *)korb_str_ptr(ks), ks->len);
     }
     return RESULT_OK(LONG2FIX((korb_sword_t)(uint32_t)sum));
 }
@@ -40,7 +40,7 @@ static RESULT korb_m_zlib_crc_table(CTX *c, korb_value *slots, korb_ref self, ko
 /* ARO_BORROW: point a stack z_stream's input at a String's movable bytes.  The
  * borrow dies at the next allocation, so the caller finishes zlib (End) first. */
 ARO_BORROW static void korb_z_bind_in(z_stream *const zs, const KorbString *const ks) {
-    zs->next_in  = (Bytef *)korb_strbuf_data(ks->buf);
+    zs->next_in  = (Bytef *)korb_str_ptr(ks);
     zs->avail_in = ks->len;
 }
 
@@ -185,7 +185,7 @@ static RESULT korb_m_zstream_run(CTX *c, korb_value *slots, korb_ref self, korb_
     char *const in = malloc(inlen + 1);
     if (!in) abort();
     if (z->pending_len) memcpy(in, z->pending, z->pending_len);
-    if (ks && ks->len) memcpy(in + z->pending_len, korb_strbuf_data(ks->buf), ks->len);
+    if (ks && ks->len) memcpy(in + z->pending_len, korb_str_ptr(ks), ks->len);
     free(z->pending); z->pending = NULL; z->pending_len = 0;
     z->zs.next_in  = (Bytef *)in;
     z->zs.avail_in = (uInt)inlen;
@@ -287,7 +287,7 @@ static RESULT korb_m_zstream_set_dict(CTX *c, korb_value *slots, korb_ref self, 
     if (UNLIKELY(!KORB_STRING_P(dv)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, dv));
     const KorbString *const ds = VAL2STR(dv);         /* no alloc between here and the zlib call */
-    const Bytef *const d = (const Bytef *)korb_strbuf_data(ds->buf);
+    const Bytef *const d = (const Bytef *)korb_str_ptr(ds);
     const int rc = z->deflating ? deflateSetDictionary(&z->zs, d, ds->len)
                                 : inflateSetDictionary(&z->zs, d, ds->len);
     if (rc != Z_OK) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "zlib set_dictionary failed");

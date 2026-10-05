@@ -2777,7 +2777,7 @@ KORB_SDI_DEFX(GETBYTE, 1, KORB_SDI_KL_STR, 1, {
         const KorbString *const s = VAL2STR(r);
         korb_sword_t x = FIX2LONG(a0);
         if (x < 0) x += (korb_sword_t)s->len;
-        return RESULT_OK((uintptr_t)x < s->len ? LONG2FIX((unsigned char)korb_strbuf_data(s->buf)[x]) : KORB_NIL);
+        return RESULT_OK((uintptr_t)x < s->len ? LONG2FIX((unsigned char)korb_str_ptr(s)[x]) : KORB_NIL);
     }
 })
 KORB_SDI_DEFX(SETBYTE, 2, KORB_SDI_KL_STR, 1, {
@@ -2785,7 +2785,7 @@ KORB_SDI_DEFX(SETBYTE, 2, KORB_SDI_KL_STR, 1, {
         const KorbString *const s = VAL2STR(r);
         korb_sword_t x = FIX2LONG(a0);
         if (x < 0) x += (korb_sword_t)s->len;
-        if ((uintptr_t)x < s->len) { korb_strbuf_data(s->buf)[x] = (char)(FIX2LONG(a1) & 0xFF); return RESULT_OK(a1); }
+        if ((uintptr_t)x < s->len) { korb_str_ptr(s)[x] = (char)(FIX2LONG(a1) & 0xFF); return RESULT_OK(a1); }
     }
 })
 KORB_SDI_DEF(EQUAL_P, 1, { return KORB_SDI_BOOL(r == a0); })
@@ -3377,7 +3377,7 @@ node_undef_dyn(CTX *c, NODE *n, korb_value *slots, korb_value name@child, int32_
     (void)n;
     uint32_t mid;
     if (SYMBOL_P(name)) mid = SYM2ID(name);
-    else if (KORB_STRING_P(name)) mid = korb_intern(c->vm, korb_strbuf_data(VAL2STR(name)->buf), VAL2STR(name)->len);
+    else if (KORB_STRING_P(name)) mid = korb_intern(c->vm, korb_str_ptr(VAL2STR(name)), VAL2STR(name)->len);
     else return korb_raise(c, slots, KORB_E_TYPE, 0, "undef: name must be a Symbol");
     const korb_value cls = UNWRAP(korb_undef_cref(c, slots, slots[self_off], slots[dc_off], cref_name));
     CHECK(korb_undef_one(c, slots, cls, mid));

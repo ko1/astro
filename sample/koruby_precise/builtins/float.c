@@ -119,7 +119,7 @@ static int korb_round_half_v(CTX *c, korb_slice a, uint32_t *npos, korb_value *b
         if (idx >= 0) {
             const korb_value hv = korb_items_data(h->items)[2 * idx + 1];
             const char *nm = SYMBOL_P(hv) ? korb_sym_name(c->vm, SYM2ID(hv))
-                           : (KORB_STRING_P(hv) ? korb_strbuf_data(VAL2STR(hv)->buf) : NULL);
+                           : (KORB_STRING_P(hv) ? korb_str_ptr(VAL2STR(hv)) : NULL);
             if (nm) {
                 if (!strcmp(nm, "even")) return 1;
                 if (!strcmp(nm, "down")) return 2;
@@ -135,7 +135,7 @@ static int korb_round_half(CTX *c, korb_slice a, uint32_t *npos) { korb_value ba
     korb_value _bad; (void)korb_round_half_v((c), (a), (npos), &_bad); \
     if (UNLIKELY(_bad != KORB_NIL)) return korb_raise((c), (slots), KORB_E_ARGUMENT, 0, "invalid rounding mode: %s", \
         SYMBOL_P(_bad) ? korb_sym_name((c)->vm, SYM2ID(_bad))                                  \
-        : (KORB_STRING_P(_bad) ? korb_strbuf_data(VAL2STR(_bad)->buf) : korb_type_name(_bad))); \
+        : (KORB_STRING_P(_bad) ? korb_str_ptr(VAL2STR(_bad)) : korb_type_name(_bad))); \
 } while (0)
 /* CRuby's round_half_up / _down / _even (numeric.c): x * s rounded, then corrected
  * by the decimal the result stands for, so 1.005.round(2) is 1.01 and a value just

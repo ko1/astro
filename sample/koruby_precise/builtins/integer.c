@@ -115,7 +115,7 @@ static RESULT korb_m_int_chr(CTX *c, korb_value *slots, korb_ref self, korb_slic
         }
         if (nr.state == KORB_NORMAL && KORB_STRING_P(nr.value)) {
             const KorbString *nm = VAL2STR(nr.value);
-            #define ENC_IS(lit) (nm->len == sizeof(lit) - 1 && memcmp(korb_strbuf_data(nm->buf), lit, nm->len) == 0)
+            #define ENC_IS(lit) (nm->len == sizeof(lit) - 1 && memcmp(korb_str_ptr(nm), lit, nm->len) == 0)
             if (ENC_IS("UTF-8")) kind = 2;
             else if (ENC_IS("US-ASCII") || ENC_IS("ASCII")) kind = 1;
             else if (ENC_IS("ASCII-8BIT") || ENC_IS("BINARY")) kind = 0;
@@ -124,7 +124,7 @@ static RESULT korb_m_int_chr(CTX *c, korb_value *slots, korb_ref self, korb_slic
             {   /* the result carries the requested encoding verbatim */
                 char eb[64]; uint32_t el = nm->len;
                 if (el >= sizeof eb) el = sizeof eb - 1;
-                memcpy(eb, korb_strbuf_data(nm->buf), el); eb[el] = '\0';
+                memcpy(eb, korb_str_ptr(nm), el); eb[el] = '\0';
                 want_enc = korb_enc_index_pub(c->vm, eb);
             }
         }

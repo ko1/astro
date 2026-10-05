@@ -35,7 +35,7 @@ static bool korb_parse_tz_offset(korb_value v, korb_sword_t *out, bool *utcish) 
     if (KORB_FLOAT_P(v)) { *out = (korb_sword_t)korb_float_val(v); return true; }
     if (KORB_STRING_P(v)) {
         const KorbString *const s = VAL2STR(v);
-        const char *const p = korb_strbuf_data(s->buf); const uint32_t n = s->len;
+        const char *const p = korb_str_ptr(s); const uint32_t n = s->len;
         if ((n == 1 && p[0] == 'Z') || (n == 3 && !strncasecmp(p, "UTC", 3))) { *out = 0; if (utcish) *utcish = true; return true; }
         if (n == 1) {   /* military zone letters: A..I = +1..+9, K..M = +10..+12,
                          * N..Y = -1..-12 (J is deliberately unassigned) */
@@ -567,7 +567,7 @@ static RESULT korb_m_time_at(CTX *c, korb_value *slots, korb_ref self, korb_slic
             /* CRuby only accepts a Symbol here — no #to_sym / String coercion */
             if (UNLIKELY(!SYMBOL_P(u)))
                 return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "unexpected unit: %s",
-                                  KORB_STRING_P(u) ? korb_strbuf_data(VAL2STR(u)->buf) : korb_type_name(u));
+                                  KORB_STRING_P(u) ? korb_str_ptr(VAL2STR(u)) : korb_type_name(u));
             const char *un = korb_sym_name(c->vm, SYM2ID(u));
             if (!strcmp(un, "millisecond")) { per_ns = 1e6; per_ns_i = 1000000; }
             else if (!strcmp(un, "microsecond") || !strcmp(un, "usec")) { per_ns = 1000.0; per_ns_i = 1000; }
@@ -606,7 +606,7 @@ static RESULT korb_time_str_comp(CTX *c, korb_value *slots, korb_value str, bool
     static const char *const mon[12] = { "jan","feb","mar","apr","may","jun",
                                          "jul","aug","sep","oct","nov","dec" };
     const KorbString *const cs = VAL2STR(str);
-    const char *const s = korb_strbuf_data(cs->buf);
+    const char *const s = korb_str_ptr(cs);
     if (is_month && cs->len == 3) {
         char lo[3];
         for (int k = 0; k < 3; k++) lo[k] = (char)tolower((unsigned char)s[k]);
@@ -876,7 +876,7 @@ static RESULT korb_m_time_new(CTX *c, korb_value *slots, korb_ref self, korb_sli
         korb_sword_t comp[6]; long nsec; uint32_t zs, zl; char emsg[256];
         {
             const KorbString *const str = VAL2STR(slots[4]);
-            const int pr = korb_time_iso_parse(korb_strbuf_data(str->buf), str->len, comp, &nsec,
+            const int pr = korb_time_iso_parse(korb_str_ptr(str), str->len, comp, &nsec,
                                                &zs, &zl, prec, emsg, sizeof emsg);
             if (pr == 1) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no time information");
             if (pr != 0) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "%s", emsg);
@@ -904,7 +904,7 @@ static RESULT korb_m_time_new(CTX *c, korb_value *slots, korb_ref self, korb_sli
         /* digits past the nanosecond: the exact remainder (0.123456789876 → subsec 30864197469/250000000000);
          * read before korb_time_make_ns, whose scratch covers slots[4] */
         int64_t rn = 0, rd = 1;
-        korb_time_str_subns(korb_strbuf_data(VAL2STR(slots[4])->buf), VAL2STR(slots[4])->len, prec, &rn, &rd);
+        korb_time_str_subns(korb_str_ptr(VAL2STR(slots[4])), VAL2STR(slots[4])->len, prec, &rn, &rd);
         slots[2] = UNWRAP(korb_time_make_ns(c, slots + 2, KORB_REF_GET(self), e, nsec, utcish));
         CHECK(korb_time_set_subns(c, slots + 3, KORB_REF_AT(&slots[2]), rn, rd));
         if (eff_has) return korb_time_set_zone(c, slots + 3, KORB_REF_AT(&slots[2]), eff_off,
@@ -1335,7 +1335,7 @@ static RESULT korb_m_time_strftime(CTX *c, korb_value *slots, korb_ref self, kor
         return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into String");
     char fmt[512]; uint32_t fl = VAL2STR(KORB_SLICE_GET(a, 0))->len;
     if (fl >= sizeof fmt) fl = sizeof fmt - 1;
-    memcpy(fmt, korb_strbuf_data(VAL2STR(KORB_SLICE_GET(a, 0))->buf), fl); fmt[fl] = 0;   /* copy off the movable source */
+    memcpy(fmt, korb_str_ptr(VAL2STR(KORB_SLICE_GET(a, 0))), fl); fmt[fl] = 0;   /* copy off the movable source */
     struct tm tm; korb_time_tm(c, KORB_REF_GET(self), &tm);
     const bool is_utc = korb_time_is_utc(c, KORB_REF_GET(self));
     if (is_utc) tm.tm_zone = "UTC";                          /* CRuby reports "UTC" (%Z), not libc's "GMT" */
@@ -1356,7 +1356,7 @@ static RESULT korb_m_time_strftime(CTX *c, korb_value *slots, korb_ref self, kor
         if (KORB_STRING_P(slots[0])) {
             uint32_t zl = VAL2STR(slots[0])->len;
             if (zl >= sizeof zbuf) zl = sizeof zbuf - 1;
-            memcpy(zbuf, korb_strbuf_data(VAL2STR(slots[0])->buf), zl); zbuf[zl] = 0;
+            memcpy(zbuf, korb_str_ptr(VAL2STR(slots[0])), zl); zbuf[zl] = 0;
             has_zname = true;
         }
     }
