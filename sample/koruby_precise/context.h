@@ -1500,7 +1500,6 @@ struct korb_vm {
     uint32_t mid_send, mid___send__, mid_public_send, mid_new, mid_yield, mid_initialize, mid_eqq;
     uint32_t mid_include, mid_prepend, mid_ruby2_keywords;   /* korb_call_impl's class-body / main forms */
     uint64_t mro_serial;     /* bumped when any MRO may change: validates KorbClass.mro_c (the GC forwards a current one) */
-    uint64_t cvar_serial;    /* bumped when a class variable is defined / removed anywhere: validates node_cvar_get's cache */
     uint64_t gc_serial_bumps;   /* how many method_serial bumps were GCs: method_serial - this changes only on a def / undef / include ... */
     korb_value utf8_ok[8];   /* frozen (not chilled) Strings already found valid UTF-8, by address;
                               * cleared at every GC (addresses move / get reused) */
@@ -1665,6 +1664,10 @@ struct korb_vm {
     /* the last UTF-16/32 regexp subject decoded to UTF-8 (regexp.c); last so no offset moves */
     void *re_wide_cache;
     struct korb_cext_vm *cext;   /* C-extension handle table (builtins/cext.c), NULL until one loads */
+    /* bumped when a class variable is defined / removed anywhere: validates node_cvar_get's cache.
+     * Last so no offset moves: inserted after mro_serial it shifted the fields below by 8 bytes
+     * and optcarrot AOT took +4% cycles at the same instruction count. */
+    uint64_t cvar_serial;
 };
 
 /* builtins/cext.c — reached from the AROH_* hooks, i.e. from the GC backends' TUs */
