@@ -996,7 +996,7 @@ node_caseeq(CTX *c, NODE *n, korb_value *slots, korb_ref wv@child, korb_value su
         if (KORB_OBJ_TYPE(w) == KORB_OBJ_CLASS && korb_caseeq_class_cached(c, w, subj, ic, &dr)) return dr;   /* `when String` */
         slots[0] = w; slots[1] = subj;   /* a builtin === (Module / Range / Regexp) through this site's cache */
         if (korb_deopt_cfunc_cached_any(c, slots + 2, c->vm->mid_eqq, 0, 1, ic, &dr)) return dr;
-        return korb_send(c, slots + 2, c->vm->mid_eqq, 0, 1);
+        return korb_send1_ic(c, slots + 2, c->vm->mid_eqq, 0, ic);   /* a user #=== */
       }
     }
 }

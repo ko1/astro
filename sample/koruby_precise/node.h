@@ -454,6 +454,13 @@ bool korb_deopt_cfunc_cached(CTX *c, korb_value *slots, uint32_t mid, uint32_t l
                              struct korb_inlcache *ic, RESULT *out);   /* node_aref / node_aset deopt on String/Array/Hash */
 bool korb_deopt_cfunc_cached_any(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
                                  struct korb_inlcache *ic, RESULT *out);   /* the same for any receiver (node_caseeq) */
+/* A one-argument operator deopt (`==` / `!=` / `===` on a user object) through the node's cache */
+static inline RESULT korb_send1_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, struct korb_inlcache *ic)
+{
+    RESULT dr;
+    if (korb_deopt_send_ic(c, slots, mid, line, 1, ic, &dr)) return dr;
+    return korb_send(c, slots, mid, 0, 1);
+}
 RESULT korb_send_blk(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,   /* flink: the site's baked link (0 = staged by the node) */
                      uint32_t argc, NODE *block, korb_value *def_env, korb_value *captured_self, korb_value flink,
                      korb_value caller_self);   /* caller_self: the private/protected guard (KORB_UNDEF = none) */
