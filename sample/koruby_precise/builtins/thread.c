@@ -124,6 +124,7 @@ korb_blop_cancel(struct korb_vm *vm, struct korb_blop *b, int neg_errno)
 static int
 korb_blop_expire(struct korb_vm *vm)
 {
+    if (vm->blop_pending == NULL) return 0;   /* nothing waiting: no clock read per pump (railsbench: 17k per iteration) */
     struct timespec now; korb_blop_now(&now);
     int posted = 0;
     for (struct korb_blop *b = vm->blop_pending, *nx; b; b = nx) {

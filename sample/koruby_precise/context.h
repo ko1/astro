@@ -1459,6 +1459,9 @@ struct korb_vm {
     uint32_t sig_caught;               /* bit s: reaped (during a sleep / from another thread), for the main thread to deliver */
     sigset_t sigmask;                  /* the blocked set: swapcontext restores a stale one, so resumers re-apply it */
     uint32_t sigmask_gen;              /* bumped whenever sigmask changes */
+    bool     sig_blocked_any;          /* a deliverable signal has been blocked (ever): until then none can be pending to reap */
+    bool     sig_reap_force;           /* korb_kill_self's own short block: reap even though sigmask says none */
+    int32_t  pid_cache;                /* Process.pid (0 = not read yet); a child running Ruby re-reads it (korb_fork_child_threads) */
     uint8_t thread_aoe_global;         /* Thread.abort_on_exception (class-level) */
     uint8_t thread_roe_off;            /* !Thread.report_on_exception (class-level; zero = CRuby's default true) */
 

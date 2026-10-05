@@ -90,6 +90,9 @@ static const int korb_sig_armed_default[] = { SIGHUP, SIGINT, SIGQUIT, SIGTERM, 
 static void korb_sigmask_sync(struct korb_vm *vm) {
     (void)pthread_sigmask(SIG_SETMASK, NULL, &vm->sigmask);
     vm->sigmask_gen++;
+    /* sticky: a fiber / thread switched out under an older mask can come back blocking one */
+    for (size_t i = 0; i < sizeof korb_sig_deliverable / sizeof korb_sig_deliverable[0] && !vm->sig_blocked_any; i++)
+        if (sigismember(&vm->sigmask, korb_sig_deliverable[i])) vm->sig_blocked_any = true;
 }
 
 static void korb_signal_arm_init(struct korb_vm *vm) {
@@ -232,7 +235,9 @@ static RESULT korb_kill_self(CTX *c, korb_value *slots, int sig) {
     }
     const int r = kill(getpid(), sig);
     const int e = errno;
+    c->vm->sig_reap_force = true;
     RESULT d = (r == 0) ? korb_signal_deliver(c, slots) : RESULT_OK(KORB_NIL);
+    c->vm->sig_reap_force = false;
     (void)pthread_sigmask(SIG_SETMASK, &old, NULL);               /* restore before propagating a raise */
     if (r != 0) return korb_raise_errno(c, slots, e, "kill", "");
     return d;
@@ -247,7 +252,9 @@ RESULT korb_signal_deliver(CTX *c, korb_value *slots) {
     if (UNLIKELY(c->vm->sig_caught != 0)) {
         sig = __builtin_ctz(c->vm->sig_caught);
         c->vm->sig_caught &= ~(1u << sig);
-    } else sig = korb_signal_reap();
+    } else if (c->vm->sig_blocked_any || c->vm->sig_reap_force) {
+        sig = korb_signal_reap();   /* nothing blocked = nothing can be pending: no sigtimedwait per check point */
+    }
     if (LIKELY(sig == 0)) return RESULT_OK(KORB_NIL);
     struct sigaction sa;   /* Linux queues an ignored signal while it is blocked (nohup's HUP to $$) */
     if (sigaction(sig, NULL, &sa) == 0 && sa.sa_handler == SIG_IGN) return RESULT_OK(KORB_NIL);
@@ -1666,9 +1673,11 @@ static RESULT korb_m_process_setsid(CTX *c, korb_value *slots, korb_ref self, ko
     return RESULT_OK(LONG2FIX(s));
 }
 /* Process.pid must re-read: $$ is captured at boot and is stale after fork. */
+/* cached like CRuby's: AR's pool asks every request, and getpid(2) is a syscall */
 static RESULT korb_m_process_getpid(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
-    (void)c; (void)slots; (void)self; (void)a;
-    return RESULT_OK(LONG2FIX((korb_sword_t)getpid()));
+    (void)slots; (void)self; (void)a;
+    if (UNLIKELY(c->vm->pid_cache == 0)) c->vm->pid_cache = (int32_t)getpid();
+    return RESULT_OK(LONG2FIX((korb_sword_t)c->vm->pid_cache));
 }
 
 /* true / false / nil only — CRuby's rb_bool_expected. */
@@ -1796,8 +1805,9 @@ static void korb_blop_cancel(struct korb_vm *vm, struct korb_blop *b, int neg_er
 static void korb_fork_child_threads(struct korb_vm *vm) {
     /* $$ is a constant set at boot; the child has its own pid (concurrent-ruby's
        pools detect a fork by comparing it) */
+    vm->pid_cache = (int32_t)getpid();
     const uint32_t pix = korb_const_index(vm, korb_intern_lit(vm, "$$", 2));
-    if (pix != UINT32_MAX) vm->const_vals[pix] = LONG2FIX((korb_sword_t)getpid());
+    if (pix != UINT32_MAX) vm->const_vals[pix] = LONG2FIX((korb_sword_t)vm->pid_cache);
     /* a signalfd reports the *reader's* pending signals, but the parent may
        still hold one queued in it — re-arm ours rather than reason about that */
     if (vm->sigfd >= 0) { close(vm->sigfd); vm->sigfd = -1; }
