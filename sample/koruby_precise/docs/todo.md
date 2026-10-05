@@ -15,6 +15,7 @@
 
 ## 未: private な `[]` / `[]=` が `obj[k]` / `obj[k] = v` から呼べてしまう (2026-10-04)
 - CRuby は NoMethodError（private method '[]' called）。node_aref / node_aset の deopt が korb_send（可視性を見ない内部送り）に落ちるため。
+- クラスの特異メソッドでも同じ（2026-10-05 確認）: `class << Reg; private :[]; end` の後の `Reg[3]` が通る（CRuby は NoMethodError）。
 - 同じことが演算子と明示 `.==` でも起きる（2026-10-05 確認）: `private def ==` に対し `x == 1` も `x.==(1)` も true を返す（CRuby は両方 NoMethodError）。node_eq の deopt も korb_send。
   `self[k]` は private でも許されるので、直すにはパーサから「受け手が self リテラルか」を渡す必要がある。
 

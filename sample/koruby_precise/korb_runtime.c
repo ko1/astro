@@ -16276,19 +16276,25 @@ korb_deopt_send_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
 {
     struct korb_vm *const vm = c->vm;
     const korb_value recv = slots[-(korb_sword_t)argc - 1];
-    if (KORB_CLASS_P(recv) || korb_site_refined(c)) return false;
-    const korb_value klass = (KORB_OBJECT_P(recv) && VAL2OBJ(recv)->klass != KORB_NIL) ? korb_obj_dispatch_klass(vm, recv)
-                                                                                     : korb_dispatch_class(c, recv);
-    if (!KORB_CLASS_P(klass)) return false;
+    if (korb_site_refined(c)) return false;
+    /* a class receiver (`Klass[k]`, a user `def self.[]`: railsbench 95k per iteration) keys the cache on
+     * the class itself, as korb_send_cached does; Array[] / Hash[] / Set[] have no table entry and miss */
+    const bool cls = KORB_CLASS_P(recv);
+    const enum korb_ic_kind kind = cls ? KORB_IC_SMETHOD : KORB_IC_INSTANCE;
+    const korb_value key = cls ? recv : (KORB_OBJECT_P(recv) && VAL2OBJ(recv)->klass != KORB_NIL) ? korb_obj_dispatch_klass(vm, recv)
+                                                                                                   : korb_dispatch_class(c, recv);
+    if (!KORB_CLASS_P(key)) return false;
     struct korb_method *m;
     korb_value def;
-    if (ic->kind == KORB_IC_INSTANCE && ic->serial == vm->method_serial && ic->klass == klass) {
+    if (ic->kind == kind && ic->serial == vm->method_serial && ic->klass == key) {
         m = ic->m; def = ic->def_class;
     } else {
+        const korb_value start = cls ? korb_dispatch_class(c, recv) : key;
+        if (!KORB_CLASS_P(start)) return false;
         def = KORB_NIL;
-        m = korb_mcache_find(vm, klass, mid, &def);
+        m = korb_mcache_find(vm, start, mid, &def);
         if (m == NULL || m->visibility != 0) return false;
-        korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def, KORB_IC_INSTANCE, UINT32_MAX);
+        korb_ic_fill(ic, korb_ic_serial_mc(c), key, m, def, kind, UINT32_MAX);
     }
     if (m == NULL || m->visibility != 0) return false;
     if (m->kind == KORB_METHOD_CFUNC && !m->uses_block && (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
@@ -16318,7 +16324,8 @@ bool
 korb_caseeq_class_cached(CTX *c, korb_value w, korb_value subj, struct korb_inlcache *ic, RESULT *out)
 {
     struct korb_vm *const vm = c->vm;
-    if (LIKELY(ic->kind == KORB_IC_SMETHOD && ic->serial == vm->method_serial && ic->klass == w)) {
+    if (LIKELY(ic->kind == KORB_IC_SMETHOD && ic->serial == vm->method_serial && ic->klass == w &&
+               ic->m->rfn == korb_m_class_case_eq)) {   /* korb_deopt_send_ic keys a user self.=== the same way */
         *out = RESULT_OK(korb_case_eq(c, w, subj) ? KORB_TRUE : KORB_FALSE);
         return true;
     }
