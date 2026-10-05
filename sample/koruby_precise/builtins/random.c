@@ -111,6 +111,24 @@ ARO_BORROW static KorbMT *korb_rng_of(CTX *const c, korb_value rndobj) {
     return KORB_STRING_P(s) ? (KorbMT *)korb_strbuf_data(VAL2STR(s)->buf) : NULL;
 }
 /* True if v is a Random instance (its class is, or derives from, Random). */
+/* n bytes of OS entropy into buf; the bytes it could not get (0 = none) are left to the caller.
+ * getrandom(2) is one syscall — open/read/close of /dev/urandom per call was 3.5 us
+ * (SecureRandom.uuid per Rails request), CRuby's is 0.3 us. */
+static size_t korb_os_random(char *const buf, const size_t n) {
+    size_t got = 0;
+#ifdef SYS_getrandom
+    while (got < n) {
+        const long r = syscall(SYS_getrandom, buf + got, n - got, 0);
+        if (r > 0) got += (size_t)r;
+        else if (r < 0 && errno == EINTR) continue;
+        else break;
+    }
+    if (got == n) return got;
+#endif
+    const int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) { got += korb_fd_read_n(fd, buf + got, n - got); close(fd); }
+    return got;
+}
 /* Random.urandom(n) → n bytes of OS entropy as an ASCII-8BIT String. */
 static RESULT korb_m_random_urandom(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
@@ -120,9 +138,7 @@ static RESULT korb_m_random_urandom(CTX *c, korb_value *slots, korb_ref self, ko
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative string size (or size too big)");
     char *buf = (char *)malloc((size_t)(n ? n : 1));
     if (!buf) return korb_raise(c, slots, KORB_E_NOTIMPL, 0, "out of memory");
-    const int fd = open("/dev/urandom", O_RDONLY);
-    const size_t got = fd >= 0 ? korb_fd_read_n(fd, buf, (size_t)n) : 0;
-    if (fd >= 0) close(fd);
+    const size_t got = korb_os_random(buf, (size_t)n);
     for (size_t i = got; i < (size_t)n; i++) buf[i] = 0;   /* pad if the read fell short */
     RESULT r = korb_str_new(c, slots, buf, (uint32_t)n);
     free(buf);
@@ -481,8 +497,7 @@ static RESULT korb_m_random_state(CTX *c, korb_value *slots, korb_ref self, korb
 static RESULT korb_m_random_new_seed(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self; (void)a;
     uint64_t v = 0;
-    const int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) { if (korb_fd_read_n(fd, (char *)&v, sizeof v) != sizeof v) v = 0; close(fd); }
+    if (korb_os_random((char *)&v, sizeof v) != sizeof v) v = 0;
     if (v == 0) {
         struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
         v = ((uint64_t)getpid() << 32) ^ (uint64_t)ts.tv_nsec ^ 0x9e3779b97f4a7c15ULL;
