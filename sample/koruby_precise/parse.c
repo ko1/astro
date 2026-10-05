@@ -4611,7 +4611,7 @@ kp_kernel_const_p(struct kp_ctx *tc, const pm_node_t *recv)
  * build_array).  The accumulator is always a String; each part is appended
  * via its to_s inside node_dstr_concat. */
 static NODE *
-build_dstr_enc_n(struct kp_ctx *tc, struct pm_node **parts, size_t n, uint8_t seed_enc, size_t total)
+build_dstr_enc_n(struct kp_ctx *tc, struct pm_node **parts, size_t n, uint8_t seed_enc, size_t total, uint32_t est)
 {
     /* The empty seed carries the FILE's encoding, not the default: an
      * interpolated literal in a us-ascii source is us-ascii (its parts negotiate
@@ -4622,15 +4622,19 @@ build_dstr_enc_n(struct kp_ctx *tc, struct pm_node **parts, size_t n, uint8_t se
                                                  : ALLOC_node_str("", 0);
     NODE *acc, *part;
     uint32_t sc = kind_node_dstr_concat.slot_count;
-    WITH_CHAIN(tc, sc, (acc  = build_dstr_enc_n(tc, parts, n - 1, seed_enc, total),
+    WITH_CHAIN(tc, sc, (acc  = build_dstr_enc_n(tc, parts, n - 1, seed_enc, total, est),
                         part = transduce(tc, parts[n - 1])));
-    /* 1: acc is an inner concat's fresh String (append in place); 2: the first step of a longer chain (leave room) */
-    return ALLOC_node_dstr_concat(n > 1 ? 1 : (total > 1 ? 2 : 0), acc, part);
+    /* 1: acc is an inner concat's fresh String (append in place); 2 + est: the first step of a longer chain,
+     * room for est bytes (a short result then stays one embedded String) */
+    return ALLOC_node_dstr_concat(n > 1 ? 1 : (total > 1 ? 2 + est : 0), acc, part);
 }
 static NODE *
 build_dstr_enc(struct kp_ctx *tc, struct pm_node **parts, size_t n, uint8_t seed_enc)
 {
-    return build_dstr_enc_n(tc, parts, n, seed_enc, n);
+    size_t est = 0;   /* the literal parts' bytes, and a guess for each interpolated one */
+    for (size_t i = 0; i < n; i++)
+        est += PM_NODE_TYPE_P(parts[i], PM_STRING_NODE) ? pm_string_length(&((const pm_string_node_t *)parts[i])->unescaped) : 16;
+    return build_dstr_enc_n(tc, parts, n, seed_enc, n, est > 4096 ? 4096 : (uint32_t)est);
 }
 
 static NODE *
