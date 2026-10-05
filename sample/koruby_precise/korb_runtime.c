@@ -13245,6 +13245,7 @@ korb_invoke_kw_dense(CTX *c, korb_value *slots, struct korb_method *m, uint32_t 
     return r;
 }
 
+static uint8_t korb_class_new_kind(CTX *const c, const korb_value cls);   /* fwd */
 /* `recv.m(pos..., k: v...)` (literal symbol keys): the receiver form of korb_call_kw.
  * A public Ruby method found through the site's cache binds the keywords straight
  * to slots; everything else (private / protected, C methods, misses, refined
@@ -13285,6 +13286,23 @@ korb_send_kw(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, struct k
                 }
                 return korb_invoke_kw_viahash(c, slots, m, pos_argc, kw_syms, kw_argc, line, mid, recv, def_class);
             }
+        }
+    }
+    /* `Klass.new(k: v)` of a plain class whose cached Ruby #initialize binds keywords directly: allocate and
+     * bind them as `o.initialize(k: v)` would, without the kwargs Hash (railsbench's ActiveModel-style
+     * constructors; the Hash, the generic invoke and its lookups cost 300 instructions over CRuby) */
+    if (KORB_CLASS_P(recv) && mid == vm->mid_new && ic->kind == KORB_IC_NEW && ic->serial == vm->method_serial &&
+        ic->klass == recv && ic->m != NULL && !korb_site_refined(c) && korb_class_new_kind(c, recv) == 1) {
+        struct korb_method *const init = ic->m;
+        const struct korb_kw_info *const ikw = (const struct korb_kw_info *)init->kw_info;
+        if (init->kind == KORB_METHOD_ISEQ && ikw != NULL && ikw->kwrest_slot != -3 && korb_kw_fast_eligible(init) && kw_argc <= 64) {
+            const korb_value obj = UNWRAP(korb_obj_new(c, slots, recv));   /* the arguments below slots stay rooted */
+            base[-1] = obj;
+            const RESULT ir = korb_kw_dense_call_p(c, init, ikw, pos_argc, kw_syms, kw_argc)
+                ? korb_invoke_kw_dense(c, slots, init, pos_argc + kw_argc, line, vm->mid_initialize)
+                : korb_invoke_kw_simple(c, slots, init, pos_argc, kw_syms, kw_argc, line, vm->mid_initialize, obj, ic->def_class);
+            if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
+            return RESULT_OK(base[-1]);   /* the (possibly moved) obj */
         }
     }
     korb_value *const cur = slots;                   /* materialize the kwargs Hash (as korb_call_kw) */
