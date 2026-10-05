@@ -1315,8 +1315,24 @@ static RESULT korb_m_class_superclass(CTX *c, korb_value *slots, korb_ref self, 
     return RESULT_OK(VAL2CLASS(KORB_REF_GET(self))->superclass);
 }
 /* Class#allocate — a bare instance with no #initialize call. */
+/* An Object-based user class's allocate is a generic object — none of the checks below
+ * apply, and they re-ran for every ActiveRecord row (Struct/Data/Module lookups and
+ * ancestry walks: ~1k cycles a row).  Answered once per class: none of it can change. */
+static bool korb_class_alloc_plain(CTX *c, korb_value cls) {
+    KorbClass *const k = VAL2CLASS(cls);
+    if (LIKELY(k->alloc_plain != 0)) return k->alloc_plain == 1;
+    struct korb_vm *const vm = c->vm;
+    const korb_value st = korb_const_get(vm, vm->name_struct), dt = korb_const_get(vm, korb_intern_lit(vm, "Data", 4));
+    const bool plain = !k->is_singleton && !k->is_module && korb_builtin_base_class(vm, cls) == KORB_C_OBJECT &&
+        korb_class_exc_etype(vm, cls) < 0 && !korb_class_le(cls, korb_const_get(vm, vm->name_module)) &&
+        !(KORB_CLASS_P(st) && korb_class_le(cls, st)) && !(KORB_CLASS_P(dt) && korb_class_le(cls, dt));
+    k->alloc_plain = plain ? 1 : 2;
+    return plain;
+}
 static RESULT korb_m_class_allocate(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a;
+    if (KORB_CLASS_P(KORB_REF_GET(self)) && korb_class_alloc_plain(c, KORB_REF_GET(self)))
+        return korb_obj_new(c, slots, KORB_REF_GET(self));
     if (KORB_CLASS_P(KORB_REF_GET(self))) {             /* immediate classes have no allocator */
         if (UNLIKELY(VAL2CLASS(KORB_REF_GET(self))->is_singleton))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "can't create instance of singleton class");

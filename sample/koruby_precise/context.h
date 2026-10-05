@@ -782,6 +782,7 @@ typedef struct KorbClass {
     uint8_t  new_kind;               /* .new dispatch cache: 0=unknown, 1=plain user class, 2=special (Fiber/Struct/builtin/module) */
     uint8_t  marshal_plain;          /* the Ruby dumper wrote an instance as a plain 'o' record (not Struct/Data/Set/C data):
                                       * __marshal_fast_dump may then write this class's instances itself */
+    uint8_t  alloc_plain;            /* Class#allocate: 0=unknown, 1=a generic object (Object-based user class), 2=special */
     uint32_t new_kind_serial;        /* method_serial the new_kind above was classified at: a later `def self.new`
                                       * (or an rspec stub) turns a plain class into a special one */
     uint8_t  send_user;              /* 0x80 valid | bit 0/1/2: the chain defines its own send / __send__ / public_send */
