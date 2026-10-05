@@ -4,6 +4,9 @@
 既知バグ** の作業リスト。
 
 
+
+## 未: Kernel#Array が #respond_to? / #respond_to_missing? で答える #to_ary を使わない (2026-10-05)
+- `respond_to?(:to_ary)` が true で `method_missing` が配列を返すオブジェクトに `Array(obj)` が `[obj]` を返す（CRuby は `obj.to_ary` の結果）。`[obj].flatten` は CRuby と同じ。09-29 のバイナリでも同じなので既存の差。
 ## 未: refine した #== が BasicObject#!= の中まで効く (2026-10-04)
 - `refine Plain do; def ==(o) = :refined; end` の後の `a != b` が false（CRuby は true: #!= の中の == 呼び出しは refinement の外）。
   korb_m_obj_neq が korb_send で == を送るとき、呼び出し元の refinement が見えている。

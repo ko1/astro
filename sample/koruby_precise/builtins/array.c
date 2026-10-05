@@ -589,10 +589,7 @@ static bool korb_ary_respond_to_pub(CTX *c, korb_value *slots, korb_value *selfp
     if (korb_responds_to(c, *selfp, mid)) return true;
     const korb_value dcls = korb_dispatch_class(c, *selfp);
     if (!KORB_CLASS_P(dcls)) return false;
-    korb_value rt_def = KORB_NIL;
-    (void)korb_class_find_method(dcls, korb_intern_lit(c->vm, "respond_to?", 11), &rt_def);
-    if (rt_def == KORB_NIL || rt_def == korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]))
-        return false;                                     /* the default #respond_to? already said no */
+    if (!korb_respond_to_overridden_p(c->vm, dcls)) return false;   /* the default #respond_to? already said no */
     slots[0] = *selfp; slots[1] = ID2SYM(mid);
     const RESULT r = korb_send_impl(c, slots + 2, korb_intern_lit(c->vm, "respond_to?", 11), 0, 1, NULL, NULL, NULL);
     *selfp = slots[0];                                    /* writeback: the dispatch may have moved it */

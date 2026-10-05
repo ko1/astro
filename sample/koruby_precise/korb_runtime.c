@@ -8749,6 +8749,17 @@ korb_rescue_custom_eqq(CTX *c, korb_value cls)
            owner != korb_builtin_class_obj(vm, KORB_C_OBJECT);
 }
 
+static RESULT korb_m_obj_respond_to(CTX *c, korb_value *slots, korb_ref self, korb_slice a);   /* fwd (builtins/set.c) */
+/* Is the #respond_to? `dcls` answers with someone's override?  The built-in one lives in Kernel (relocated
+ * there from Object at boot), so testing the defining class against Object called every receiver's
+ * #respond_to? "custom" and dispatched it on each failed conversion probe (railsbench: 35k
+ * Encoding#respond_to? an iteration, from String#== / #encode). */
+static bool
+korb_respond_to_overridden_p(struct korb_vm *vm, korb_value dcls)
+{
+    const struct korb_method *const m = korb_find_method_c(vm, dcls, korb_intern_lit(vm, "respond_to?", 11), NULL);
+    return m != NULL && !(m->kind == KORB_METHOD_CFUNC && m->rfn == korb_m_obj_respond_to);
+}
 /* like korb_responds_to but also honors a user-defined #respond_to_missing?
  * (the type-conversion protocols — #to_str/#to_ary/#to_int/#to_hash — check
  * respond_to? before dispatching, so a proxy/delegator/mock that answers via
@@ -8764,9 +8775,8 @@ korb_responds_to_coerce_p(CTX *c, korb_value *slots, korb_value *selfp, uint32_t
     if (korb_responds_to(c, *selfp, mid)) return true;
     const korb_value dcls = korb_dispatch_class(c, *selfp);
     if (!KORB_CLASS_P(dcls)) return false;
-    korb_value rt_def = KORB_NIL, rtm_def = KORB_NIL;
-    (void)korb_find_method_c(c->vm, dcls, korb_intern_lit(c->vm, "respond_to?", 11), &rt_def);
-    const bool custom_rt = rt_def != KORB_NIL && rt_def != korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
+    korb_value rtm_def = KORB_NIL;
+    const bool custom_rt = korb_respond_to_overridden_p(c->vm, dcls);
     /* Kernel's own #respond_to_missing? always answers false — only an override
      * is worth a dispatch. */
     const bool has_rtm = korb_find_method_c(c->vm, dcls, c->vm->mid_respond_to_missing, &rtm_def) != NULL &&
@@ -8842,9 +8852,8 @@ korb_responds_to_coerce(CTX *c, korb_value *slots, korb_value self, uint32_t mid
      * customized — otherwise the default answer is already `false` and we skip the
      * dispatch.  Dispatching #respond_to? (not #respond_to_missing? directly) means
      * a proxy/mock that overrides either one is honored correctly. */
-    korb_value rt_def = KORB_NIL, rtm_def = KORB_NIL;
-    (void)korb_find_method_c(c->vm, dcls, korb_intern_lit(c->vm, "respond_to?", 11), &rt_def);
-    const bool custom_rt = rt_def != KORB_NIL && rt_def != korb_const_get(c->vm, c->vm->class_name[KORB_C_OBJECT]);
+    korb_value rtm_def = KORB_NIL;
+    const bool custom_rt = korb_respond_to_overridden_p(c->vm, dcls);
     /* Kernel's own #respond_to_missing? always answers false — only an override
      * is worth a dispatch. */
     const bool has_rtm = korb_find_method_c(c->vm, dcls, c->vm->mid_respond_to_missing, &rtm_def) != NULL &&
