@@ -2311,6 +2311,7 @@ static RESULT korb_m_class_remove_cvar(CTX *c, korb_value *slots, korb_ref self,
     }
     slots[0] = cvars;
     slots[1] = ID2SYM(id);
+    c->vm->cvar_serial++;   /* node_cvar_get's caches hold positions in this hash */
     return korb_m_hash_delete(c, slots + 2, KORB_REF_AT(&slots[0]), KORB_SLICE_MAKE(&slots[1], 1), NULL, NULL, NULL);
 }
 /* Module#class_variable_defined?(name) → true if defined on self or an ancestor. */

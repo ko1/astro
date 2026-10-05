@@ -3936,15 +3936,20 @@ node_ivar_arith(CTX *c, NODE *n, korb_value *slots, int32_t self_off, uint32_t n
 // instance method).  korb_cvar_{get,set} resolve up the superclass chain.
 
 NODE_DEF
-node_cvar_get(CTX *c, NODE *n, korb_value *slots, int32_t self_off, int32_t dc_off, uint32_t name@sym, uint32_t soft)
+node_cvar_get(CTX *c, NODE *n, korb_value *slots, int32_t self_off, int32_t dc_off, uint32_t name@sym, uint32_t soft, struct korb_cvcache *cc@ref)
 {
     (void)n;
+    const struct korb_vm *const vm = c->vm;
+    /* the same method as last time: the cref, the ancestor walk and the overtaken check all came out the same */
+    if (LIKELY(cc->key == slots[dc_off] && cc->serial == vm->method_serial && cc->cvserial == vm->cvar_serial &&
+               cc->mro == vm->mro_serial))
+        return RESULT_OK(korb_items_data(VAL2HASH(VAL2CLASS(cc->owner)->cvars)->items)[2 * cc->idx + 1]);
     korb_value self = slots[self_off];
     if (UNLIKELY(((uintptr_t)slots[dc_off] & 7u) == KORB_FID_BLOCK)) {   /* lexical, not the block's self */
         const korb_value lc = korb_cvar_block_cref(c, KORB_FBASE_AT(slots, dc_off));
         if (KORB_CLASS_P(lc)) self = lc;
     }
-    return korb_cvar_get(c, slots, self, slots[dc_off], name, soft);
+    return korb_cvar_get_c(c, slots, self, slots[dc_off], name, soft, cc);
 }
 
 NODE_DEF

@@ -115,6 +115,17 @@ struct korb_ivcache {
     int32_t  slot;       /* ivar index in the values array; for a class, the pair index in its class_ivars hash */
     uint32_t from_shape; /* node_ivar_set: the shape that transitions to shape_id by adding this ivar (0 = none) */
 };
+/* node_cvar_get's: in one method (key = its frame identity, which fixes the lexical cref) the @@x it read —
+ * the defining class and the pair's position in its cvars hash.  Valid while no class variable was
+ * defined / removed (cvar_serial), no MRO changed and no GC moved the class (method_serial). */
+struct korb_cvcache {
+    uint64_t   serial;     /* method_serial */
+    uint64_t   cvserial;   /* cvar_serial */
+    uint64_t   mro;        /* mro_serial */
+    korb_value key;        /* the method frame's identity cell (KORB_FID_METHOD) */
+    korb_value owner;      /* the class whose cvars hold it */
+    int32_t    idx;
+};
 #define KORB_IVC_CLASS UINT32_MAX   /* never a real shape id: the receiver was a class (validated by the key at `slot`) */
 /* node_ivar_get's: two shapes (a reader shared by several classes, attr_reader's entry above all).  The second
  * entry also remembers a shape that has no such ivar (slot2 = -1: the read is nil) without a walk each time. */
@@ -288,6 +299,7 @@ RESULT korb_ivar_set(CTX *c, korb_value *slots, korb_ref selfref, korb_value nam
 /* Classes + constants (korb_runtime.c) */
 RESULT korb_class_new(CTX *c, korb_value *slots, uint32_t name_sym, korb_value superclass);
 RESULT korb_cvar_get(CTX *c, korb_value *slots, korb_value self, korb_value entry_cell, uint32_t sym_id, uint32_t soft);
+RESULT korb_cvar_get_c(CTX *c, korb_value *slots, korb_value self, korb_value entry_cell, uint32_t sym_id, uint32_t soft, struct korb_cvcache *cc);   /* fills cc */
 korb_value  korb_cvar_block_cref(CTX *c, const korb_value *frame_base);
 void   korb_method_clear_def_cref(korb_value klass, uint32_t mid);   /* a def in a class body of an eval: no eval cref */   /* a block's lexical class for @@x (nil: no home method) */
 void   korb_method_set_block_cref(CTX *c, korb_value klass, uint32_t mid, const korb_value *frame_base);   /* a def run by a block in a method: that method's class */

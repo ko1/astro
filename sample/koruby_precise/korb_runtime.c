@@ -3200,6 +3200,17 @@ korb_cvar_defined_p(CTX *c, korb_value self, korb_value entry_cell, uint32_t sym
 RESULT
 korb_cvar_get(CTX *c, korb_value *slots, korb_value self, korb_value entry_cell, uint32_t sym_id, uint32_t soft)
 {
+    return korb_cvar_get_c(c, slots, self, entry_cell, sym_id, soft, NULL);
+}
+
+/* korb_cvar_get remembering the answer in node_cvar_get's cache: only in a method frame (whose identity fixes
+ * the cref: an instance_eval's or a block's comes from the running context) and only an unshadowed variable.
+ * railsbench: ~46M instructions an iteration walked every ancestor, and a singleton cref scanned every
+ * singleton class for its object, on each read. */
+RESULT
+korb_cvar_get_c(CTX *c, korb_value *slots, korb_value self, korb_value entry_cell, uint32_t sym_id, uint32_t soft,
+                struct korb_cvcache *const cc)
+{
     const korb_value cref = korb_cvar_scope_of(c, self, entry_cell);
     if (!KORB_CLASS_P(cref)) {
         if (soft) return RESULT_OK(KORB_NIL);
@@ -3226,6 +3237,11 @@ korb_cvar_get(CTX *c, korb_value *slots, korb_value self, korb_value entry_cell,
         }
         return ne;
     }
+    if (cc != NULL && ((uintptr_t)entry_cell & 7u) == KORB_FID_METHOD && owner == front) {
+        const struct korb_vm *const vm = c->vm;
+        cc->key = entry_cell; cc->owner = owner; cc->idx = idx;
+        cc->serial = vm->method_serial; cc->cvserial = vm->cvar_serial; cc->mro = vm->mro_serial;
+    }
     return RESULT_OK(korb_items_data(VAL2HASH(VAL2CLASS(owner)->cvars)->items)[2 * idx + 1]);
 }
 
@@ -3241,7 +3257,7 @@ korb_cvar_set(CTX *c, korb_value *slots, korb_value self, korb_value entry_cell,
     korb_value front;
     korb_value target = korb_cvar_owner_top(cref, sym, &idx, &front);   /* update the topmost ancestor, else define in cref */
     if (target != KORB_NIL) CHECK(korb_cvar_check_overtaken(c, slots, front, target, sym_id));
-    else                    target = cref;
+    else                  { target = cref; c->vm->cvar_serial++; }   /* a new variable may shadow a cached read below */
 
     /* Root target + val across the hash alloc/grow (both may GC/move). */
     korb_ref tref = SLOTS_PUSH(slots, target);
@@ -6207,7 +6223,8 @@ korb_class_dup(CTX *c, korb_value *slots, korb_value src)
           }
           KorbClass *const dd = VAL2CLASS(slots[1]);
           ARO_STORE(c, dd, (korb_value *)(uintptr_t)(hi == 0 ? &dd->cvars : &dd->class_ivars), slots[3]);
-      } }
+      }
+      c->vm->cvar_serial++; }
     const uint32_t n = VAL2CLASS(slots[0])->method_cnt;
     for (uint32_t i = 0; i < n; i++) {
         const struct korb_method src_m = *VAL2CLASS(slots[0])->methods[i];   /* snapshot: the slot below may realloc */

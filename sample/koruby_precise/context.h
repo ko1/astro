@@ -1500,6 +1500,7 @@ struct korb_vm {
     uint32_t mid_send, mid___send__, mid_public_send, mid_new, mid_yield, mid_initialize, mid_eqq;
     uint32_t mid_include, mid_prepend, mid_ruby2_keywords;   /* korb_call_impl's class-body / main forms */
     uint64_t mro_serial;     /* bumped when any MRO may change: validates KorbClass.mro_c (the GC forwards a current one) */
+    uint64_t cvar_serial;    /* bumped when a class variable is defined / removed anywhere: validates node_cvar_get's cache */
     uint64_t gc_serial_bumps;   /* how many method_serial bumps were GCs: method_serial - this changes only on a def / undef / include ... */
     korb_value utf8_ok[8];   /* frozen (not chilled) Strings already found valid UTF-8, by address;
                               * cleared at every GC (addresses move / get reused) */

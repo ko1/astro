@@ -590,7 +590,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
         # (the SD reads it at runtime; see build_specializer below).
         return '0' if sym?
         case @type
-        when 'struct korb_callcache *', 'struct korb_ivcache *', 'struct korb_ivgcache *', 'struct korb_constcache *', 'struct korb_cpcache *', 'struct korb_fscache *', 'struct korb_inlcache *', 'struct korb_oncecell *', 'struct korb_oncecell *'
+        when 'struct korb_callcache *', 'struct korb_ivcache *', 'struct korb_ivgcache *', 'struct korb_cvcache *', 'struct korb_constcache *', 'struct korb_cpcache *', 'struct korb_fscache *', 'struct korb_inlcache *', 'struct korb_oncecell *', 'struct korb_oncecell *'
           '0'   # mutable runtime cache — not part of structure
         when 'uint32_t'
           # `line` is diagnostic metadata (raise-site line number); the SD
@@ -616,14 +616,14 @@ class KorubyNodeDef < ASTroGen::NodeDef
                  "        fprintf(fp, \"]\");"
         end
         case @type
-        when 'struct korb_callcache *', 'struct korb_ivcache *', 'struct korb_ivgcache *', 'struct korb_constcache *', 'struct korb_cpcache *', 'struct korb_fscache *', 'struct korb_inlcache *', 'struct korb_oncecell *'
+        when 'struct korb_callcache *', 'struct korb_ivcache *', 'struct korb_ivgcache *', 'struct korb_cvcache *', 'struct korb_constcache *', 'struct korb_cpcache *', 'struct korb_fscache *', 'struct korb_inlcache *', 'struct korb_oncecell *'
           "        fprintf(fp, \"<cc>\");"
         else
           super
         end
       end
 
-      CACHE_TYPES = ['struct korb_callcache *', 'struct korb_ivcache *', 'struct korb_ivgcache *', 'struct korb_constcache *', 'struct korb_cpcache *', 'struct korb_fscache *',
+      CACHE_TYPES = ['struct korb_callcache *', 'struct korb_ivcache *', 'struct korb_ivgcache *', 'struct korb_cvcache *', 'struct korb_constcache *', 'struct korb_cpcache *', 'struct korb_fscache *',
                      'struct korb_inlcache *', 'struct korb_oncecell *'].freeze
 
       # Pool mode: everything the SD used to read from the NODE at runtime.
@@ -671,7 +671,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
           return cn, arg
         end
         case @type
-        when 'struct korb_callcache *', 'struct korb_ivcache *', 'struct korb_ivgcache *', 'struct korb_constcache *', 'struct korb_cpcache *', 'struct korb_fscache *', 'struct korb_inlcache *', 'struct korb_oncecell *'
+        when 'struct korb_callcache *', 'struct korb_ivcache *', 'struct korb_ivgcache *', 'struct korb_cvcache *', 'struct korb_constcache *', 'struct korb_cpcache *', 'struct korb_fscache *', 'struct korb_inlcache *', 'struct korb_oncecell *'
           # @ref operand stored inline in the union; pass its address.
           return nil, "    fprintf(fp, \"        &n->u.#{name}.#{self.name}\");"
         when 'const char *'
