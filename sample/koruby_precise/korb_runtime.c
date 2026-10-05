@@ -13023,6 +13023,9 @@ korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
             RESULT r;
             if (korb_invoke_self(c, slots, m, argc, korb_flink_line(flink), mid, self, def_class, &r))
                 return r;   /* ATTR / non-simple ISEQ */
+            if ((m->kind == KORB_METHOD_DM || m->kind == KORB_METHOD_BUILTIN) && site != NULL && LIKELY(!vm->refinements_active))   /* define_method'd / global builtin */
+                return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, def_class, NULL, NULL, NULL,
+                                            KORB_FLINK_FRAMED(flink));
             /* CFUNC → fall through to korb_call_impl */
         } else if (LIKELY(cc->serial == vm->method_serial && cc->dispatch)) {
             /* top-level (main, klass-less) call of a cached simple ISEQ global
@@ -13070,6 +13073,12 @@ korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
             RESULT r;
             if (m != NULL && korb_invoke_self(c, slots, m, argc, korb_flink_line(flink), mid, self, def_class, &r))
                 return r;
+            /* a define_method'd class method (class_attribute's readers) or a global builtin
+             * (`__clock_gettime` in Process.clock_gettime) called bare: korb_call_impl re-resolved
+             * them with a respond_to? walk and a full send (railsbench: ~60k an iteration) */
+            if (m != NULL && (m->kind == KORB_METHOD_DM || m->kind == KORB_METHOD_BUILTIN) && site != NULL && LIKELY(!vm->refinements_active))
+                return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, def_class, NULL, NULL, NULL,
+                                            KORB_FLINK_FRAMED(flink));
         }
     }
     return korb_call_impl(c, slots, mid, korb_flink_line(flink), cc, argc, self, NULL, NULL, NULL, site);
