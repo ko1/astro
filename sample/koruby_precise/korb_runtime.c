@@ -15977,6 +15977,12 @@ korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint
             if (LIKELY(r.state == KORB_NORMAL)) return r;
             return korb_call_ret_cold(c, r, flink, mid, (korb_value)((uintptr_t)m | KORB_FID_CFUNC));
         }
+        /* any other public kind (an ISEQ with optional / keyword params or `super`, a define_method'd one):
+         * what korb_send_cached_full's SMETHOD hit does, without its cascade (railsbench: ERB::Util's
+         * prepended html_escape 41k, Process.clock_gettime 18k an iteration went there) */
+        if (m->visibility == 0 && !c->vm->refinements_active)
+            return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, ic->def_class, NULL, NULL, NULL,
+                                        KORB_FLINK_FRAMED(flink));
     } else if (KORB_CLASS_P(recv) && ic->kind == KORB_IC_NEW && ic->serial == c->vm->method_serial && ic->klass == recv &&
                mid == c->vm->mid_new && !c->vm->refinements_active && korb_class_new_kind(c, recv) == 1) {   /* psych: 2M per load */
         return korb_new_with_init(c, slots, flink, argc, ic->m, ic->def_class, recv, KORB_FLINK_FRAMED(flink));
@@ -15992,8 +15998,8 @@ korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint
         if (m->kind == KORB_METHOD_ISEQ && m->kw_info != NULL && korb_kw_fast_eligible(m) && !(argc != 0 && korb_kwargs_hash_p(slots[-1])))
             return korb_invoke_kw_simple(c, slots, m, argc, NULL, 0, korb_flink_line(flink), mid, recv, ic->def_class);
     }
-    if (!KORB_CLASS_P(recv) && ic->kind == KORB_IC_INSTANCE && ic->serial == c->vm->method_serial && ic->m != NULL &&
-        ic->klass != KORB_NIL && !korb_site_refined(c)) {
+    if (!KORB_CLASS_P(recv) && (ic->kind == KORB_IC_INSTANCE || ic->kind == KORB_IC_INSTANCE_VIS) &&
+        ic->serial == c->vm->method_serial && ic->m != NULL && ic->klass != KORB_NIL && !korb_site_refined(c)) {
         /* any other receiver with a public instance hit: a plain builtin (Proc#call, String#to_liquid: 75k per
          * iteration in liquid), a builtin subclass's or singleton-classed object, Thread (`Thread.current[:k]`) —
          * korb_send_cached_full would find the same class after its class-receiver / send-family cascade */
@@ -16004,7 +16010,7 @@ korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint
         if (ic->klass == kl) {
             if (ic->dispatch != NULL) return korb_invoke_entry_ic(c, slots, ic, argc, mid);
             struct korb_method *const m = ic->m;
-            if (m->kind == KORB_METHOD_CFUNC && (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
+            if (m->kind == KORB_METHOD_CFUNC && ic->kind == KORB_IC_INSTANCE && (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
                 korb_value *const cbase = &slots[-(korb_sword_t)argc];
                 const bool framed = KORB_FLINK_FRAMED(flink);
                 const korb_value saved = LIKELY(framed) ? korb_cframe_enter(c, cbase, m) : 0;
@@ -16014,6 +16020,9 @@ korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint
                 if (LIKELY(r.state == KORB_NORMAL)) return r;
                 return korb_call_ret_cold(c, r, flink, mid, (korb_value)((uintptr_t)m | KORB_FID_CFUNC));
             }
+            /* any other kind, and a private / protected one (InheritableOptions#_get: 33k an iteration): the
+             * instance hit korb_send_cached_full would reach after its cascade */
+            return korb_send_ic_dispatch(c, slots, mid, flink, argc, ic, recv, caller_self);
         }
     }
     return korb_send_cached_full(c, slots, mid, flink, argc, ic, caller_self);
