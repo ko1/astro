@@ -112,9 +112,17 @@ ARO_BORROW static KorbMT *korb_rng_of(CTX *const c, korb_value rndobj) {
 }
 /* True if v is a Random instance (its class is, or derives from, Random). */
 /* n bytes of OS entropy into buf; the bytes it could not get (0 = none) are left to the caller.
- * getrandom(2) is one syscall — open/read/close of /dev/urandom per call was 3.5 us
+ * arc4random_buf / getrandom(2) — open/read/close of /dev/urandom per call was 3.5 us
  * (SecureRandom.uuid per Rails request), CRuby's is 0.3 us. */
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 36))
+void arc4random_buf(void *buf, size_t n);   /* stdlib.h hides it from this late-included TU */
+#define KORB_HAVE_ARC4RANDOM 1
+#endif
 static size_t korb_os_random(char *const buf, const size_t n) {
+#ifdef KORB_HAVE_ARC4RANDOM
+    arc4random_buf(buf, n);   /* CRuby's choice too: the vDSO getrandom where the kernel has it, no syscall per call */
+    return n;
+#endif
     size_t got = 0;
 #ifdef SYS_getrandom
     while (got < n) {
