@@ -3623,7 +3623,7 @@ node_send_blk(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t fli
 // korb_block_yield re-reads proc->env/self per yield (KORB_BLK_FWD), so a moved
 // escaped env is never stale.  argv@children stages [recv, args...].
 NODE_DEF @framehdr
-node_send_blkproc(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, int32_t self_off, int32_t proc_off, NODE **argv@children)
+node_send_blkproc(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, int32_t self_off, int32_t proc_off, NODE **argv@children, struct korb_inlcache *ic@ref)
 {
     const uint32_t line = korb_flink_line(flink);   /* cold paths only: the hot path never needs it */
     (void)n;
@@ -3638,7 +3638,9 @@ node_send_blkproc(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t
     }
     NODE *iseq = VAL2PROC(pv)->iseq;
     if (iseq == NULL) iseq = KORB_BLK_CPROC;             /* Symbol/Method#to_proc: forward as a C-proc block */
-    return korb_send_blk(c, cur, mid, line, argv_cnt - 1 - kw0, iseq, KORB_BLK_FWD, &slots[proc_off], flink, slots[self_off]);
+    /* through the site's cache, as a literal block's send: `fetch(k, &blk)` / `each(&blk)` /
+     * `synchronize(&blk)` looked the method up on every call (railsbench: 210k an iteration) */
+    return korb_send_blk_ic(c, cur, mid, line, argv_cnt - 1 - kw0, iseq, KORB_BLK_FWD, &slots[proc_off], flink, slots[self_off], ic);
 }
 
 // yield to the current method's block.  `biseq_off` / `def_env_off` /
