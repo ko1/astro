@@ -1877,11 +1877,15 @@ node_errinfo(CTX *c, NODE *n, korb_value *slots)
     return RESULT_OK(korb_errinfo_top(c));
 }
 
-// is append-only so a name's index is permanent; cache it (idx+1, 0 = empty) and
-// re-derive const_vals[idx] each read (sees reassignment + GC forwarding).
-NODE_DEF
-node_const(CTX *c, NODE *n, korb_value *slots, uint32_t name_sym@sym, uint32_t owner_name@sym, int32_t self_off, int32_t dc_off, uint32_t line, int32_t fb_off, struct korb_constcache *cache@ref)
+#ifndef NODE_SKIP_COLD
+/* node_const past its per-node cache hit (eval / unnamed crefs, misses, autoload, const_missing): out of
+ * line, reading the operands from the node, so a baked hit builds none of them (it had spilled six) */
+RESULT
+korb_const_read_slow(CTX *c, NODE *n, korb_value *slots)
 {
+    const uint32_t name_sym = n->u.node_const.name_sym, owner_name = n->u.node_const.owner_name, line = n->u.node_const.line;
+    const int32_t self_off = n->u.node_const.self_off, dc_off = n->u.node_const.dc_off, fb_off = n->u.node_const.fb_off;
+    struct korb_constcache *const cache = &n->u.node_const.cache;
     (void)n;
     struct korb_vm *const vm = c->vm;
     /* self_off is baked ONLY for a read whose cref is unnamed (a `class << obj`
@@ -2154,6 +2158,29 @@ node_const(CTX *c, NODE *n, korb_value *slots, uint32_t name_sym@sym, uint32_t o
         }
     }
     return RESULT_OK(vm->const_vals[idx]);
+}
+#else
+RESULT korb_const_read_slow(CTX *c, NODE *n, korb_value *slots);
+#endif
+
+// is append-only so a name's index is permanent; cache it (idx+1, 0 = empty) and
+// re-derive const_vals[idx] each read (sees reassignment + GC forwarding).
+NODE_DEF
+node_const(CTX *c, NODE *n, korb_value *slots, uint32_t name_sym@sym, uint32_t owner_name@sym, int32_t self_off, int32_t dc_off, uint32_t line, int32_t fb_off, struct korb_constcache *cache@ref)
+{
+    (void)name_sym; (void)owner_name; (void)line; (void)fb_off;
+    struct korb_vm *const vm = c->vm;
+    if (LIKELY(c->eval_cref == KORB_NIL) && self_off == INT32_MIN &&   /* per-node cache (see korb_const_read_slow) */
+        LIKELY(cache->idx_plus1 != 0 && cache->serial == vm->const_serial))
+        return RESULT_OK(vm->const_vals[cache->idx_plus1 - 1]);
+    if (LIKELY(c->eval_cref == KORB_NIL) && self_off != INT32_MIN &&   /* an unnamed cref's answer, keyed on it too */
+        cache->idx_plus1 != 0 && cache->serial == vm->const_serial) {
+        const korb_value acref = (dc_off != INT32_MIN) ? korb_const_cref_at(vm, slots[self_off], &slots[dc_off])
+                                                  : (KORB_CLASS_P(slots[self_off]) ? slots[self_off] : KORB_NIL);
+        if (KORB_CLASS_P(acref) && VAL2CLASS(acref)->serial == cache->cref_serial)
+            return RESULT_OK(vm->const_vals[cache->idx_plus1 - 1]);
+    }
+    return korb_const_read_slow(c, n, slots);
 }
 
 // `defined?(expr)` → a description String or nil (expr is NOT evaluated).
