@@ -673,9 +673,11 @@ static RESULT korb_m_range_each(CTX *c, korb_value *slots, korb_ref self, korb_s
     if (FIXNUM_P(SELF_RANGE->rbegin) &&
         (SELF_RANGE->rend == KORB_NIL ||
          (KORB_FLOAT_P(SELF_RANGE->rend) && isinf(korb_float_val(SELF_RANGE->rend)) && korb_float_val(SELF_RANGE->rend) > 0))) {
+        struct korb_yseq ys;
+        CHECK(korb_yseq_init(c, slots, &ys, block, def_env, captured_self));
         for (korb_sword_t i = FIX2LONG(SELF_RANGE->rbegin); ; i++) {   /* i is a plain C int → GC-safe */
             korb_value iv = LONG2FIX(i);
-            RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
+            RESULT r = korb_yseq_call(c, &ys, &iv, 1);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;        /* break/return/raise exits here */
         }
     }
@@ -688,9 +690,11 @@ static RESULT korb_m_range_each(CTX *c, korb_value *slots, korb_ref self, korb_s
         RESULT r = korb_m_ary_each(c, slots + 1, KORB_REF_AT(&slots[0]), a, block, def_env, captured_self);
         return (r.state == KORB_NORMAL) ? RESULT_OK(KORB_REF_GET(self)) : r;
     }
+    struct korb_yseq ys;
+    CHECK(korb_yseq_init(c, slots, &ys, block, def_env, captured_self));
     for (korb_sword_t i = lo; i < hi; i++) {           /* bounds are plain ints — GC-safe */
         korb_value iv = LONG2FIX(i);
-        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
+        RESULT r = korb_yseq_call(c, &ys, &iv, 1);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(KORB_REF_GET(self));

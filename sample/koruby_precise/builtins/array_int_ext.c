@@ -1018,6 +1018,12 @@ static RESULT korb_hash_yield(CTX *c, korb_value *slots, NODE *block, korb_value
     korb_value parg = slots[2];
     return korb_block_yield(c, slots + 3, block, def_env, &parg, 1, cself);
 }
+/* korb_hash_yield for a loop: |k, v| through the hoisted yield (ys set up on `slots` by the caller), a pair otherwise */
+static inline RESULT korb_hash_yield_ys(CTX *c, const struct korb_yseq *ys, korb_value *slots, NODE *block, korb_value *def_env,
+                                        korb_value *cself, uint32_t np, korb_value k, korb_value v) {
+    if (np >= 2) { korb_value argv[2] = { k, v }; return korb_yseq_call(c, ys, argv, 2); }
+    return korb_hash_yield(c, slots, block, def_env, cself, np, k, v);
+}
 /* no block → an Enumerator (with a size), built by the prelude's Hash#__enum_nb */
 static RESULT korb_hash_enum_nb(CTX *c, korb_value *slots, korb_ref self, korb_slice a, const char *meth) {
     const uint32_t n = KORB_SLICE_LEN(a);
@@ -1118,10 +1124,12 @@ static RESULT korb_m_hash_map(CTX *c, korb_value *slots, korb_ref self, korb_sli
     HASH_REQ_BLOCK("map");
     uint32_t np = korb_entry_params_cnt(block);
     korb_ref dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    struct korb_yseq ys = { 0 };                       /* set up only for |k, v| */
+    if (np >= 2) CHECK(korb_yseq_init(c, slots + 1, &ys, block, def_env, captured_self));
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(KORB_REF_GET(self));
         if (i >= h->len) break;
-        RESULT r = korb_hash_yield(c, slots + 1, block, def_env, captured_self, np, korb_hash_pairs(h)[2*i], korb_hash_pairs(h)[2*i+1]);
+        RESULT r = korb_hash_yield_ys(c, &ys, slots + 1, block, def_env, captured_self, np, korb_hash_pairs(h)[2*i], korb_hash_pairs(h)[2*i+1]);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         CHECK(korb_ary_push_val(c, slots + 1, dst, r.value));
     }
@@ -1133,13 +1141,15 @@ static RESULT korb_hash_filter(CTX *c, korb_value *slots, korb_ref self, NODE *b
     korb_ref dst = SLOTS_PUSH(slots, UNWRAP(korb_hash_new(c, slots, 4)));
     if (VAL2HASH(KORB_REF_GET(self))->head.flags & KORB_FL_CMP_BY_ID)   /* select/reject retain compare_by_identity */
         ((AroObjectHeader *)(uintptr_t)KORB_REF_GET(dst))->flags |= KORB_FL_CMP_BY_ID;
+    struct korb_yseq ys;
+    CHECK(korb_yseq_init(c, slots + 1, &ys, block, def_env, captured_self));
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(KORB_REF_GET(self));
         if (i >= h->len) break;
         korb_value k = korb_hash_pairs(h)[2*i], v = korb_hash_pairs(h)[2*i+1];
         /* CRuby Hash#select/reject yield |key, value| as TWO values (a 1-param
          * block gets the key), unlike each/map which gather the [k,v] pair. */
-        RESULT r = korb_hash_yield(c, slots + 1, block, def_env, captured_self, 2, k, v);
+        RESULT r = korb_hash_yield_ys(c, &ys, slots + 1, block, def_env, captured_self, 2, k, v);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (KORB_TRUTHY(r.value) == keep) {
             /* re-read BOTH key and value fresh from self: the block ran (and may
@@ -1181,10 +1191,12 @@ static RESULT korb_hash_quant(CTX *c, korb_value *slots, korb_ref self, korb_sli
         return RESULT_OK(KORB_TRUE);                                          /* all? */
     }
     uint32_t np = korb_entry_params_cnt(block);
+    struct korb_yseq ys = { 0 };                       /* set up only for |k, v| */
+    if (np >= 2) CHECK(korb_yseq_init(c, slots, &ys, block, def_env, captured_self));
     for (uint32_t i = 0; ; i++) {
         const KorbHash *h = VAL2HASH(KORB_REF_GET(self));
         if (i >= h->len) break;
-        RESULT r = korb_hash_yield(c, slots, block, def_env, captured_self, np, korb_hash_pairs(h)[2*i], korb_hash_pairs(h)[2*i+1]);
+        RESULT r = korb_hash_yield_ys(c, &ys, slots, block, def_env, captured_self, np, korb_hash_pairs(h)[2*i], korb_hash_pairs(h)[2*i+1]);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         bool t = KORB_TRUTHY(r.value);
         if (mode == 0 && t) return RESULT_OK(KORB_TRUE);

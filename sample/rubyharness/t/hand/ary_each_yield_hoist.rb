@@ -59,3 +59,17 @@ end
   p %w[a b].each_with_object({}) { |x, h| h[x] = x.upcase }, [[1, 2]].each_with_object([]) { |(a, b), m| m << b }
   p [1, 2, 3].find { |x| x > 1 }, [1].find { |x| x > 5 }, [[1, 2], [3, 4]].find { |a, b| b == 4 }, [1].find(-> { :none }) { false }
 end
+# Range#each (bounded / exclusive / endless) through the hoisted yield
+2.times do |r|
+  GC.start if r == 1
+  o = []; (1..3).each { |i| o << i }; (1...3).each { |i| o << -i }; (5..).each { |i| break if i > 7; o << i }; p o
+  c = []; (1..2).each { |i| c << -> { i } }; p c.map(&:call), (1..3).each { |i| next }.class, ("a".."c").each.to_a
+end
+# Hash#map / select / reject / any? / all? through the hoisted yield
+2.times do |r|
+  GC.start if r == 1
+  h = { a: 1, b: 2, c: 3 }
+  p h.map { |k, v| [v, k] }, h.map { |pr| pr }, h.select { |k, v| v > 1 }, h.select { |x| x == :a }, h.reject { |k, v| v == 2 }
+  p h.any? { |k, v| v == 3 }, h.all? { |k, v| v > 0 }, h.none? { |pr| pr[1] == 9 }, h.any? { |k, v| break :b if k == :b; false }
+  cl = []; h.select { |k, v| cl << -> { [k, v] }; true }; p cl.map(&:call)
+end
