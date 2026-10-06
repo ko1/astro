@@ -98,6 +98,11 @@ static RESULT korb_m_ary_cmp(CTX *c, korb_value *slots, korb_ref self, korb_slic
 static RESULT korb_m_ary_self(CTX *c, korb_value *slots, korb_ref self, korb_slice a)  { (void)c;(void)slots;(void)a; return RESULT_OK(KORB_REF_GET(self)); }
 /* True when `v`'s class (singletons peeled) is exactly the builtin `cls`. */
 static bool korb_exact_class_p(CTX *c, korb_value v, int cls) {
+    /* a builtin-typed value without an override (no subclass / singleton) is exactly its builtin class:
+     * String#to_s / Array#to_a / Hash#to_h on a plain receiver (railsbench: 131 String#to_s a request) */
+    if (AROH_IS_GC_OBJECT(v) && !(((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS) &&
+        ((cls == KORB_C_STRING && KORB_STRING_P(v)) || (cls == KORB_C_ARRAY && KORB_ARRAY_P(v)) || (cls == KORB_C_HASH && KORB_HASH_P(v))))
+        return true;
     korb_value k = korb_class_obj_of(c, v);
     while (KORB_CLASS_P(k) && VAL2CLASS(k)->is_singleton) k = VAL2CLASS(k)->superclass;
     return k == korb_builtin_class_obj(c->vm, cls);

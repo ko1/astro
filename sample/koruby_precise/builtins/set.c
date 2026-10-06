@@ -650,7 +650,10 @@ static bool korb_obj_kind_of_p(CTX *c, korb_value sv, korb_value target) {
      * Class — that is what makes `C.singleton_class.is_a?(Class.singleton_class)`
      * true. */
     korb_value cls;
-    if (AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_HAS_KLASS))
+    if (KORB_OBJECT_P(sv) && !(((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_HAS_KLASS) &&
+        VAL2OBJ(sv)->klass != KORB_NIL)
+        cls = VAL2OBJ(sv)->klass;                     /* a plain instance: its class, no lookup (is_a? 165, Module#=== 150 a request) */
+    else if (AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_HAS_KLASS))
         cls = korb_klass_override_get(c->vm, sv);
     else if (KORB_CLASS_P(sv) && !VAL2CLASS(sv)->is_module)
         cls = korb_dispatch_class(c, sv);
@@ -1306,8 +1309,8 @@ static RESULT korb_m_class_attr1(CTX *c, korb_value *slots, korb_ref self, korb_
 }
 /* Module#=== (`Klass === obj`): true iff obj.is_a?(Klass) — same test korb_case_eq uses. */
 static RESULT korb_m_class_case_eq(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
-    (void)slots;
-    return RESULT_OK(korb_case_eq(c, KORB_REF_GET(self), KORB_SLICE_GET(a, 0)) ? KORB_TRUE : KORB_FALSE);
+    (void)slots;   /* self is a Class / Module: korb_case_eq's answer is is_a?, so ask it directly */
+    return RESULT_OK(korb_obj_kind_of_p(c, KORB_SLICE_GET(a, 0), KORB_REF_GET(self)) ? KORB_TRUE : KORB_FALSE);
 }
 /* Class#superclass — the immediate superclass (nil at the top). */
 static RESULT korb_m_class_superclass(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {

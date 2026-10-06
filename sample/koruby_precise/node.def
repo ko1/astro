@@ -2690,6 +2690,9 @@ node_send(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, 
 static inline korb_value
 korb_sdi_klass(const struct korb_vm *vm, const korb_value r)   /* the class korb_send_cached keys the cache on, or nil */
 {
+    if (LIKELY(AROH_IS_GC_OBJECT(r)) &&                  /* the common receiver first: a plain instance (one flags load) */
+        (((const AroObjectHeader *)(uintptr_t)r)->flags & (KORB_OBJ_TYPE_MASK | KORB_FL_HAS_KLASS)) == KORB_OBJ_OBJECT)
+        return VAL2OBJ(r)->klass;                         /* nil for main */
     if (FIXNUM_P(r)) return korb_bi_class(vm, KORB_C_INTEGER);
     if (FLONUM_P(r)) return korb_bi_class(vm, KORB_C_FLOAT);
     if (r == KORB_NIL) return korb_bi_class(vm, KORB_C_NIL);
