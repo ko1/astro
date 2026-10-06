@@ -2126,9 +2126,17 @@ korb_hash_find_ctx_h(CTX *c, korb_value *slots, korb_ref href, korb_value key, R
     }
 }
 
-static int32_t
+/* fetch / delete / key? / []=: a key whose equality C owns goes straight to the scan, as ctx_h would
+ * (entering ctx_h's frame cost 48 instructions a call) */
+static inline __attribute__((always_inline)) int32_t
 korb_hash_find_ctx(CTX *c, korb_value *slots, korb_ref href, korb_value key, RESULT *out_err)
 {
+    const KorbHash *const h = VAL2HASH(KORB_REF_GET(href));
+    if (LIKELY(!(h->head.flags & KORB_FL_CMP_BY_ID) && !korb_eq_needs_send(key) &&
+               !(UNLIKELY(c->vm->sing_hash_redef) && KORB_CLASS_P(key)))) {
+        *out_err = RESULT_OK(KORB_NIL);
+        return korb_hash_find(h, key);
+    }
     return korb_hash_find_ctx_h(c, slots, href, key, out_err, NULL);
 }
 

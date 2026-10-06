@@ -395,6 +395,15 @@ static RESULT korb_m_hash_value_q(CTX *c, korb_value *slots, korb_ref self, korb
     return RESULT_OK(KORB_FALSE);
 }
 
+/* KeyError (#receiver + #key) for a missed fetch: out of line, so a hit pays no message buffer / stack guard */
+static __attribute__((noinline, cold)) RESULT
+korb_hash_fetch_miss(CTX *c, korb_value *slots, korb_ref self, const korb_value key) {
+    char *kb = NULL; size_t ksz = 0; FILE *km = open_memstream(&kb, &ksz);
+    if (km) { korb_fprint_inspect(c, km, key); fclose(km); }
+    char msg[512]; snprintf(msg, sizeof msg, "key not found: %s", kb ? kb : "");
+    free(kb);
+    return korb_raise_key(c, slots, KORB_REF_GET(self), key, msg);
+}
 static RESULT korb_m_hash_fetch(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
     if (UNLIKELY(KORB_SLICE_LEN(a) < 1 || KORB_SLICE_LEN(a) > 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)", (unsigned)KORB_SLICE_LEN(a));
     if (UNLIKELY(KORB_SLICE_LEN(a) == 2 && block != NULL)) korb_warn(c, slots, "block supersedes default value argument");
@@ -407,11 +416,7 @@ static RESULT korb_m_hash_fetch(CTX *c, korb_value *slots, korb_ref self, korb_s
         return korb_block_yield(c, slots, block, def_env, &k, 1, cself);
     }
     if (KORB_SLICE_LEN(a) >= 2) return RESULT_OK(KORB_SLICE_GET(a, 1));
-    char *kb = NULL; size_t ksz = 0; FILE *km = open_memstream(&kb, &ksz);
-    if (km) { korb_fprint_inspect(c, km, KORB_SLICE_GET(a, 0)); fclose(km); }
-    char msg[512]; snprintf(msg, sizeof msg, "key not found: %s", kb ? kb : "");
-    free(kb);
-    return korb_raise_key(c, slots, KORB_REF_GET(self), KORB_SLICE_GET(a, 0), msg);   /* KeyError w/ #receiver + #key */
+    return korb_hash_fetch_miss(c, slots, self, KORB_SLICE_GET(a, 0));
 }
 
 /* collect keys (sel 0) or values (sel 1) into a new array */
