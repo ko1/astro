@@ -20,3 +20,6 @@ p m.synchronize { m.synchronize { m.mon_owned? } }, m.mon_owned?, m.mon_locked?
 p((Thread.new { Thread.current.report_on_exception = false; m.mon_exit }.join rescue [$!.class, $!.message]))
 q = Queue.new; th = Thread.new { m.synchronize { q << :in; sleep 0.05; :done } }; q.pop; p m.mon_locked?, th.value, m.mon_locked?
 p((m.synchronize { raise "boom" } rescue $!.message), m.mon_locked?)
+# no target: a copy / nothing while default_internal is unset, a conversion once it is set
+na = +"na"; p na.encode, na.encode.equal?(na), na.encode!.equal?(na), na.encoding, (("nf".freeze).encode! rescue $!.class)
+Encoding.default_internal = "US-ASCII"; nb = +"nb"; p nb.encode.encoding, nb.encode!.encoding; Encoding.default_internal = nil

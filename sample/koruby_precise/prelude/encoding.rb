@@ -830,7 +830,9 @@ class String
   end
 
   def encode(*args)
-    return dup if args.size == 1 && __enc_same?(args[0])   # nothing to convert (CRuby copies): no Encoding.find either side
+    # nothing to convert (CRuby copies): the string's own encoding, or no target while default_internal is
+    # unset (ActionView's buffer does `encode!` with no argument on every append) — no Encoding.find either side
+    return dup if args.empty? ? Encoding.default_internal.nil? : (args.size == 1 && __enc_same?(args[0]))
     opts = args.last.is_a?(Hash) ? args.pop : {}
     to_name   = __enc_arg(args[0])
     from_name = __enc_arg(args[1]) || encoding.name
@@ -969,7 +971,9 @@ class String
   # already-converted result rather than re-parsing the arguments.
   def encode!(*args, **opts)
     # nothing to convert: only the modifiable check (frozen raises, chilled warns) as CRuby's str_modifiable
-    return __set_encoding_tag(__encoding_tag) if opts.empty? && args.size == 1 && __enc_same?(args[0])
+    if opts.empty? && (args.empty? ? Encoding.default_internal.nil? : (args.size == 1 && __enc_same?(args[0])))
+      return __set_encoding_tag(__encoding_tag)
+    end
     e = opts.empty? ? encode(*args) : encode(*args, **opts)
     enc = e.encoding
     replace(e)
