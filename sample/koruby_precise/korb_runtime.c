@@ -17105,6 +17105,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "force_encoding", korb_m_str_force_encoding, 1);
     korb_def_cmethod(c, KORB_C_STRING, "__encoding_tag", korb_m_str_enc_tag, 0);
     korb_def_cmethod(c, KORB_C_STRING, "__encoding_name", korb_m_str_enc_name, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "__enc_same?", korb_m_str_enc_same_p, 1);
     korb_def_cmethod(c, KORB_C_STRING, "__set_encoding_tag", korb_m_str_set_enc_tag, 1);
     korb_def_cmethod(c, KORB_C_STRING, "valid_encoding?", korb_m_str_valid_encoding, 0);
     korb_def_cmethod(c, KORB_C_STRING, "byteindex", korb_m_str_byteindex, -1);
@@ -20935,6 +20936,15 @@ static RESULT korb_html_escape_str(CTX *c, korb_value *slots, const bool keep) {
     KORB_STR_ENC_SET(r.value, enc);
     return r;
 }
+/* __gc_collectable?(v): what WeakKeyMap / WeakMap accept as a key — not an Integer / Float / Symbol / nil /
+ * true / false (CRuby's special constants and flonums; a heap Float or Bignum counts too, as Integer === /
+ * Float === did in the prelude, without dispatching to the key) */
+static RESULT korb_bi_gc_collectable_p(CTX *c, korb_value *slots, korb_slice args) {
+    (void)c; (void)slots;
+    const korb_value v = KORB_SLICE_GET(args, 0);
+    const bool imm = !AROH_IS_GC_OBJECT(v) || KORB_FLOAT_P(v) || KORB_OBJ_TYPE(v) == KORB_OBJ_BIGNUM;
+    return RESULT_OK(imm ? KORB_FALSE : KORB_TRUE);
+}
 /* ERB::Escape.html_escape: #to_s a non-String; a non-ASCII-compatible String goes to CGI.escapeHTML */
 static RESULT korb_bi_erb_html_escape(CTX *c, korb_value *slots, korb_slice args) {
     slots[0] = KORB_SLICE_GET(args, 0);
@@ -23441,6 +23451,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "block_given?", korb_bi_block_given_p, 0);
     korb_builtin_define(c, "__korb_caller_cref", korb_bi_caller_cref, 0);
     korb_builtin_define(c, "__erb_html_escape", korb_bi_erb_html_escape, 1);
+    korb_builtin_define(c, "__gc_collectable?", korb_bi_gc_collectable_p, 1);
     korb_builtin_define(c, "__cgi_html_escape", korb_bi_cgi_html_escape, 1);
     korb_builtin_define(c, "iterator?", korb_bi_block_given_p, 0);
     korb_builtin_define(c, "__callee__", korb_bi_method_name, 0);

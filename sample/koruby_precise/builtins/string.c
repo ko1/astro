@@ -151,6 +151,22 @@ static RESULT korb_m_str_enc_name(CTX *c, korb_value *slots, korb_ref self, korb
     const char *nm = korb_sym_name(c->vm, c->vm->str_enc_names[idx]);
     return korb_str_new(c, slots, nm, (uint32_t)strlen(nm));
 }
+/* String#__enc_same?(to) → true when `to` (an Encoding, or a name String) is a name the registry already
+ * maps to this string's encoding index: #encode / #encode! with nothing to convert return before the
+ * prelude resolves both sides through Encoding.find (railsbench: 6.5 encode! a request, 39k instructions
+ * each).  Anything else — aliases, unknown names, #to_str objects — is false and takes the full path. */
+static RESULT korb_m_str_enc_same_p(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)slots;
+    korb_value to = KORB_SLICE_GET(a, 0);
+    if (KORB_OBJECT_P(to)) to = korb_ivar_get(c, to, ID2SYM(korb_intern_lit(c->vm, "@name", 5)));   /* an Encoding */
+    if (!KORB_STRING_P(to)) return RESULT_OK(KORB_FALSE);
+    const KorbString *const ts = VAL2STR(to);
+    char nbuf[64];
+    if (ts->len == 0 || ts->len >= sizeof nbuf) return RESULT_OK(KORB_FALSE);
+    memcpy(nbuf, korb_str_ptr(ts), ts->len); nbuf[ts->len] = '\0';
+    const uint32_t idx = korb_enc_index_known(c->vm, nbuf);
+    return RESULT_OK(idx != UINT32_MAX && idx == KORB_STR_ENC(KORB_REF_GET(self)) ? KORB_TRUE : KORB_FALSE);
+}
 /* String#__set_encoding_tag(n) → set the encoding index in place, return self. */
 static RESULT korb_m_str_set_enc_tag(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     const korb_value s = KORB_REF_GET(self);

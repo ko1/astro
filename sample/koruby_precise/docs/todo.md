@@ -5,6 +5,10 @@
 
 
 
+## 未: prelude の Ruby 実装が backtrace / 警告の位置に出る (2026-10-06)
+- Monitor#mon_exit を所有者以外が呼ぶと、CRuby は 'Thread::Monitor#exit' 1 段、koruby は 'Monitor#mon_check_owner' と '#exit' の 2 段。
+- chilled な文字列リテラルへの破壊的操作（"x".encode!("UTF-8") など）の deprecated 警告に、CRuby は "file:line: " を付けるが koruby は付けない（master でも同じ）。
+
 ## 未: copy 以外の GC backend が master でも動かない (2026-10-05)
 9783214a を `make GC=mark_compact` でビルドすると t/hand/array_embed.rb 等が STRESS なしでも CRuby と食い違い、
 `GC=immix_gen` は素では通るが BARUBY_GC_STRESS=64 で食い違い、STRESS=1+PURGE では両方とも起動直後に SEGV。

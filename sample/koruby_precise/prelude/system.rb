@@ -295,12 +295,24 @@ class Monitor
     nil
   end
 
+  # enter / exit inlined: railsbench synchronizes ~10 times a request and each step was a call
   def synchronize
-    enter
+    th = Thread.current
+    if @__owner.equal?(th)
+      @__count += 1
+    else
+      @__mutex.lock
+      @__owner = th
+      @__count = 1
+    end
     begin
       yield
     ensure
-      exit
+      raise ThreadError, "current fiber not owner" unless @__owner.equal?(Thread.current)
+      if (@__count -= 1) == 0
+        @__owner = nil
+        @__mutex.unlock
+      end
     end
   end
   alias mon_synchronize synchronize
@@ -1405,12 +1417,9 @@ module ObjectSpace
 
     # Integers / Floats / Symbols / true / false / nil are never collected, so
     # CRuby refuses them as keys and reports them as absent on reads.  Tested
-    # with Module#=== so nothing is dispatched to the key itself (a BasicObject
-    # key must fail on #hash, not on #nil?).
-    def __collectable?(key)
-      !(Integer === key || Float === key || Symbol === key ||
-        NilClass === key || TrueClass === key || FalseClass === key)
-    end
+    # in C (__gc_collectable?) so nothing is dispatched to the key itself (a
+    # BasicObject key must fail on #hash, not on #nil?).
+    def __collectable?(key) = __gc_collectable?(key)
   end
 end
 

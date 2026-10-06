@@ -14,9 +14,11 @@ class Encoding
   # UTF-32 families (including the explicit-endian variants), UTF-7 and the
   # stateful ISO-2022 / CP502xx encodings are not.
   def ascii_compatible?
+    ac = @__ac   # computed once per Encoding: ActionView asks on every buffer append (13 a request)
+    return ac unless ac.nil?
     n = @name.upcase
-    !(n.start_with?("UTF-16") || n.start_with?("UTF-32") || n == "UTF-7" ||
-      n.start_with?("ISO-2022") || n.start_with?("CP502") || n == "IBM037")   # IBM037: EBCDIC
+    @__ac = !(n.start_with?("UTF-16") || n.start_with?("UTF-32") || n == "UTF-7" ||
+              n.start_with?("ISO-2022") || n.start_with?("CP502") || n == "IBM037")   # IBM037: EBCDIC
   end
   def dummy?
     n = @name.upcase
@@ -285,7 +287,11 @@ class Encoding
   def self.default_internal=(e); __enc_sync__(@@__locale, @@__default_internal = (e.nil? ? nil : __to_enc(e, :internal)), @@__default_external); end
   # Encoding.find(name) → the Encoding constant whose #name matches (case-folded),
   # else a fresh Encoding of that name (used by String#encoding for "other").
+  @@__find_exact = {}   # name String as given (frozen) → Encoding, filled by find's memo hits
   def self.find(name)
+    if String === name && (hit = @@__find_exact[name])   # a name found before, as written (not the special ones)
+      return hit
+    end
     # CRuby takes an Encoding, a String, or anything with #to_str — a Symbol is
     # a TypeError, not a name.
     n = if name.is_a?(Encoding) then name.name
@@ -299,7 +305,7 @@ class Encoding
     return default_internal if n == 'internal'
     key = n.upcase
     hit = (@@__find_memo ||= {})[key]   # scanning every alias and constant per call was hot (rspec)
-    return hit if hit
+    return @@__find_exact[n.frozen? ? n : n.dup.freeze] = hit if hit
     # Resolve an alias first, so find("BINARY") is Encoding::ASCII_8BIT itself
     # rather than a fresh Encoding that merely prints the same.
     aliases.each { |a, canon| (n = canon; break) if a.upcase == key }
@@ -766,17 +772,14 @@ class String
   # 2 ASCII-8BIT); the C primitives read/set it.  Only these three encodings are
   # distinguished — enough for #encoding / #force_encoding / #b and the ASCII /
   # binary specs.  (Full per-encoding semantics / negotiation are out of scope.)
+  ENC_BY_TAG__ = [Encoding::UTF_8, Encoding::US_ASCII, Encoding::ASCII_8BIT].freeze   # tags 0..2
   def encoding
-    case __encoding_tag
-    when 0 then Encoding::UTF_8
-    when 1 then Encoding::US_ASCII
-    when 2 then Encoding::ASCII_8BIT
-    else
-      # "other" (index 3+): by stored name.  A special name ("internal" etc.)
-      # that was unset when force_encoding ran resolves to BINARY, as CRuby's
-      # rb_to_encoding does.
-      Encoding.find(__encoding_name) || Encoding::ASCII_8BIT
-    end
+    e = ENC_BY_TAG__[__encoding_tag]
+    return e if e
+    # "other" (index 3+): by stored name.  A special name ("internal" etc.)
+    # that was unset when force_encoding ran resolves to BINARY, as CRuby's
+    # rb_to_encoding does.
+    Encoding.find(__encoding_name) || Encoding::ASCII_8BIT
   end
   # force_encoding / b are C methods (builtins/string.c).
 
@@ -827,6 +830,7 @@ class String
   end
 
   def encode(*args)
+    return dup if args.size == 1 && __enc_same?(args[0])   # nothing to convert (CRuby copies): no Encoding.find either side
     opts = args.last.is_a?(Hash) ? args.pop : {}
     to_name   = __enc_arg(args[0])
     from_name = __enc_arg(args[1]) || encoding.name
@@ -964,6 +968,8 @@ class String
   # #replace copies the source's bytes; take the target encoding from the
   # already-converted result rather than re-parsing the arguments.
   def encode!(*args, **opts)
+    # nothing to convert: only the modifiable check (frozen raises, chilled warns) as CRuby's str_modifiable
+    return __set_encoding_tag(__encoding_tag) if opts.empty? && args.size == 1 && __enc_same?(args[0])
     e = opts.empty? ? encode(*args) : encode(*args, **opts)
     enc = e.encoding
     replace(e)
