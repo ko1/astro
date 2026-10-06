@@ -1999,6 +1999,20 @@ korb_hash_find(const KorbHash *h, korb_value key)
             if (d[2 * i] == key) return (int32_t)i;
         return -1;
     }
+    if (KORB_STRING_P(key)) {   /* String keys (HWIA, params, headers): skip pairs by length / first byte before the full eql? */
+        const KorbString *const ks = VAL2STR(key);
+        const uint32_t klen = ks->len;
+        const unsigned char k0 = klen ? (unsigned char)korb_str_ptr(ks)[0] : 0;
+        for (uint32_t i = 0; i < h->len; i++) {
+            const korb_value sk = d[2 * i];
+            if (sk == key) return (int32_t)i;
+            if (!KORB_STRING_P(sk)) continue;   /* a String is eql? only to a String */
+            const KorbString *const ss = VAL2STR(sk);
+            if (ss->len != klen || (klen && (unsigned char)korb_str_ptr(ss)[0] != k0)) continue;
+            if (korb_value_eq(sk, key)) return (int32_t)i;
+        }
+        return -1;
+    }
     for (uint32_t i = 0; i < h->len; i++)
         if (korb_value_eql(d[2 * i], key)) return (int32_t)i;   /* eql?: 1 and 1.0 are distinct keys */
     return -1;
