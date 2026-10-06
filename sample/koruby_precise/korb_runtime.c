@@ -1898,15 +1898,23 @@ static uint64_t korb_value_hash_d(korb_value v, int depth) {
     if (SYMBOL_P(v)) { uint64_t x = (uint64_t)SYM2ID(v) + 1; x *= 0x9e3779b97f4a7c15ULL; return x ^ (x >> 32); }
     if (KORB_STRING_P(v)) {   /* 8 bytes per step (byte-wise FNV-1a was ~4 instructions a byte: railsbench 1.3%) */
         const KorbString *s = VAL2STR(v);
-        const unsigned char *p = (const unsigned char *)korb_str_ptr(s);
-        uint32_t n = s->len;
+        const unsigned char *const p0 = (const unsigned char *)korb_str_ptr(s);
+        const unsigned char *p = p0;
+        const uint32_t len = s->len;
+        uint32_t n = len;
         uint64_t h = 0x9e3779b97f4a7c15ULL ^ n;
         for (; n >= 8; p += 8, n -= 8) {
             uint64_t w; memcpy(&w, p, 8);
             h = (h ^ w) * 0xff51afd7ed558ccdULL; h ^= h >> 32;
         }
+        /* the tail bytes zero-extended, as a memcpy of n bytes into a zeroed word gives, but from whole loads inside
+         * the string (that byte copy into a stack word stalled on store forwarding); little endian */
         uint64_t t = 0;
-        memcpy(&t, p, n);
+        if (n != 0) {
+            if (len >= 8) { memcpy(&t, p0 + len - 8, 8); t >>= 8 * (8 - n); }
+            else if (n >= 4) { uint32_t a, b; memcpy(&a, p, 4); memcpy(&b, p + n - 4, 4); t = (uint64_t)a | ((uint64_t)b << (8 * (n - 4))); }
+            else t = (uint64_t)p[0] | ((uint64_t)p[n >> 1] << (8 * (n >> 1))) | ((uint64_t)p[n - 1] << (8 * (n - 1)));
+        }
         h = (h ^ t) * 0xc4ceb9fe1a85ec53ULL; h ^= h >> 29;
         /* fmix64: without it the low bits (the index slot) of keys that differ only in their last bytes
          * ("key1".."key160") cluster, and linear probing walked 14 slots per lookup at load 0.63 */
