@@ -16610,7 +16610,7 @@ static const struct { const char *name; uint32_t argc; int cls[KORB_SDI_FN_MAX +
     KORB_SDI_E(MATCH_P, "match?", 1, KORB_C_STRING, KORB_C_REGEXP, KORB_C_SYMBOL),
     KORB_SDI_E(UPCASE, "upcase", 0, KORB_C_STRING, KORB_C_SYMBOL),
     KORB_SDI_E(DOWNCASE, "downcase", 0, KORB_C_STRING, KORB_C_SYMBOL),
-    KORB_SDI_E(DUP, "dup", 0, KORB_C_OBJECT, KORB_C_INTEGER, KORB_C_FLOAT),
+    KORB_SDI_E(DUP, "dup", 0, KORB_C_OBJECT, KORB_C_INTEGER, KORB_C_FLOAT, KORB_C_STRING),
     KORB_SDI_E(FORCE_ENCODING, "force_encoding", 1, KORB_C_STRING),
     KORB_SDI_E(FREEZE, "freeze", 0, KORB_C_OBJECT),
     KORB_SDI_E(TO_I, "to_i", 0, KORB_C_INTEGER, KORB_C_STRING, KORB_C_NIL, KORB_C_FLOAT),
@@ -17162,6 +17162,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "b", korb_m_str_b, 0);
     korb_def_cmethod(c, KORB_C_STRING, "dedup", korb_m_str_uminus, 0);   /* #dedup is an alias of #-@ (frozen, deduplicated) */
     korb_def_cmethod(c, KORB_C_STRING, "encode", korb_m_obj_dup, -1);
+    korb_def_cmethod(c, KORB_C_STRING, "dup", korb_m_str_dup, 0);
     korb_def_cmethod(c, KORB_C_STRING, "encode!", korb_m_str_self, -1);
     korb_def_cmethod(c, KORB_C_STRING, "force_encoding", korb_m_str_force_encoding, 1);
     korb_def_cmethod(c, KORB_C_STRING, "__encoding_tag", korb_m_str_enc_tag, 0);

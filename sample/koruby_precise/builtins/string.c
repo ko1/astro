@@ -447,6 +447,19 @@ static RESULT korb_m_str_uminus(CTX *c, korb_value *slots, korb_ref self, korb_s
     return RESULT_OK(r);
 }
 static RESULT korb_m_obj_dup(CTX *c, korb_value *slots, korb_ref self, korb_slice a);   /* fwd (int_float_ext.c) */
+/* String#dup (CRuby rb_str_dup_m): a bare String copies its bytes and encoding; a subclass, a singleton,
+ * generic ivars or a finalizer take Kernel#dup's path (#initialize_dup runs only there, as in CRuby). */
+static RESULT korb_m_str_dup(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    const korb_value v = KORB_REF_GET(self);
+    if (UNLIKELY((((const AroObjectHeader *)(uintptr_t)v)->flags & (KORB_FL_HAS_KLASS | KORB_FL_HAS_IVARS)) || c->vm->finalizers_active))
+        return korb_m_obj_dup(c, slots, self, a);
+    const uint32_t len = VAL2STR(v)->len;
+    KorbString *const r = korb_str_alloc(c, slots, len);
+    const korb_value s = KORB_REF_GET(self);                 /* re-read after alloc/GC */
+    memcpy(korb_str_ptr(r), korb_str_ptr(VAL2STR(s)), len);
+    KORB_STR_ENC_SET((korb_value)r, KORB_STR_ENC(s));
+    return RESULT_OK((korb_value)r);
+}
 /* String#+@ → a mutable string (self if already mutable, else an unfrozen copy).  The copy is the
  * built-in dup's, not a #dup send: CRuby's str_uplus calls rb_str_dup (railsbench: 16k sends an iteration). */
 static RESULT korb_m_str_plus_at(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {

@@ -45,6 +45,11 @@
 - 4 回目: gemb4（koruby-embhash a382ce46、負荷 20 超）で 6 行目。同じ binary と 9783214a を単独で 40 回ずつ流して 0 回。
 - 挿入時の hash を覚える khints が、何かの拍子に捨てられて（構造変更で落ちる）線形の eql? 探索になると見つかってしまう、と推測（未確認）。
   GC の時機か並列実行の何かで khints の状態が変わる経路を探す。
+- **決定的に再現する近縁（2026-10-06）**: Array キーも O(1) 索引（idx_mask）に入り、索引は挿入時の中身のハッシュで振られる。
+  ところが索引の作り直し（`korb_hash_index_build`：負荷率超え・削除後の再挿入など）は**今の中身**で振り直すので、挿入後に変えたキーが
+  また引ける。`s = {}; ks = (0...20).map { [_1] }; ks.each { s[_1] = 1 }; ks[3] << 9; 30.times { s[[_1, _1]] = _1 }; p s[[3, 9]]`
+  が CRuby nil・koruby 1。CRuby は各エントリの hash を持っていて rehash 以外では振り直さない。直すなら khints（あれば）で振る。
+  Hash#dup は 2026-10-06 から索引をそのまま写すので dup 経由では起きない（t/hand/dup_bulk_copy.rb）。
 - 同系統の疑い: t/hand/builtin_subclass_hash_eql_caseeq.rb（独自 #hash / #eql? の Array サブクラスをキーにする）が
   gate gsmall14（2026-10-04、wt-flat ea2307d7、全体 make test・並列）で出力 7 行目だけ 1 回食い違った。
   同じ木で全体 make test 2 回・単独並列 200 回とも再現しない。

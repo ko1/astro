@@ -537,6 +537,16 @@ static korb_value korb_copy_klass(CTX *c, korb_value ov, korb_value src)
     if (!KORB_CLASS_P(ov)) return KORB_NIL;
     return (ov == korb_builtin_class_obj(c->vm, korb_class_of(src))) ? KORB_NIL : ov;
 }
+/* A copy of one of a Hash's raw side buffers (index / key hints): `bytes` long, the first `used` from the
+ * source's field at `field`, re-read after the alloc.  NULL when the GC dropped the source's buffer meanwhile. */
+static KorbStrBuf *korb_hash_side_copy(CTX *c, korb_value *slots, korb_ref self, const size_t field, const size_t bytes, const size_t used) {
+    KorbStrBuf *const nb = korb_alloc(c, slots, sizeof(KorbStrBuf) + bytes, KORB_OBJ_STR_BUF);
+    KorbStrBuf *const sb = *(KorbStrBuf *const *)(const void *)((const char *)VAL2HASH(KORB_REF_GET(self)) + field);
+    if (sb == NULL) return NULL;
+    memcpy(korb_strbuf_data(nb), korb_strbuf_data(sb), used);
+    memset((char *)korb_strbuf_data(nb) + used, 0, bytes - used);
+    return nb;
+}
 static RESULT korb_obj_copy_impl(CTX *c, korb_value *slots, korb_ref self, uint32_t hook_mid, const korb_value *hook_kw) {
     bool fin_done = false;   /* finalizers copied (korb_copy_hook does it before the hook) */
     const korb_value v = KORB_REF_GET(self);
@@ -558,9 +568,9 @@ static RESULT korb_obj_copy_impl(CTX *c, korb_value *slots, korb_ref self, uint3
     } else if (KORB_ARRAY_P(v)) {
         uint32_t n = VAL2ARY(v)->len;
         slots[1] = UNWRAP(korb_ary_new(c, slots + 1, n));
-        korb_ref dst = KORB_REF_AT(&slots[1]);
-        for (uint32_t i = 0; i < n; i++)
-            CHECK(korb_ary_push_val(c, slots + 2, dst, korb_ary_ptr(VAL2ARY(KORB_REF_GET(self)))[i]));
+        KorbArray *const da = VAL2ARY(slots[1]);
+        ARO_STORE_BULK(c, korb_ary_owner(da), korb_ary_ptr(da), korb_ary_ptr(VAL2ARY(KORB_REF_GET(self))), n);
+        da->len = n;
         need_initcopy = true;
     } else if (KORB_HASH_P(v)) {
         uint32_t n = VAL2HASH(v)->len;
@@ -570,11 +580,30 @@ static RESULT korb_obj_copy_impl(CTX *c, korb_value *slots, korb_ref self, uint3
          * collapse under the copy's default value-equality. */
         if (VAL2HASH(KORB_REF_GET(self))->head.flags & KORB_FL_CMP_BY_ID)   /* re-fetch: korb_hash_new above GC-moved the receiver; `v` is stale */
             ((AroObjectHeader *)(uintptr_t)slots[1])->flags |= KORB_FL_CMP_BY_ID;
-        korb_ref dst = KORB_REF_AT(&slots[1]);
-        for (uint32_t i = 0; i < n; i++) {
-            slots[2] = korb_hash_pairs(VAL2HASH(KORB_REF_GET(self)))[2 * i];
-            korb_value val = korb_hash_pairs(VAL2HASH(KORB_REF_GET(self)))[2 * i + 1];
-            CHECK(korb_hash_set(c, slots + 3, dst, KORB_REF_AT(&slots[2]), val));
+        {   /* pairs, index and key hints as they are (CRuby st_copy: a key mutated in the source stays lost) */
+            KorbHash *dh = VAL2HASH(slots[1]);
+            const KorbHash *const sh = VAL2HASH(KORB_REF_GET(self));
+            dh->head.flags |= sh->head.flags & KORB_FL_HASH_NOINDEX;
+            ARO_STORE_BULK(c, korb_hash_owner(dh), korb_hash_pairs(dh), korb_hash_pairs(sh), (size_t)n * 2);
+            dh->len = n;
+            const uint32_t imask = sh->idx_mask | sh->id_mask, kmask = sh->kidx_mask;
+            const bool hints = sh->khints && sh->khint_len == n && n;
+            if (sh->index && imask) {
+                KorbStrBuf *const b = korb_hash_side_copy(c, slots + 2, self, offsetof(KorbHash, index), (size_t)(imask + 1) * sizeof(uint32_t), (size_t)(imask + 1) * sizeof(uint32_t));
+                dh = VAL2HASH(slots[1]);
+                if (b) { ARO_STORE(c, dh, (korb_value *)(uintptr_t)&dh->index, (korb_value)(uintptr_t)b);
+                         if (dh->head.flags & KORB_FL_CMP_BY_ID) dh->id_mask = imask; else dh->idx_mask = imask; }
+            }
+            if (hints) {
+                KorbStrBuf *const b = korb_hash_side_copy(c, slots + 2, self, offsetof(KorbHash, khints), (size_t)dh->capa * sizeof(uint64_t), (size_t)n * sizeof(uint64_t));
+                dh = VAL2HASH(slots[1]);
+                if (b) { ARO_STORE(c, dh, (korb_value *)(uintptr_t)&dh->khints, (korb_value)(uintptr_t)b); dh->khint_len = n; dh->khint_capa = dh->capa; }
+            }
+            if (hints && dh->khints && kmask && VAL2HASH(KORB_REF_GET(self))->kindex) {
+                KorbStrBuf *const b = korb_hash_side_copy(c, slots + 2, self, offsetof(KorbHash, kindex), (size_t)(kmask + 1) * sizeof(uint32_t), (size_t)(kmask + 1) * sizeof(uint32_t));
+                dh = VAL2HASH(slots[1]);
+                if (b) { ARO_STORE(c, dh, (korb_value *)(uintptr_t)&dh->kindex, (korb_value)(uintptr_t)b); dh->kidx_mask = kmask; }
+            }
         }
         KorbHash *const dh = VAL2HASH(slots[1]);            /* preserve default value / default_proc */
         const KorbHash *const sh = VAL2HASH(KORB_REF_GET(self));
