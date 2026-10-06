@@ -2687,21 +2687,13 @@ node_send(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, 
  * of the builtins the name stands for (vm->sdi_fn) for the receiver's class, so a
  * redefinition, subclass or singleton is caught by the cache itself; anything else is the
  * plain send.  The interpreter never calls these. */
-static inline korb_value
-korb_sdi_klass(const struct korb_vm *vm, const korb_value r)   /* the class korb_send_cached keys the cache on, or nil */
+static __attribute__((noinline)) korb_value
+korb_sdi_klass_rest(const struct korb_vm *vm, const korb_value r)   /* korb_sdi_klass past its inline part */
 {
-    if (LIKELY(AROH_IS_GC_OBJECT(r))) {                   /* heap receivers before the immediates (one flags load) */
+    if (AROH_IS_GC_OBJECT(r)) {
         const uint16_t f = ((const AroObjectHeader *)(uintptr_t)r)->flags;
-        if (LIKELY((f & (KORB_OBJ_TYPE_MASK | KORB_FL_HAS_KLASS)) == KORB_OBJ_OBJECT))   /* a plain instance: one compare */
-            return VAL2OBJ(r)->klass;                     /* nil for main */
-        if (UNLIKELY(f & KORB_FL_HAS_KLASS)) return KORB_NIL;
-        switch (f & KORB_OBJ_TYPE_MASK) {
-          case KORB_OBJ_STRING: return korb_bi_class(vm, KORB_C_STRING);
-          case KORB_OBJ_ARRAY:  return korb_bi_class(vm, KORB_C_ARRAY);
-          case KORB_OBJ_HASH:   return korb_bi_class(vm, KORB_C_HASH);
-          case KORB_OBJ_REGEXP: return korb_bi_class(vm, KORB_C_REGEXP);
-          default:              return KORB_NIL;
-        }
+        if (f & KORB_FL_HAS_KLASS) return KORB_NIL;
+        return (f & KORB_OBJ_TYPE_MASK) == KORB_OBJ_REGEXP ? korb_bi_class(vm, KORB_C_REGEXP) : KORB_NIL;
     }
     if (FIXNUM_P(r)) return korb_bi_class(vm, KORB_C_INTEGER);
     if (FLONUM_P(r)) return korb_bi_class(vm, KORB_C_FLOAT);
@@ -2709,6 +2701,22 @@ korb_sdi_klass(const struct korb_vm *vm, const korb_value r)   /* the class korb
     if (r == KORB_TRUE) return korb_bi_class(vm, KORB_C_TRUE);
     if (r == KORB_FALSE) return korb_bi_class(vm, KORB_C_FALSE);
     return KORB_NIL;
+}
+/* the class korb_send_cached keys the cache on, or nil.  The usual heap receivers inline (a plain
+ * instance, String / Array / Hash); the rest out of line — it had been outlined whole, a call per send */
+static inline __attribute__((always_inline)) korb_value
+korb_sdi_klass(const struct korb_vm *vm, const korb_value r)
+{
+    if (LIKELY(AROH_IS_GC_OBJECT(r))) {
+        const uint16_t f = ((const AroObjectHeader *)(uintptr_t)r)->flags & (KORB_OBJ_TYPE_MASK | KORB_FL_HAS_KLASS);
+        if (LIKELY(f == KORB_OBJ_OBJECT)) return VAL2OBJ(r)->klass;   /* nil for main */
+        if (f == KORB_OBJ_STRING) return korb_bi_class(vm, KORB_C_STRING);
+        if (f == KORB_OBJ_ARRAY) return korb_bi_class(vm, KORB_C_ARRAY);
+        if (f == KORB_OBJ_HASH) return korb_bi_class(vm, KORB_C_HASH);
+    } else if (r == KORB_NIL) {
+        return korb_bi_class(vm, KORB_C_NIL);   /* nil.nil? / nil.to_s are frequent */
+    }
+    return korb_sdi_klass_rest(vm, r);
 }
 /* NFN = how many builtins the name stands for (a constant: the compares fold away) */
 static inline __attribute__((always_inline)) bool
