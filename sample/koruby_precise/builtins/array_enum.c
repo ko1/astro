@@ -1534,12 +1534,14 @@ static RESULT korb_ary_filter(CTX *c, korb_value *slots, korb_ref self, NODE *bl
         return er;
     }
     korb_ref dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
+    struct korb_yseq ys;
+    CHECK(korb_yseq_init(c, slots + 1, &ys, block, def_env, captured_self));
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
         if (i >= ary->len) break;
         korb_value e = korb_ary_ptr(ary)[i];
         slots[0] = e;                                       /* root e across the yield */
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+        RESULT r = korb_yseq_call(c, &ys, &slots[0], 1);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (KORB_TRUTHY(r.value) == keep) CHECK(korb_ary_push_val(c, slots + 1, dst, slots[0]));
     }
@@ -1558,11 +1560,13 @@ static RESULT korb_find_ifnone(CTX *c, korb_value *slots, korb_slice a) {
 static RESULT korb_m_ary_find(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *captured_self) {
     /* no block → to_enum(:find, ifnone): re-driving replays the ifnone proc */
     if (UNLIKELY(block == NULL)) return korb_ary_to_enum_unsized(c, slots, self, "find", a);
+    struct korb_yseq ys;
+    CHECK(korb_yseq_init(c, slots + 1, &ys, block, def_env, captured_self));
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
         if (i >= ary->len) break;
         slots[0] = korb_ary_ptr(ary)[i];
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
+        RESULT r = korb_yseq_call(c, &ys, &slots[0], 1);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (KORB_TRUTHY(r.value)) return RESULT_OK(slots[0]);
     }
@@ -1899,6 +1903,8 @@ static RESULT korb_ary_quant(CTX *c, korb_value *slots, korb_ref self, korb_slic
     const bool has_pat = KORB_SLICE_LEN(a) >= 1;
     if (has_pat && block != NULL) korb_warn(c, slots, "given block not used");   /* pattern arg wins */
     slots[0] = has_pat ? KORB_SLICE_GET(a, 0) : KORB_NIL;           /* pattern (rooted across dispatch) */
+    struct korb_yseq ys = { 0 };                                    /* set up only for the block form (the only one that calls it) */
+    if (!has_pat && block != NULL) CHECK(korb_yseq_init(c, slots + 2, &ys, block, def_env, captured_self));
     for (uint32_t i = 0; ; i++) {
         if (i >= VAL2ARY(KORB_REF_GET(self))->len) break;           /* re-read len each iter (dispatch may GC) */
         slots[1] = korb_ary_ptr(VAL2ARY(KORB_REF_GET(self)))[i];
@@ -1906,7 +1912,7 @@ static RESULT korb_ary_quant(CTX *c, korb_value *slots, korb_ref self, korb_slic
         if (has_pat) {
             CHECK(korb_pat_eq(c, slots + 2, slots[0], slots[1], &t));   /* pattern === element */
         } else if (block != NULL) {                                 /* truthiness of block result */
-            RESULT r = korb_block_yield(c, slots + 2, block, def_env, &slots[1], 1, captured_self);
+            RESULT r = korb_yseq_call(c, &ys, &slots[1], 1);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
             t = KORB_TRUTHY(r.value);
         } else {
@@ -2030,11 +2036,13 @@ static RESULT korb_m_ary_each_with_object(CTX *c, korb_value *slots, korb_ref se
         return korb_send_impl(c, slots + 3, korb_intern_lit(c->vm, "__to_enum_sized", 15), 0, 2, NULL, NULL, NULL);
     }
     slots[0] = KORB_SLICE_GET(a, 0);                      /* the memo object (rooted) */
+    struct korb_yseq ys;
+    CHECK(korb_yseq_init(c, slots + 1, &ys, block, def_env, captured_self));
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = SELF_ARY;
         if (i >= ary->len) break;
         korb_value argv[2] = { korb_ary_ptr(ary)[i], slots[0] };  /* elem, memo */
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, argv, 2, captured_self);
+        RESULT r = korb_yseq_call(c, &ys, argv, 2);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(slots[0]);

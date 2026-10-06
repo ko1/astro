@@ -942,11 +942,13 @@ static RESULT korb_m_ary_each_wi(CTX *c, korb_value *slots, korb_ref self, korb_
         const RESULT er = korb_enum_new(c, slots + 2, KORB_REF_GET(pairs), slots[1]);
         return korb_enum_each_like(c, er, KORB_REF_GET(self));
     }
+    struct korb_yseq ys;
+    CHECK(korb_yseq_init(c, slots, &ys, block, def_env, captured_self));
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = VAL2ARY(KORB_REF_GET(self));
         if (i >= ary->len) break;
         korb_value argv[2] = { korb_ary_ptr(ary)[i], LONG2FIX(i) };
-        RESULT r = korb_block_yield(c, slots, block, def_env, argv, 2, captured_self);
+        RESULT r = korb_yseq_call(c, &ys, argv, 2);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(KORB_REF_GET(self));

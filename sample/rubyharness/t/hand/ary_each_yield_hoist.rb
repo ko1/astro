@@ -43,3 +43,19 @@ end
   begin; { x: 1 }.each { |k, v| raise "in #{k}" }; rescue => e; p [e.message, e.backtrace[0..1].map { |l| l[/'.*'/] }]; end
   p [3, 4].map.with_index { |x, i| x * i }
 end
+# any? / all? / none? / select / reject through the hoisted yield
+2.times do |r|
+  GC.start if r == 1
+  a = [1, 2, 3, nil]
+  p a.any? { |x| x == 2 }, a.all? { |x| x }, a.none? { |x| x == 9 }, a.any?(Integer), a.any?, [[1, 2]].any? { |x, y| y == 2 }
+  p a.select { |x| x && x.odd? }, a.reject(&:nil?), [[1, 2], [3, 4]].select { |x, y| y > 2 }, a.select.with_index { |x, i| i.even? }
+  cl = []; [1, 2].select { |x| cl << -> { x }; true }; p cl.map(&:call)
+  p [1, 2, 3].any? { |x| break :early if x == 2; false }
+end
+# each_with_index / each_with_object / find
+2.times do |r|
+  GC.start if r == 1
+  o = []; %w[a b].each_with_index { |x, i| o << [x, i] }; %w[c].each_with_index { |x| o << x }; [[1, 2]].each_with_index { |(a, b), i| o << [a, b, i] }; p o
+  p %w[a b].each_with_object({}) { |x, h| h[x] = x.upcase }, [[1, 2]].each_with_object([]) { |(a, b), m| m << b }
+  p [1, 2, 3].find { |x| x > 1 }, [1].find { |x| x > 5 }, [[1, 2], [3, 4]].find { |a, b| b == 4 }, [1].find(-> { :none }) { false }
+end
