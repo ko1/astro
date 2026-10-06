@@ -3421,7 +3421,7 @@ static bool korb_internal_helper_name_p(const char *const name)
 static void korb_class_def_cfn(CTX *c, korb_value klass, const char *name, korb_method_fn fn, int32_t arity) {
     struct korb_method *m = korb_class_method_slot(c->vm, VAL2CLASS(klass), korb_intern(c->vm, name, strlen(name)));
     m->kind = KORB_METHOD_CFUNC; m->uses_block = 0; m->params_cnt = arity;
-    m->rfn = fn; m->rbfn = NULL; m->body = NULL; m->owner = klass;
+    m->rfn = fn; m->rbfn = NULL; m->body = NULL; m->owner = klass; m->sdi_k = 0;
     if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid) || korb_internal_helper_name_p(name))) m->visibility = 1;
     if (UNLIKELY(korb_internal_helper_name_p(name))) m->hidden = 1;   /* koruby's own plumbing: not listed by reflection */
     c->vm->method_serial++;
@@ -3429,7 +3429,7 @@ static void korb_class_def_cfn(CTX *c, korb_value klass, const char *name, korb_
 static void korb_class_def_cfn_blk(CTX *c, korb_value klass, const char *name, korb_method_blk_fn fn, int32_t arity) {
     struct korb_method *m = korb_class_method_slot(c->vm, VAL2CLASS(klass), korb_intern(c->vm, name, strlen(name)));
     m->kind = KORB_METHOD_CFUNC; m->uses_block = 1; m->params_cnt = arity;
-    m->rbfn = fn; m->rfn = NULL; m->body = NULL; m->owner = klass;
+    m->rbfn = fn; m->rfn = NULL; m->body = NULL; m->owner = klass; m->sdi_k = 0;
     if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid) || korb_internal_helper_name_p(name))) m->visibility = 1;
     if (UNLIKELY(korb_internal_helper_name_p(name))) m->hidden = 1;   /* koruby's own plumbing: not listed by reflection */
     c->vm->method_serial++;
@@ -5722,7 +5722,7 @@ korb_class_method_slot(struct korb_vm *const vm, KorbClass *const k, uint32_t mi
         k->methods[k->method_cnt++] = m;
         korb_mtab_appended(k);
     }
-    m->rfn = NULL; m->rbfn = NULL; m->bfn = NULL; m->is_simple = 0; m->dm_proc = KORB_NIL;
+    m->rfn = NULL; m->rbfn = NULL; m->bfn = NULL; m->is_simple = 0; m->dm_proc = KORB_NIL; m->sdi_k = 0;
     m->ruby2_kw = 0;                              /* a redefinition drops the ruby2_keywords flag */
     m->def_cref = KORB_NIL;                       /* … and the eval cref it was defined under */
     m->simple_entry = NULL;                       /* 再定義でスロットを使い回すので必ず落とす */
@@ -6562,7 +6562,7 @@ korb_class_undef_slot(struct korb_vm *vm, KorbClass *k, korb_value cls, uint32_t
     um->kind = KORB_METHOD_UNDEF; um->owner = cls; um->visibility = 0;
     um->params_cnt = -1; um->req_cnt = 0; um->post_cnt = 0; um->rest_slot = -1;
     um->locals_cnt = 0; um->uses_block = 0; um->is_simple = 0;
-    um->body = NULL; um->bfn = NULL; um->rfn = NULL; um->rbfn = NULL;
+    um->body = NULL; um->bfn = NULL; um->rfn = NULL; um->rbfn = NULL; um->sdi_k = 0;
     um->dm_proc = KORB_NIL; um->opt_defaults = NULL; um->kw_info = NULL; um->param_info = NULL;
 }
 
@@ -9110,7 +9110,7 @@ korb_init_builtin_classes(CTX *c, korb_value *slots)
       #define KORB_DEF_COMPARABLE(nm, fnp, ar) do { \
           struct korb_method *_m = korb_class_method_slot(vm, cm, korb_intern(vm, (nm), (uint32_t)strlen(nm))); \
           _m->kind = KORB_METHOD_CFUNC; _m->uses_block = 0; _m->params_cnt = (ar); \
-          _m->rfn = (fnp); _m->rbfn = NULL; _m->body = NULL; _m->owner = comp; } while (0)
+          _m->rfn = (fnp); _m->rbfn = NULL; _m->body = NULL; _m->owner = comp; _m->sdi_k = 0; } while (0)
       KORB_DEF_COMPARABLE("<",  korb_m_cmpbl_lt, 1);
       KORB_DEF_COMPARABLE("<=", korb_m_cmpbl_le, 1);
       KORB_DEF_COMPARABLE(">",  korb_m_cmpbl_gt, 1);
@@ -14397,6 +14397,7 @@ korb_def_cmethod(CTX *c, enum korb_class cls, const char *name,
     m->rfn = fn;
     m->rbfn = NULL;
     m->body = NULL;
+    m->sdi_k = 0;
     if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid) || korb_internal_helper_name_p(name))) m->visibility = 1;
     if (UNLIKELY(korb_internal_helper_name_p(name))) m->hidden = 1;   /* koruby's own plumbing: not listed by reflection */
 }
@@ -14413,6 +14414,7 @@ korb_def_cmethod_blk(CTX *c, enum korb_class cls, const char *name,
     m->rfn = NULL;
     m->rbfn = fn;
     m->body = NULL;
+    m->sdi_k = 0;
     if (UNLIKELY(korb_auto_private_name_p(c->vm, m->mid) || korb_internal_helper_name_p(name))) m->visibility = 1;
     if (UNLIKELY(korb_internal_helper_name_p(name))) m->hidden = 1;   /* koruby's own plumbing: not listed by reflection */
 }
@@ -16760,6 +16762,7 @@ korb_sdi_init(CTX *c)
             korb_value def = KORB_NIL;
             const struct korb_method *const m = korb_class_find_method(korb_builtin_class_obj(vm, (enum korb_class)korb_sdi_tab[k].cls[j]), mid, &def);
             vm->sdi_fn[k][j] = (m != NULL && m->kind == KORB_METHOD_CFUNC && !m->uses_block) ? m->rfn : NULL;
+            if (vm->sdi_fn[k][j] != NULL) ((struct korb_method *)(uintptr_t)m)->sdi_k = k;   /* KORB_SDI_HIT's one compare */
         }
         /* an unused cell repeats a real one: a NULL there would match a Ruby method's
          * (NULL) rfn in KORB_SDI_HIT and call it.  All NULL = never matched (korb_sdi_never). */
