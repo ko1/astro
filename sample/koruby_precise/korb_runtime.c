@@ -16060,6 +16060,24 @@ korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint
                  struct korb_inlcache *ic, korb_value caller_self)
 {
     const korb_value recv = slots[-(korb_sword_t)argc - 1];
+    /* a builtin receiver (String / Array / Hash / Integer / nil ...) whose instance cache holds a C method: call it
+     * before the class-receiver / new / user-object cases below, which it would only fall through (Hash#delete:
+     * this function was 22% of the call) */
+    if (LIKELY(ic->kind == KORB_IC_INSTANCE) && ic->serial == c->vm->method_serial && ic->m != NULL) {
+        const struct korb_method *const m = ic->m;
+        if (m->kind == KORB_METHOD_CFUNC && (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc) &&
+            ic->klass != KORB_NIL && ic->klass == korb_send_builtin_klass(c->vm, recv) && !korb_site_refined(c)) {
+            korb_value *const cbase = &slots[-(korb_sword_t)argc];
+            const bool framed = KORB_FLINK_FRAMED(flink);
+            const korb_value saved = LIKELY(framed) ? korb_cframe_enter(c, cbase, m) : 0;
+            const RESULT r = m->uses_block   /* a block-taking builtin (Hash#delete / #fetch): called without one */
+                ? m->rbfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc), NULL, NULL, NULL)
+                : m->rfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc));
+            if (LIKELY(framed)) korb_cframe_leave(c, saved);
+            if (LIKELY(r.state == KORB_NORMAL)) return r;
+            return korb_call_ret_cold(c, r, flink, mid, (korb_value)((uintptr_t)m | KORB_FID_CFUNC));
+        }
+    }
     if (KORB_CLASS_P(recv) && LIKELY(ic->kind == KORB_IC_SMETHOD && ic->serial == c->vm->method_serial && ic->klass == recv)) {
         struct korb_method *const m = ic->m;
         if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple && m->visibility == 0 && !c->vm->refinements_active))
