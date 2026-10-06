@@ -16030,16 +16030,19 @@ korb_attr_write(CTX *c, korb_value *slots, const struct korb_method *m, uint32_t
 }
 
 /* the class korb_send_cached_full keys a plain builtin receiver's cache on, or nil */
-static inline korb_value
+static inline __attribute__((always_inline)) korb_value
 korb_send_builtin_klass(struct korb_vm *vm, const korb_value recv)
 {
-    if (FIXNUM_P(recv)) return korb_builtin_class_obj(vm, KORB_C_INTEGER);
-    if (FLONUM_P(recv)) return korb_builtin_class_obj(vm, KORB_C_FLOAT);
-    if (SYMBOL_P(recv)) return korb_builtin_class_obj(vm, KORB_C_SYMBOL);
-    if (recv == KORB_NIL) return korb_builtin_class_obj(vm, KORB_C_NIL);
-    if (recv == KORB_TRUE) return korb_builtin_class_obj(vm, KORB_C_TRUE);
-    if (recv == KORB_FALSE) return korb_builtin_class_obj(vm, KORB_C_FALSE);
-    if (!AROH_IS_GC_OBJECT(recv) || (((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS)) return KORB_NIL;
+    if (UNLIKELY(!AROH_IS_GC_OBJECT(recv))) {   /* immediates after the heap objects a C-method send mostly sees */
+        if (FIXNUM_P(recv)) return korb_builtin_class_obj(vm, KORB_C_INTEGER);
+        if (FLONUM_P(recv)) return korb_builtin_class_obj(vm, KORB_C_FLOAT);
+        if (SYMBOL_P(recv)) return korb_builtin_class_obj(vm, KORB_C_SYMBOL);
+        if (recv == KORB_NIL) return korb_builtin_class_obj(vm, KORB_C_NIL);
+        if (recv == KORB_TRUE) return korb_builtin_class_obj(vm, KORB_C_TRUE);
+        if (recv == KORB_FALSE) return korb_builtin_class_obj(vm, KORB_C_FALSE);
+        return KORB_NIL;
+    }
+    if (((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) return KORB_NIL;
     switch (KORB_OBJ_TYPE(recv)) {   /* tags whose korb_dispatch_class is korb_builtin_class_obj(korb_class_of(recv)) */
       case KORB_OBJ_ARRAY:     return korb_builtin_class_obj(vm, KORB_C_ARRAY);
       case KORB_OBJ_STRING:    return korb_builtin_class_obj(vm, KORB_C_STRING);
@@ -16395,6 +16398,21 @@ korb_send_blk_fwd(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
 {
     return korb_send_blk_ic_x(c, slots, mid, line, argc, block, def_env, captured_self, flink, caller_self, ic, false);
 }
+/* A block-taking C method (Array#each, Hash#each_pair, fetch { }): korb_dispatch_method's CFUNC arm
+ * without its switch; a wrong arity raises there. */
+static inline __attribute__((always_inline)) RESULT
+korb_blk_cfunc_call(CTX *c, korb_value *slots, struct korb_method *const m, uint32_t mid, uint32_t line,
+                    uint32_t argc, korb_value def_class, NODE *block, korb_value *def_env, korb_value *captured_self)
+{
+    if (UNLIKELY(!(m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)))
+        return korb_dispatch_method(c, slots, m, mid, line, argc, def_class, block, def_env, captured_self, true);
+    korb_value *const cbase = &slots[-(korb_sword_t)argc];
+    const korb_value saved = korb_cframe_enter(c, cbase, m);
+    const RESULT r = m->rbfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc), block, def_env, captured_self);
+    korb_cframe_leave(c, saved);
+    if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
+    return r;
+}
 static inline __attribute__((always_inline)) RESULT
 korb_send_blk_ic_x(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
                    uint32_t argc, NODE *block, korb_value *def_env, korb_value *captured_self, korb_value flink,
@@ -16404,7 +16422,8 @@ korb_send_blk_ic_x(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
     const korb_value recv = slots[-(korb_sword_t)argc - 1];
     if (LIKELY(flink != 0 && !korb_site_refined(c) && !KORB_CLASS_P(recv) &&
                mid != vm->mid_send && mid != vm->mid___send__ && mid != vm->mid_public_send)) {
-        const korb_value klass = KORB_OBJECT_P(recv) ? korb_obj_dispatch_klass(vm, recv) : korb_dispatch_class(c, recv);
+        korb_value klass = KORB_OBJECT_P(recv) ? korb_obj_dispatch_klass(vm, recv) : korb_send_builtin_klass(vm, recv);
+        if (UNLIKELY(klass == KORB_NIL)) klass = korb_dispatch_class(c, recv);   /* a singleton / subclass / other builtin */
         if (LIKELY(KORB_CLASS_P(klass))) {
             struct korb_method *m;
             korb_value def_class;
@@ -16421,7 +16440,7 @@ korb_send_blk_ic_x(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
                  * which only the full send's re-staged window consumes.  An ISEQ skips korb_dispatch_method's
                  * switch (its ISEQ arm, one call level less on every block call). */
                 RESULT r = m->kind != KORB_METHOD_ISEQ
-                    ? korb_dispatch_method(c, slots, m, mid, line, argc, def_class, block, def_env, captured_self, true)
+                    ? korb_blk_cfunc_call(c, slots, m, mid, line, argc, def_class, block, def_env, captured_self)
                     : (m->is_simple && LIKELY(!vm->refinements_active))
                     ? korb_invoke_simple(c, slots, m, argc, line, mid, recv, def_class)
                     : (m->simple_blk && argc == (uint32_t)m->params_cnt && LIKELY(!vm->refinements_active))
