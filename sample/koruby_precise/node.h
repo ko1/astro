@@ -1249,7 +1249,9 @@ korb_invoke_entry_ic(CTX *c, korb_value *slots, const struct korb_inlcache *ic, 
                      uint32_t mid)
 {
     korb_id_set(slots - argc, (korb_value)((uintptr_t)ic->m | KORB_FID_METHOD));   /* the callee frame's identity */
-    const RESULT r = (*ic->dispatch)(c, ic->body, slots);
+    /* the body's dispatcher now, not the one cached at fill: a body still on the weave trampoline when the
+     * site filled stays there otherwise (each call went through korb_first_dispatch's forward, 16% of o.m0) */
+    const RESULT r = (*ic->body->head.dispatcher)(c, ic->body, slots);
     if (LIKELY(r.state == KORB_NORMAL)) return r;
     /* The site's line rides the frame link it stored in base[-3]; reading it
      * back here keeps it out of the hot path entirely. */
@@ -1262,7 +1264,7 @@ korb_invoke_entry_cc(CTX *c, korb_value *slots, const struct korb_callcache *cc,
                      uint32_t mid)
 {
     korb_id_set(slots - argc, (korb_value)((uintptr_t)cc->m | KORB_FID_METHOD));
-    const RESULT r = (*cc->dispatch)(c, cc->body, slots);
+    const RESULT r = (*cc->body->head.dispatcher)(c, cc->body, slots);   /* the body's current one (see korb_invoke_entry_ic) */
     if (LIKELY(r.state == KORB_NORMAL)) return r;
     return korb_call_ret_cold(c, r, slots[-(korb_sword_t)argc - 3], mid, korb_id_get(slots - argc));
 }
