@@ -16581,7 +16581,7 @@ korb_caseeq_class_cached(CTX *c, korb_value w, korb_value subj, struct korb_inlc
     struct korb_vm *const vm = c->vm;
     if (LIKELY(ic->kind == KORB_IC_SMETHOD && ic->serial == vm->method_serial && ic->klass == w &&
                ic->m->rfn == korb_m_class_case_eq)) {   /* korb_deopt_send_ic keys a user self.=== the same way */
-        *out = RESULT_OK(korb_case_eq(c, w, subj) ? KORB_TRUE : KORB_FALSE);
+        *out = RESULT_OK(korb_obj_kind_of_p(c, subj, w) ? KORB_TRUE : KORB_FALSE);   /* w is a class: is_a? without korb_case_eq's Range test */
         return true;
     }
     if (korb_site_refined(c)) return false;
@@ -16591,7 +16591,7 @@ korb_caseeq_class_cached(CTX *c, korb_value w, korb_value subj, struct korb_inlc
     struct korb_method *const m = korb_mcache_find(vm, dk, vm->mid_eqq, &def);
     if (m == NULL || m->kind != KORB_METHOD_CFUNC || m->rfn != korb_m_class_case_eq || m->visibility != 0) return false;
     korb_ic_fill(ic, korb_ic_serial_mc(c), w, m, def, KORB_IC_SMETHOD, UINT32_MAX);
-    *out = RESULT_OK(korb_case_eq(c, w, subj) ? KORB_TRUE : KORB_FALSE);
+    *out = RESULT_OK(korb_obj_kind_of_p(c, subj, w) ? KORB_TRUE : KORB_FALSE);   /* w is a class: is_a? without korb_case_eq's Range test */
     return true;
 }
 
