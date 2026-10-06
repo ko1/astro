@@ -1928,6 +1928,31 @@ static uint64_t korb_value_hash_d(korb_value v, int depth) {
 static uint64_t korb_value_hash(korb_value v) { return korb_value_hash_d(v, 0); }
 
 bool korb_value_eq(korb_value a, korb_value b);   /* defined below */
+/* n bytes at p and q equal: up to 16 as two overlapping word compares (no memcmp call: "s" == "s" spent as much in it as in the rest) */
+static inline bool korb_bytes_eq(const char *restrict const p, const char *restrict const q, const uint32_t n) {
+    if (n >= 8) {
+        if (n > 16) return memcmp(p, q, n) == 0;
+        uint64_t a0, b0, a1, b1;
+        memcpy(&a0, p, 8); memcpy(&b0, q, 8); memcpy(&a1, p + n - 8, 8); memcpy(&b1, q + n - 8, 8);
+        return a0 == b0 && a1 == b1;
+    }
+    if (n >= 4) {
+        uint32_t a0, b0, a1, b1;
+        memcpy(&a0, p, 4); memcpy(&b0, q, 4); memcpy(&a1, p + n - 4, 4); memcpy(&b1, q + n - 4, 4);
+        return a0 == b0 && a1 == b1;
+    }
+    for (uint32_t i = 0; i < n; i++) if (p[i] != q[i]) return false;
+    return true;
+}
+/* String == String by content: same bytes, and equal encodings or plain ASCII (CRuby's rb_str_comparable; no vm here,
+ * so the non-ASCII-compatible half of that test lives in korb_str_comparable) */
+static inline bool korb_str_eq_bytes(const KorbString *const x, const KorbString *const y, const korb_value a, const korb_value b) {
+    if (x->len != y->len || !korb_bytes_eq(korb_str_ptr(x), korb_str_ptr(y), x->len)) return false;
+    if (LIKELY(KORB_STR_ENC(a) == KORB_STR_ENC(b))) return true;
+    const char *const d = korb_str_ptr(x);
+    for (uint32_t i = 0; i < x->len; i++) if ((unsigned char)d[i] >= 0x80) return false;
+    return true;
+}
 
 /* Inlinable eql? for hot Hash scans: the dominant cases (identity, and a
  * mismatched Symbol or Fixnum-pair — never eql? unless bit-equal) resolve
@@ -9533,23 +9558,13 @@ korb_cmp_full(CTX *c, korb_value a, korb_value b)
 bool
 korb_value_eq(korb_value a, korb_value b)
 {
+    if (AROH_IS_GC_OBJECT(a) && AROH_IS_GC_OBJECT(b) && KORB_STRING_P(a) && KORB_STRING_P(b))   /* the common heap pair first (never NaN) */
+        return a == b || korb_str_eq_bytes(VAL2STR(a), VAL2STR(b), a, b);
     if (UNLIKELY(KORB_FLOAT_P(a) && isnan(korb_float_val(a)))) return false;   /* NaN == anything is false, even itself (eql? differs) */
     if (a == b) return true;    /* fixnum / symbol / singletons / identity */
     if (FIXNUM_P(a) && FIXNUM_P(b)) return false;   /* two Fixnums: equal iff identical (handled above) — skip korb_int_cmp (hot in Array#== of int arrays) */
     if (SYMBOL_P(a)) return false;   /* a Symbol is eql? only to the identical Symbol — skip the type cascade (hot in symbol-keyed Hash / kwargs scans) */
     if (KORB_INTEGER_P(a) && KORB_INTEGER_P(b)) return korb_int_cmp(a, b) == 0;   /* Bignum/Fixnum */
-    if (KORB_STRING_P(a) && KORB_STRING_P(b)) {
-        const KorbString *x = VAL2STR(a), *y = VAL2STR(b);
-        if (x->len != y->len || memcmp(korb_str_ptr(x), korb_str_ptr(y), x->len) != 0) return false;
-        /* same bytes: equal unless the encodings differ AND the content is not
-         * plain ASCII (CRuby's rb_str_comparable; no vm here, so the
-         * non-ASCII-compatible half of that test lives in korb_str_comparable) */
-        const uint32_t ea = KORB_STR_ENC(a), eb = KORB_STR_ENC(b);
-        if (LIKELY(ea == eb)) return true;
-        const char *const d = korb_str_ptr(x);
-        for (uint32_t i = 0; i < x->len; i++) if ((unsigned char)d[i] >= 0x80) return false;
-        return true;
-    }
     if (KORB_ARRAY_P(a) && KORB_ARRAY_P(b)) {         /* Array#==: same length, element-wise == */
         KorbArray *const x = VAL2ARY(a); const KorbArray *const y = VAL2ARY(b);
         if (x->len != y->len) return false;
