@@ -475,6 +475,8 @@ static RESULT korb_m_hash_each_named(CTX *c, korb_value *slots, korb_ref self, k
      * its arity check sees 1 (CRuby yields the pair; only a proc block unpacks) */
     const bool lambda_blk = def_env == KORB_BLK_FWD && KORB_PROC_P(*captured_self) && VAL2PROC(*captured_self)->is_lambda;
     const uint32_t np = lambda_blk ? 1 : korb_entry_params_cnt(block);
+    struct korb_yseq ys = { 0 };   /* set up only for |k, v| (the only branch that calls it) */
+    if (np >= 2) CHECK(korb_yseq_init(c, slots + 1, &ys, block, def_env, captured_self));
     for (uint32_t i = 0; ; ) {
         const KorbHash *h = SELF_HASH;
         if (i >= h->len) break;
@@ -483,7 +485,7 @@ static RESULT korb_m_hash_each_named(CTX *c, korb_value *slots, korb_ref self, k
         RESULT r;
         if (np >= 2) {                       /* |k, v| — fast path, no pair alloc */
             korb_value argv[2] = { slots[0], v };
-            r = korb_block_yield(c, slots + 1, block, def_env, argv, 2, captured_self);
+            r = korb_yseq_call(c, &ys, argv, 2);
         } else {                             /* |pair| — yield a [k, v] array */
             slots[1] = v;                                            /* root v (key already at slots[0]) */
             korb_value pair = UNWRAP(korb_ary_new(c, slots + 2, 2));

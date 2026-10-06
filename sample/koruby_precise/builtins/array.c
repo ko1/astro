@@ -960,11 +960,13 @@ static RESULT korb_m_ary_map(CTX *c, korb_value *slots, korb_ref self, korb_slic
     }
     uint32_t n0 = VAL2ARY(KORB_REF_GET(self))->len;
     korb_ref dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, n0)));  /* slots now past dst */
+    struct korb_yseq ys;
+    CHECK(korb_yseq_init(c, slots, &ys, block, def_env, captured_self));
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ary = VAL2ARY(KORB_REF_GET(self));
         if (i >= ary->len) break;
         korb_value elem = korb_ary_ptr(ary)[i];
-        RESULT r = korb_block_yield(c, slots, block, def_env, &elem, 1, captured_self);
+        RESULT r = korb_yseq_call(c, &ys, &elem, 1);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         CHECK(korb_ary_push_val(c, slots, dst, r.value));      /* push roots r.value */
     }
@@ -982,9 +984,11 @@ static RESULT korb_m_int_times(CTX *c, korb_value *slots, korb_ref self, korb_sl
         const RESULT er = korb_enum_new(c, slots + 2, KORB_REF_GET(dst), slots[1]);
         return korb_enum_each_like(c, er, KORB_REF_GET(self));
     }
+    struct korb_yseq ys;
+    CHECK(korb_yseq_init(c, slots, &ys, block, def_env, captured_self));
     for (korb_sword_t i = 0; i < n; i++) {
         korb_value iv = LONG2FIX(i);
-        RESULT r = korb_block_yield(c, slots, block, def_env, &iv, 1, captured_self);
+        RESULT r = korb_yseq_call(c, &ys, &iv, 1);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     }
     return RESULT_OK(KORB_REF_GET(self));

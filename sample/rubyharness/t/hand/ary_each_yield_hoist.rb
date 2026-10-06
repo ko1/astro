@@ -33,3 +33,13 @@ end
   e = [1, 2].each; p e.next, e.next
   lz = []; (1..3).to_a.each { |x; y| y = x * x; lz << y }; p lz
 end
+# map / times / Hash#each through the same hoisted yield
+3.times do |r|
+  GC.start if r == 2
+  p [1, [2, 3], 4].map { |x| x }, [[1, 2], [3, 4]].map { |a, b| [b, a] }, 3.times.map { |i| i * i }
+  t = []; 4.times { |i| next if i == 1; t << i; break if i == 2 }; p t
+  h = { a: 1, b: 2 }; kv = []; h.each { |k, v| kv << [v, k] }; h.each { |pr| kv << pr }; h.each { |k, v, z| kv << z }; p kv
+  q = []; h.each { |k, v| q << -> { [k, v] } }; p q.map(&:call)
+  begin; { x: 1 }.each { |k, v| raise "in #{k}" }; rescue => e; p [e.message, e.backtrace[0..1].map { |l| l[/'.*'/] }]; end
+  p [3, 4].map.with_index { |x, i| x * i }
+end
