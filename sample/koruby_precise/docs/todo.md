@@ -5,6 +5,9 @@
 
 
 
+## 未: 挿入後に特異メソッドで #hash を変えたクラスのキーが Hash で引けてしまう (2026-10-06)
+- `h = { K => 1 }; class << K; def hash = 7; end; h[K]` → CRuby は nil（挿入時のバケットと違う）、koruby は 1。挿入時に hint を記録しない経路で入ったキーは、後の #hash を比べずに eql? で見つかる。master でも同じ。
+
 ## 未: prelude の Ruby 実装が backtrace / 警告の位置に出る (2026-10-06)
 - Monitor#mon_exit を所有者以外が呼ぶと、CRuby は 'Thread::Monitor#exit' 1 段、koruby は 'Monitor#mon_check_owner' と '#exit' の 2 段。
 - chilled な文字列リテラルへの破壊的操作（"x".encode!("UTF-8") など）の deprecated 警告に、CRuby は "file:line: " を付けるが koruby は付けない（master でも同じ）。

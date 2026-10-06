@@ -2004,6 +2004,20 @@ korb_hash_find(const KorbHash *h, korb_value key)
     return -1;
 }
 
+static RESULT korb_m_obj_hash(CTX *c, korb_value *slots, korb_ref self, korb_slice a);   /* fwd (builtins/hash.c) */
+static korb_value korb_dispatch_class(CTX *c, korb_value self);   /* fwd */
+static inline struct korb_method *korb_mcache_find(struct korb_vm *vm, korb_value klass, uint32_t mid, korb_value *out_def);   /* fwd */
+static RESULT korb_m_obj_eql(CTX *c, korb_value *slots, korb_ref self, korb_slice a);    /* fwd (builtins/symbol.c) */
+/* `key`'s class answers #hash and #eql? with Kernel's own (identity) */
+static bool korb_key_default_hash_eql_p(CTX *c, const korb_value key) {
+    const korb_value cls = korb_dispatch_class(c, key);
+    if (!KORB_CLASS_P(cls)) return false;
+    korb_value def = KORB_NIL;
+    const struct korb_method *const mh = korb_mcache_find(c->vm, cls, c->vm->mid_hash, &def);
+    if (mh == NULL || mh->kind != KORB_METHOD_CFUNC || mh->rfn != korb_m_obj_hash) return false;
+    const struct korb_method *const me = korb_mcache_find(c->vm, cls, c->vm->mid_eql, &def);
+    return me != NULL && me->kind == KORB_METHOD_CFUNC && me->rfn == korb_m_obj_eql;
+}
 /* CTX-aware find: a key whose equality Ruby code owns (a user object, or a
  * container holding one) is matched by dispatching `stored.eql?(searched)` over
  * a linear scan; every other key type uses the CTX-free fast find.  `href` is
@@ -2025,6 +2039,10 @@ korb_hash_find_ctx_h(CTX *c, korb_value *slots, korb_ref href, korb_value key, R
     }
     const bool cls_key = UNLIKELY(c->vm->sing_hash_redef) && KORB_CLASS_P(key);
     if (LIKELY(!korb_eq_needs_send(key)) && !cls_key)
+        return korb_hash_find(VAL2HASH(KORB_REF_GET(href)), key);
+    /* an object (or class) whose #hash and #eql? are still Kernel's: identity, as CRuby's rb_any_hash
+     * skips the call (railsbench: 35 #hash sends a request on class keys and plain objects) */
+    if ((KORB_OBJECT_P(key) || KORB_CLASS_P(key)) && korb_key_default_hash_eql_p(c, key))
         return korb_hash_find(VAL2HASH(KORB_REF_GET(href)), key);
     slots[0] = key;                                       /* root searched key across dispatch */
     const uint32_t eqm = c->vm->mid_eql;
