@@ -829,10 +829,22 @@ class String
     raise Encoding::InvalidByteSequenceError.new("#{bin[0, 2].inspect} on #{encoding.name}")
   end
 
+  # encode / encode! with these arguments (no options) would convert nothing
+  def __encode_noop?(args)
+    if args.empty?
+      di = Encoding.default_internal
+      di.nil? || __enc_same?(di)
+    else
+      args.size == 1 && __enc_same?(args[0])
+    end
+  end
+  private :__encode_noop?
+
   def encode(*args)
     # nothing to convert (CRuby copies): the string's own encoding, or no target while default_internal is
-    # unset (ActionView's buffer does `encode!` with no argument on every append) — no Encoding.find either side
-    return dup if args.empty? ? Encoding.default_internal.nil? : (args.size == 1 && __enc_same?(args[0]))
+    # unset or is that encoding (Rails sets it to UTF-8; ActionView's OutputBuffer does `encode!` with no
+    # argument) — no Encoding.find either side
+    return dup if __encode_noop?(args)
     opts = args.last.is_a?(Hash) ? args.pop : {}
     to_name   = __enc_arg(args[0])
     from_name = __enc_arg(args[1]) || encoding.name
@@ -971,9 +983,7 @@ class String
   # already-converted result rather than re-parsing the arguments.
   def encode!(*args, **opts)
     # nothing to convert: only the modifiable check (frozen raises, chilled warns) as CRuby's str_modifiable
-    if opts.empty? && (args.empty? ? Encoding.default_internal.nil? : (args.size == 1 && __enc_same?(args[0])))
-      return __set_encoding_tag(__encoding_tag)
-    end
+    return __set_encoding_tag(__encoding_tag) if opts.empty? && __encode_noop?(args)
     e = opts.empty? ? encode(*args) : encode(*args, **opts)
     enc = e.encoding
     replace(e)

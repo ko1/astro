@@ -23,3 +23,4 @@ p((m.synchronize { raise "boom" } rescue $!.message), m.mon_locked?)
 # no target: a copy / nothing while default_internal is unset, a conversion once it is set
 na = +"na"; p na.encode, na.encode.equal?(na), na.encode!.equal?(na), na.encoding, (("nf".freeze).encode! rescue $!.class)
 Encoding.default_internal = "US-ASCII"; nb = +"nb"; p nb.encode.encoding, nb.encode!.encoding; Encoding.default_internal = nil
+Encoding.default_internal = "UTF-8"; nc = +"nc"; p nc.encode.equal?(nc), nc.encode!.equal?(nc), nc.encode.encoding, "nd".b.encode.encoding, (+"ne").force_encoding("US-ASCII").encode!.encoding; Encoding.default_internal = nil
