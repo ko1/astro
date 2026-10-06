@@ -1908,6 +1908,9 @@ static uint64_t korb_value_hash_d(korb_value v, int depth) {
         uint64_t t = 0;
         memcpy(&t, p, n);
         h = (h ^ t) * 0xc4ceb9fe1a85ec53ULL; h ^= h >> 29;
+        /* fmix64: without it the low bits (the index slot) of keys that differ only in their last bytes
+         * ("key1".."key160") cluster, and linear probing walked 14 slots per lookup at load 0.63 */
+        h ^= h >> 32; h *= 0xff51afd7ed558ccdULL; h ^= h >> 32;
         return h;
     }
     if (v == KORB_NIL)  return 0x9e3779b97f4a7c15ULL;
@@ -1935,6 +1938,11 @@ static inline bool korb_value_eq_fast(korb_value a, korb_value b)
 {
     if (a == b) return true;
     if (SYMBOL_P(a) || (FIXNUM_P(a) && FIXNUM_P(b))) return false;
+    if (KORB_STRING_P(a) && KORB_STRING_P(b)) {      /* a probe that lands on another String key: length / first byte first */
+        const KorbString *const x = VAL2STR(a), *const y = VAL2STR(b);
+        if (x->len != y->len || (x->len && korb_str_ptr(x)[0] != korb_str_ptr(y)[0])) return false;
+        return korb_value_eq(a, b);
+    }
     if (KORB_ARRAY_P(a) && KORB_ARRAY_P(b)) {        /* Array hash-keys: inline element-wise eql? (this is the only caller — korb_hash_find — hash keys use eql? semantics; array keys are hot in optcarrot, so inline to skip the call) */
         const KorbArray *const x = VAL2ARY(a), *const y = VAL2ARY(b);
         if (x->len != y->len) return false;
@@ -6109,6 +6117,9 @@ korb_check_basic_op_redef(CTX *c, korb_value klass, uint32_t mid)
     if (!vm->hash_aref_redefined && klass == korb_builtin_class_obj(vm, KORB_C_HASH) &&
         mid == vm->mid_aref)
         vm->hash_aref_redefined = true;
+    if (!vm->hash_aset_redefined && klass == korb_builtin_class_obj(vm, KORB_C_HASH) &&
+        mid == vm->mid_aset)
+        vm->hash_aset_redefined = true;
     /* Method#[] redefinition deopts the node_aref Method fast path. */
     if (!vm->method_aref_redefined && klass == korb_builtin_class_obj(vm, KORB_C_METHOD) &&
         mid == vm->mid_aref)

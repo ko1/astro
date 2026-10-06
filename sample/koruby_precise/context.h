@@ -1694,6 +1694,7 @@ struct korb_vm {
      * Last so no offset moves: inserted after mro_serial it shifted the fields below by 8 bytes
      * and optcarrot AOT took +4% cycles at the same instruction count. */
     uint64_t cvar_serial;
+    bool hash_aset_redefined;   /* Hash#[]= redefined: node_aset's plain-Hash store sends again (at the end: no layout shift) */
 };
 
 /* builtins/cext.c — reached from the AROH_* hooks, i.e. from the GC backends' TUs */

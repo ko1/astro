@@ -3126,6 +3126,14 @@ node_aset(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@chil
         }
         /* out of range (Ruby grows + nil-pads) → deopt to []= */
     }
+    if (LIKELY(KORB_HASH_P(r) && KORB_PLAIN_BUILTIN(r) && !c->vm->hash_aset_redefined &&
+               !(AROH_IS_GC_OBJECT(iv) && (korb_eq_needs_send(iv) || (KORB_CLASS_P(iv) && c->vm->sing_hash_redef))))) {
+        /* hash[key] = val → Hash#[]='s own work without the send (CRuby's opt_aset → rb_hash_aset) */
+        KORB_CHECK_FROZEN_HEAP_AT(c, slots, r, "Hash", korb_flink_line(flink));
+        slots[0] = val; slots[1] = r; slots[2] = iv;
+        CHECK(korb_hash_set(c, slots + 3, KORB_REF_AT(&slots[1]), KORB_REF_AT(&slots[2]), slots[0]));
+        return RESULT_OK(slots[0]);
+    }
     /* as node_aref: the `recv.[]=(idx, val)` send.  val is kept below the frame — the callee may
      * reassign its parameter cell — since the expression's value is val, not []='s result */
     slots[0] = val;
