@@ -13841,6 +13841,55 @@ korb_block_yield(CTX *c, korb_value *slots, NODE *block, korb_value *def_env,
     return korb_block_preempt(c, slots, r);
 }
 
+/* Array#each's yields: korb_block_yield's per-call part (shape test, stack check, frame link, EP) once, then per
+ * element only the header stores, the binding and the dispatch.  A forwarded block, one korb_block_yield has not
+ * yet vetted, or an element a multi-param block must splat / #to_ary takes korb_block_yield element by element. */
+static RESULT
+korb_ary_each_yield(CTX *c, korb_value *slots, korb_ref self, NODE *block, korb_value *def_env, korb_value *captured_self)
+{
+    uint32_t i = 0;
+    if (LIKELY(block != NULL && block != KORB_BLK_CPROC && def_env != KORB_BLK_FWD && block->head.flags.yield_simple)) {
+        const korb_value prev = (korb_value)(uintptr_t)def_env;
+        const uint32_t blocals = korb_entry_locals_cnt(block), np = block->u.node_entry.params_cnt;
+        korb_value *const bf = slots + 3;
+        char cstack_probe;
+        korb_value *const resv = bf + 1 + blocals + KORB_FRAME_SLACK;
+        if (UNLIKELY(resv > c->slots_limit || &cstack_probe < c->cstack_limit))
+            return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
+        if (UNLIKELY(resv > c->slots_high_water)) c->slots_high_water = resv;
+        const korb_value link = korb_block_flink(c, block, prev, bf - 2, c->carry_base);   /* the C method's frame: the same every element */
+        for (;; i++) {
+            const KorbArray *const ary = VAL2ARY(KORB_REF_GET(self));   /* re-read each element (GC) */
+            if (i >= ary->len) return RESULT_OK(KORB_REF_GET(self));
+            const korb_value elem = korb_ary_ptr(ary)[i];
+            if (UNLIKELY(np > 1 && (KORB_ARRAY_P(elem) || KORB_OBJECT_P(elem)))) break;   /* auto-splat / #to_ary: the general yield */
+            bf[-3] = (korb_value)(uintptr_t)block + KORB_FID_BLOCK;
+            bf[-2] = link;
+            bf[-1] = prev;
+            bf[0] = *captured_self;                                     /* a slot: re-read, the GC may move self */
+            if (np != 0) { bf[1] = elem; for (uint32_t k = 1; k < np; k++) bf[1 + k] = KORB_NIL; }
+            if (blocals > np) korb_block_nil_locals(&bf[1 + np], blocals - np);
+            RESULT r;
+            do { r = (*block->head.dispatcher)(c, block, bf + 1 + blocals); }
+            while (UNLIKELY(r.state == KORB_REDO));
+            if (r.state == KORB_NEXT) r.state = KORB_NORMAL;
+            else if (UNLIKELY(r.state != KORB_NORMAL)) r = korb_block_leave_cold(c, r, block, bf + 1, false);
+            if (UNLIKELY(korb_frame_escaped(bf + 1)))
+                r = korb_close_ret(c, bf + 1 + blocals, bf + 1, r);
+            r = korb_block_preempt(c, slots, r);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        }
+    }
+    for (;; i++) {
+        const KorbArray *const ary = VAL2ARY(KORB_REF_GET(self));
+        if (i >= ary->len) break;
+        korb_value elem = korb_ary_ptr(ary)[i];
+        const RESULT r = korb_block_yield(c, slots, block, def_env, &elem, 1, captured_self);
+        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    }
+    return RESULT_OK(KORB_REF_GET(self));
+}
+
 /* Core block invocation: lay out the block frame at cursor `slots` and
  * dispatch the entry.  Args come from `argv` (argv[i] copied into block
  * params; extra dropped, missing → nil — CRuby semantics).  argv may alias the

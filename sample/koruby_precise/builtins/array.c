@@ -736,14 +736,7 @@ static RESULT korb_m_ary_each(CTX *c, korb_value *slots, korb_ref self, korb_sli
         const RESULT er = korb_enum_new(c, slots + 1, KORB_REF_GET(self), slots[0]);
         return korb_enum_each_like(c, er, KORB_REF_GET(self));
     }
-    for (uint32_t i = 0; ; i++) {
-        const KorbArray *ary = VAL2ARY(KORB_REF_GET(self));   /* re-read each iter (GC) */
-        if (i >= ary->len) break;
-        korb_value elem = korb_ary_ptr(ary)[i];                      /* copied into bf before GC */
-        RESULT r = korb_block_yield(c, slots, block, def_env, &elem, 1, captured_self);
-        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-    }
-    return RESULT_OK(KORB_REF_GET(self));
+    return korb_ary_each_yield(c, slots, self, block, def_env, captured_self);
 }
 
 static RESULT korb_m_ary_reverse_each(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *captured_self) {
