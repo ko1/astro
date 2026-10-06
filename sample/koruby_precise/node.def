@@ -2864,9 +2864,18 @@ KORB_SDI_DEF(RESPOND_TO_P, 1, {
     }
     KORB_SDI_DIRECT(1)
 })
-KORB_SDI_DEF(TO_S, 0, KORB_SDI_DIRECT(0))
+KORB_SDI_DEF(TO_S, 0, {
+    if (KORB_STRING_P(r)) return RESULT_OK(r);   /* kl is String itself (no subclass / singleton): rb_str_to_s returns self */
+    KORB_SDI_DIRECT(0)
+})
 KORB_SDI_DEF(HASH, 0, KORB_SDI_DIRECT(0))
-KORB_SDI_DEF(FROZEN_P, 0, KORB_SDI_DIRECT(0))
+KORB_SDI_DEF(FROZEN_P, 0, {
+    if (AROH_IS_GC_OBJECT(r)) {   /* Kernel#frozen? (korb_m_obj_frozen_q): a chilled String carries FROZEN but is not frozen yet */
+        const uint16_t fl = ((const AroObjectHeader *)(uintptr_t)r)->flags;
+        return KORB_SDI_BOOL((fl & KORB_FL_FROZEN) && !(KORB_STRING_P(r) && (fl & KORB_FL_CHILLED)));
+    }
+    KORB_SDI_DIRECT(0)
+})
 KORB_SDI_DEF(MATCH_P, 1, KORB_SDI_DIRECT(1))
 KORB_SDI_DEF(UPCASE, 0, KORB_SDI_DIRECT(0))
 KORB_SDI_DEF(DOWNCASE, 0, KORB_SDI_DIRECT(0))
