@@ -52,6 +52,7 @@ astro_ld_memfd(const char *name, unsigned flags)
 static struct {
     char *w, *x;                 // write view / exec view of the same bytes
     size_t used, prev_used, size;
+    size_t cold_lo, prev_cold_lo;   // EXPERIMENT (ASTRO_LD_COLD_SPLIT): .text.unlikely grows down from the top
     bool failed;
 } astro_ld_arena;
 
@@ -116,6 +117,11 @@ astro_ld_arena_after_fork(void)
         if (n <= 0) abort();
         off += (size_t)n;
     }
+    for (size_t off = astro_ld_arena.cold_lo; off < astro_ld_arena.size; ) {
+        const ssize_t n = pwrite(fd, astro_ld_arena.w + off, astro_ld_arena.size - off, (off_t)off);
+        if (n <= 0) abort();
+        off += (size_t)n;
+    }
     if (mmap(astro_ld_arena.x, astro_ld_arena.size, PROT_READ | PROT_EXEC, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED ||
         mmap(astro_ld_arena.w, astro_ld_arena.size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED)
         abort();
@@ -176,6 +182,7 @@ astro_ld_arena_init(void)
     astro_ld_arena.x = x;
     astro_ld_arena.size = reserve;
     astro_ld_arena.used = 0;
+    astro_ld_arena.cold_lo = astro_ld_arena.prev_cold_lo = reserve;
     astro_ld_arena.failed = false;
     static bool atfork_set;
     if (!atfork_set) { atfork_set = true; pthread_atfork(NULL, NULL, astro_ld_arena_after_fork); }
@@ -250,11 +257,38 @@ astro_ld_alloc(size_t size, size_t align, char **xp)
     if (align < 16) align = 16;
     if (align > astro_ld_arena.size - astro_ld_arena.used) return NULL;
     const size_t off = (astro_ld_arena.used + align - 1) & ~(align - 1);
-    if (off > astro_ld_arena.size || size > astro_ld_arena.size - off) return NULL;
+    if (off > astro_ld_arena.cold_lo || size > astro_ld_arena.cold_lo - off) return NULL;
     astro_ld_arena.prev_used = astro_ld_arena.used;   // for unalloc (padding too)
     astro_ld_arena.used = off + size;
     *xp = astro_ld_arena.x + off;
     return astro_ld_arena.w + off;
+}
+
+// EXPERIMENT: the same, from the top of the arena downwards (cold sections).
+static size_t
+astro_ld_alloc_cold(size_t size, size_t align)
+{
+    if (align < 16) align = 16;
+    if (size > astro_ld_arena.cold_lo - astro_ld_arena.used) return 0;
+    const size_t off = (astro_ld_arena.cold_lo - size) & ~(align - 1);
+    if (off < astro_ld_arena.used) return 0;
+    astro_ld_arena.prev_cold_lo = astro_ld_arena.cold_lo;
+    astro_ld_arena.cold_lo = off;
+    return off;
+}
+
+static bool
+astro_ld_cold_split(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("ASTRO_LD_COLD_SPLIT"); on = (e && *e && strcmp(e, "0")) ? 1 : 0; }
+    return on;
+}
+
+static bool
+astro_ld_is_cold(const char *const name)
+{
+    return strncmp(name, ".text.unlikely", 14) == 0;
 }
 
 // Give back the most recent chunk (bump allocator) when patching fails —
@@ -412,21 +446,31 @@ astro_cs_instantiate(NODE *n)
     // Layout: every SHF_ALLOC section (text / rodata; nothing writable).
     int64_t *place = calloc(shnum, sizeof(*place));
     if (!place) ASTRO_LD_RETURN(false);
-    size_t total = 0, maxalign = 16;
+    size_t total = 0, maxalign = 16, ctotal = 0, cmaxalign = 16;
+    const bool split = astro_ld_cold_split();
+    bool *const cold = calloc(shnum, sizeof(*cold));
+    if (!cold) { free(place); ASTRO_LD_RETURN(false); }
     for (unsigned i = 0; i < shnum; i++) {
         const Elf64_Shdr *const s = &o->sh[i];
         place[i] = -1;
         if (!(s->sh_flags & SHF_ALLOC)) continue;
         if (s->sh_type != SHT_PROGBITS && s->sh_type != SHT_NOBITS) continue;
-        if ((s->sh_flags & SHF_WRITE) && s->sh_size > 0) { free(place); astro_ld_stats.failed++; ASTRO_LD_RETURN(false); }
+        if ((s->sh_flags & SHF_WRITE) && s->sh_size > 0) { free(place); free(cold); astro_ld_stats.failed++; ASTRO_LD_RETURN(false); }
         if (s->sh_size == 0) continue;
         const size_t align = s->sh_addralign > 1 ? s->sh_addralign : 1;
         // The arena is page-aligned, so aligning the offset aligns the address
         // only while the requirement is <= a page; and a power of two is what
         // the masking below assumes.  Anything else: leave the node on pool.
-        if ((align & (align - 1)) != 0 || align > 4096) { free(place); astro_ld_stats.failed++; ASTRO_LD_RETURN(false); }
+        if ((align & (align - 1)) != 0 || align > 4096) { free(place); free(cold); astro_ld_stats.failed++; ASTRO_LD_RETURN(false); }
+        if (split && s->sh_name < o->sh[o->eh->e_shstrndx].sh_size && astro_ld_is_cold(o->shstr + s->sh_name)) {
+            if (align > cmaxalign) cmaxalign = align;
+            ctotal = (ctotal + align - 1) & ~(align - 1);
+            cold[i] = true; place[i] = (int64_t)ctotal;   // relative to the cold chunk until it is placed
+            ctotal += s->sh_size;
+            continue;
+        }
         if (align > maxalign) maxalign = align;   // the chunk carries the strictest one
-        if (s->sh_size > SIZE_MAX - total - align) { free(place); astro_ld_stats.failed++; ASTRO_LD_RETURN(false); }
+        if (s->sh_size > SIZE_MAX - total - align) { free(place); free(cold); astro_ld_stats.failed++; ASTRO_LD_RETURN(false); }
         total = (total + align - 1) & ~(align - 1);
         place[i] = (int64_t)total;
         total += s->sh_size;
@@ -436,14 +480,21 @@ astro_cs_instantiate(NODE *n)
         const Elf64_Shdr *const s = &o->sh[i];
         if (s->sh_type != SHT_RELA || s->sh_info >= shnum || place[s->sh_info] < 0) continue;
         if (s->sh_entsize != sizeof(Elf64_Rela) || s->sh_size % sizeof(Elf64_Rela)) {
-            free(place); astro_ld_stats.failed++; ASTRO_LD_RETURN(false);
+            free(place); free(cold); astro_ld_stats.failed++; ASTRO_LD_RETURN(false);
         }
     }
     total = (total + 7) & ~(size_t)7;
 
     char *xbase = NULL;
     char *const base = astro_ld_alloc(total, maxalign, &xbase);   // base: write view, xbase: exec view
-    if (!base) { free(place); astro_ld_stats.failed++; ASTRO_LD_RETURN(false); }
+    if (!base) { free(place); free(cold); astro_ld_stats.failed++; ASTRO_LD_RETURN(false); }
+    if (ctotal) {
+        // Cold chunk above the hot one in the same arena: one offset serves both views.
+        const size_t coff = astro_ld_alloc_cold(ctotal, cmaxalign);
+        if (!coff) { astro_ld_unalloc(base, total); free(place); free(cold); astro_ld_stats.failed++; ASTRO_LD_RETURN(false); }
+        const int64_t delta = (int64_t)coff - (int64_t)(base - astro_ld_arena.w);
+        for (unsigned i = 0; i < shnum; i++) if (cold[i]) place[i] += delta;
+    }
     for (unsigned i = 0; i < shnum; i++) {
         if (place[i] < 0) continue;
         const Elf64_Shdr *const s = &o->sh[i];
@@ -532,15 +583,20 @@ astro_cs_instantiate(NODE *n)
             break;
         }
     }
-    free(place);
-    if (!ok || !entry) { astro_ld_unalloc(base, total); astro_ld_stats.failed++; ASTRO_LD_RETURN(false); }
+    free(place); free(cold);
+    if (!ok || !entry) {
+        astro_ld_unalloc(base, total);
+        if (ctotal) astro_ld_arena.cold_lo = astro_ld_arena.prev_cold_lo;
+        astro_ld_stats.failed++; ASTRO_LD_RETURN(false);
+    }
     astro_arch_sync_icache(xbase, total);
+    if (ctotal) astro_arch_sync_icache(astro_ld_arena.x + astro_ld_arena.cold_lo, ctotal);
     n->head.dispatcher = (node_dispatcher_func_t)entry;
     if (getenv("ASTRO_LD_TRACE"))
-        fprintf(stderr, "astro_ld: %s at %p (%zu B, align %zu, shared got %u) pool %p\n",
-                name, (void *)entry, total, maxalign, astro_ld_got_n, (const void *)n->head.pool);
+        fprintf(stderr, "astro_ld: %s at %p (%zu B, align %zu, shared got %u) pool %p cold %zu\n",
+                name, (void *)entry, total, maxalign, astro_ld_got_n, (const void *)n->head.pool, ctotal);
     astro_ld_stats.n++;
-    astro_ld_stats.bytes += total;
+    astro_ld_stats.bytes += total + ctotal;
     ASTRO_LD_RETURN(true);
 #undef ASTRO_LD_RETURN
 }
