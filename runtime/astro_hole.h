@@ -72,7 +72,12 @@ typedef astro_hole_t const *restrict astro_pool_ptr_t;
 #define HOLE_U64(k) ((uint64_t)P[k])
 #define HOLE_PTR(k) ((void *)(uintptr_t)P[k])
 #define HOLE_STORE32(k, lv) ((lv) = P[k])
+#ifdef ASTRO_SD_POOL_ALWAYS_INLINE
+// EXPERIMENT: inline like the patch build so a pool-built profile matches its CFG.
+#define ASTRO_SD_INLINE_ATTR __attribute__((always_inline))
+#else
 #define ASTRO_SD_INLINE_ATTR
+#endif
 #endif
 
 #endif
