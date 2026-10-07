@@ -33,7 +33,13 @@
 #include "aro_gc_effect.h"   /* ARO_MAYGC / ARO_NOGC / ARO_BORROW markers */
 
 #define LIKELY(expr)   __builtin_expect(!!(expr), 1)
+#if defined(ASTRO_SD_PATCH) && defined(KORB_SD_COLD)
+// EXPERIMENT: a cold call makes gcc move UNLIKELY paths of woven SDs to .text.unlikely; __errno_location is a side-effect-free stand-in.
+void korb_sd_cold_path(void) __asm__("__errno_location") __attribute__((cold));
+#define UNLIKELY(expr) (__builtin_expect(!!(expr), 0) && (korb_sd_cold_path(), 1))
+#else
 #define UNLIKELY(expr) __builtin_expect(!!(expr), 0)
+#endif
 
 /* -----------------------------------------------------------------------------
  * Tagged korb_value.
