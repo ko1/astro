@@ -1578,6 +1578,10 @@ struct korb_vm {
      * megamorphic and ~7M/run; the fast path collapses the [] + meth_call double
      * dispatch into a single recv.mid send. */
     bool method_aref_redefined;
+    /* EXPERIMENT KORB_TYHINT: observe operand kinds per node_eq / node_aref site (KORUBY_TYHINT); the observed
+     * nodes, for the exit dump and the bake */
+    bool ty_observe;
+    struct Node **ty_nodes; uint32_t ty_n, ty_capa;
     /* set when Integer#[] is redefined: node_aref's Integer bit-test fast path
      * then deopts.  optcarrot does ~5M Fixnum n[bit] tests/run; the fast path
      * computes (n>>i)&1 inline, skipping the send + dispatch + builtin. */

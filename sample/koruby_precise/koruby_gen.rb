@@ -20,6 +20,21 @@ require 'astrogen'
 ASTroGen.value_type = 'korb_value'
 
 class KorubyNodeDef < ASTroGen::NodeDef
+  # EXPERIMENT KORB_TYHINT: Hopt = structural hash + the storageless type hints (node_hopt.c, .hopt_func);
+  # the code store's PGC mode names SDs by it (PGSD_<Hopt>) and finds them again through hopt_index.txt.
+  register_gen_task :hopt,
+    func_typedef: "typedef node_hash_t (*node_hash_func_t)(struct Node *n);",
+    func_prefix: "HOPT_",
+    kind_field: "node_hash_func_t hopt_func"
+
+  def build_hopt
+    <<~C__
+    // This file is auto-generated from #{@file}.
+    // Hopt (structural + type hint) hash functions — EXPERIMENT KORB_TYHINT
+
+    #{@nodes.map{|name, n| n.build_hopt_func}.join("\n")}
+    C__
+  end
   class Node < ASTroGen::NodeDef::Node
     def result_type = "RESULT"
 
@@ -173,6 +188,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
       f = "n->u.#{@name}.#{kids.name}"
       body_args = comma_operands(@operands.map do |op|
         if op.children?       then "_cnt"
+        elsif op.storageless? then op.dispatch_default_expr
         elsif op.ref?         then "&n->u.#{@name}.#{op.name}"
         elsif op.node?        then op.dispatch_node_args(@name)
         else                       "n->u.#{@name}.#{op.name}"
@@ -235,6 +251,8 @@ class KorubyNodeDef < ASTroGen::NodeDef
           else
             "_c_#{op.name}"
           end
+        elsif op.storageless?
+          op.dispatch_default_expr
         elsif op.ref?
           "&n->u.#{@name}.#{op.name}"
         elsif op.node?
@@ -291,6 +309,29 @@ class KorubyNodeDef < ASTroGen::NodeDef
           OPTIMIZE(_n);
           if (OPTION.record_all) code_repo_add(NULL, _n, false);
           return _n;
+      }
+      C
+    end
+
+    # Hopt: HASH with hash_node_opt recursion and the storageless hints included (EXPERIMENT KORB_TYHINT)
+    def build_hopt_func
+      lines = @operands.map do |op|
+        if op.children?
+          fld = "n->u.#{@name}.#{op.name}"
+          "    for (uint32_t _i = 0; _i < #{fld}_cnt; _i++) h = hash_merge(h, hash_node_opt(#{fld}[_i]));\n" \
+          "    h = hash_merge(h, hash_uint32(#{fld}_cnt));"
+        else
+          "    h = hash_merge(h, #{op.hash_call(op.storageless? ? 'n' : "n->u.#{@name}.#{op.name}", kind: :hopt)});"
+        end
+      end
+      <<~C
+      static node_hash_t
+      HOPT_#{name}(NODE *n)
+      {
+          node_hash_t h = hash_cstr(#{canonical_name.dump});
+      #{lines.join("\n")}
+          if (n->head.flags.sd_inl) h = hash_merge(h, hash_uint32(0x5d10u + n->head.flags.sd_inl));
+          return h;
       }
       C
     end
@@ -552,6 +593,10 @@ class KorubyNodeDef < ASTroGen::NodeDef
 
       def children? = @children
       def sym? = @sym
+      # EXPERIMENT KORB_TYHINT: `korb_tyhint_t ty` is storageless — 0 in DISPATCH, korb_tyhint_of(n) baked by SPECIALIZE, in Hopt only
+      def tyhint? = @type == 'korb_tyhint_t'
+      def storageless? = tyhint? || super
+      def dispatch_default_expr = tyhint? ? '0' : super
 
       def storage_type = children? ? 'NODE **' : super
 
@@ -586,6 +631,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
       end
 
       def hash_call(val, kind: :horg)
+        return(kind == :hopt ? "hash_uint32(korb_tyhint_of(#{val}))" : '0') if tyhint?
         # @sym: interned symbol ID — per-process, so excluded from the hash
         # (the SD reads it at runtime; see build_specializer below).
         return '0' if sym?
@@ -635,6 +681,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
       end
 
       def build_specializer(name)
+        return nil, "    fprintf(fp, \"        %uu\", (unsigned)korb_tyhint_of(n));" if tyhint?
         # The frame link already has a hole, allocated by the @framehdr cursor
         # advance that stores it (see build_children_specializer): reuse that
         # index so the SD materializes the value once, not twice.

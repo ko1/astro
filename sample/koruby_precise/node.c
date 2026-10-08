@@ -33,6 +33,7 @@ node_allocate(size_t size)
 #include "node_dispatch.c"
 #include "node_dump.c"
 #include "node_hash.c"
+#include "node_hopt.c"
 #include "node_specialize.c"
 #include "node_replace.c"
 #include "node_emit_ast.c"
@@ -133,6 +134,66 @@ code_repo_add(const char *name, NODE *body, bool force)
 }
 
 uint32_t code_repo_count(void) { return code_repo.size; }
+
+/* EXPERIMENT (KORUBY_ENTRY_MAP): entry name, SD name, file:line per registered body */
+bool korb_srcloc_find(const struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line);
+void
+korb_entry_map_dump(const struct korb_vm *vm, const char *path)
+{
+    FILE *const f = fopen(path, "w");
+    if (!f) return;
+    for (uint32_t i = 0; i < code_repo.size; i++) {
+        NODE *const b = code_repo.entries[i].body;
+        uint32_t fs = 0, ln = 0;
+        const bool ok = korb_srcloc_find(vm, b, &fs, &ln);
+        fprintf(f, "SD_%lx\t%s\t%s\t%u\t%s\n", (unsigned long)HASH(b), code_repo.entries[i].name ? code_repo.entries[i].name : "-",
+                ok ? korb_sym_name(vm, fs) : "?", ln, b->head.kind ? b->head.kind->default_dispatcher_name : "?");
+    }
+    fclose(f);
+}
 NODE *code_repo_body_at(uint32_t i) { return code_repo.entries[i].body; }
 const char *code_repo_name_at(uint32_t i) { return code_repo.entries[i].name; }
 bool code_repo_skip_specialize_at(uint32_t i) { return code_repo.entries[i].skip_specialize; }
+
+/* ---- EXPERIMENT KORB_TYHINT ---------------------------------------------------------------- */
+/* HOPT counterpart of hash_node (the recursion entry in HOPT_<name>): cached per node in head.hash_opt */
+node_hash_t
+hash_node_opt(NODE *n)
+{
+    if (!n) return 0;
+    if (n->head.flags.has_hash_opt) return n->head.hash_opt;
+    const node_hash_t h = (*n->head.kind->hopt_func)(n);
+    n->head.hash_opt = h; n->head.flags.has_hash_opt = true;
+    return h;
+}
+node_hash_t
+hash_node_opt_root(NODE *n)
+{
+    return n ? (*n->head.kind->hopt_func)(n) : 0;
+}
+void
+korb_ty_observe(CTX *c, NODE *n, unsigned lk, unsigned rk)
+{
+    struct korb_vm *const vm = c->vm;
+    if (!n->head.flags.ty_observed) {
+        n->head.flags.ty_observed = true; n->head.flags.ty_l = n->head.flags.ty_r = 0;
+        if (vm->ty_n == vm->ty_capa) {
+            vm->ty_capa = vm->ty_capa ? vm->ty_capa * 2 : 1024;
+            vm->ty_nodes = realloc(vm->ty_nodes, sizeof(*vm->ty_nodes) * vm->ty_capa);
+            if (!vm->ty_nodes) abort();
+        }
+        vm->ty_nodes[vm->ty_n++] = n;
+    }
+    n->head.flags.ty_l |= (uint8_t)(1u << (lk - 1)); n->head.flags.ty_r |= (uint8_t)(1u << (rk - 1));
+}
+void
+korb_tyhint_dump(const struct korb_vm *vm, const char *path)
+{
+    FILE *const f = fopen(path, "w");
+    if (!f) return;
+    for (uint32_t i = 0; i < vm->ty_n; i++) {
+        const NODE *const n = vm->ty_nodes[i];
+        fprintf(f, "%s\t%02x\t%02x\t%u\n", n->head.kind->default_dispatcher_name, n->head.flags.ty_l, n->head.flags.ty_r, korb_tyhint_of(n));
+    }
+    fclose(f);
+}

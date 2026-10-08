@@ -514,15 +514,34 @@ bake_from(void)
 #endif
 }
 
+/* EXPERIMENT KORB_TYHINT (KORUBY_TYHINT=1): bodies are baked as PGSD_<Hopt> (type hints in the key) and found again
+ * through hopt_index.txt, keyed by (Horg, file, line) = the body's source location (a simple entry: its body's). */
+bool korb_srcloc_find(const struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line);   /* korb_runtime.c */
+static bool korb_tyhint_on(void) { const char *const e = getenv("KORUBY_TYHINT"); return e && *e && strcmp(e, "0") != 0; }
+static const char *
+korb_body_loc(const struct korb_vm *vm, NODE *b)
+{
+    uint32_t fs = 0, ln = 0;
+    const bool ok = korb_srcloc_find(vm, b, &fs, &ln) ||
+        (strcmp(b->head.kind->default_dispatcher_name, "DISPATCH_node_simple_entry") == 0 && korb_srcloc_find(vm, b->u.node_simple_entry.body, &fs, &ln));
+    if (getenv("KORUBY_TYHINT_DEBUG"))
+        fprintf(stderr, "body_loc %s %p %s %s:%u\n", b->head.kind->default_dispatcher_name, (void *)b, ok ? "ok" : "NONE", ok ? korb_sym_name(vm, fs) : "-", ln);
+    if (!ok) return NULL;
+    b->head.line = (int32_t)ln;
+    return korb_sym_name(vm, fs);
+}
+
 /* AOT bake: the program AST + every *user* method body (each is its own entry —
  * call sites dispatch through body->head.dispatcher at runtime). */
 static void
-bake_code_store(NODE *ast)
+bake_code_store(CTX *c, NODE *ast)
 {
+    const bool ty = korb_tyhint_on();
     astro_cs_compile(ast, NULL);
     for (uint32_t i = bake_from(); i < code_repo_count(); i++) {
         if (code_repo_skip_specialize_at(i)) continue;
-        astro_cs_compile(code_repo_body_at(i), NULL);
+        NODE *const b = code_repo_body_at(i);
+        astro_cs_compile(b, ty ? korb_body_loc(c->vm, b) : NULL);
     }
 
     char extra_cflags[2048];
@@ -557,11 +576,11 @@ static void koruby_instantiate_sds(NODE *ast, uint32_t from);
 /* A producing run builds its store once, on whichever way main() ends (normal end,
  * exit, uncaught exception, signal): the files it loaded were only emitted. */
 static void
-bake_at_exit(NODE *ast)
+bake_at_exit(CTX *c, NODE *ast)
 {
 #ifndef KORUBY_EMBED
     if (!(OPTION.aot_compile || OPTION.pg_compile)) return;
-    bake_code_store(ast);
+    bake_code_store(c, ast);
     if (OPTION.verbose)
         fprintf(stderr, "koruby_precise: aot: baked program + %u method bodies\n", code_repo_count());
 #else
@@ -570,12 +589,14 @@ bake_at_exit(NODE *ast)
 }
 
 void
-korb_load_time_specialize(NODE *ast, uint32_t repo_from, const char *file)
+korb_load_time_specialize(CTX *c, NODE *ast, uint32_t repo_from, const char *file)
 {
     (void)file;
     if (OPTION.plain || ast == NULL) return;
+    const bool ty = korb_tyhint_on();
 
     if (OPTION.aot_compile || OPTION.pg_compile) {
+        if (ty) return;   /* KORB_TYHINT: emitted at exit, after the run observed the sites */
         /* Emit only; the run's exit builds once (bake_at_exit).  Building + reloading
          * here relinked every SD so far per loaded file (O(files x SDs)) and kept each
          * .so generation mapped: rubocop's bake reached 61 GB and addressable's never
@@ -589,8 +610,10 @@ korb_load_time_specialize(NODE *ast, uint32_t repo_from, const char *file)
     }
 
     astro_cs_load(ast, NULL);
-    for (uint32_t i = repo_from; i < code_repo_count(); i++)
-        astro_cs_load(code_repo_body_at(i), NULL);
+    for (uint32_t i = repo_from; i < code_repo_count(); i++) {
+        NODE *const b = code_repo_body_at(i);
+        astro_cs_load(b, ty ? korb_body_loc(c->vm, b) : NULL);
+    }
     koruby_instantiate_sds(ast, repo_from);
 }
 
@@ -628,14 +651,15 @@ korb_poison_dispatch(CTX *c, NODE *n, korb_value *slots)
  * --compiled-only mode, any body that does NOT match a baked SD is poisoned
  * (no normal-execution overhead — this is a one-time startup pass). */
 static unsigned int
-swap_in_cached_sds(NODE *ast)
+swap_in_cached_sds(CTX *c, NODE *ast)
 {
     unsigned int swaps = 0;
+    const bool ty = korb_tyhint_on();
     if (astro_cs_load(ast, NULL)) swaps++;
     else if (OPTION.compiled_only && !ast->head.flags.no_inline) ast->head.dispatcher = korb_poison_dispatch;
     for (uint32_t i = 0; i < code_repo_count(); i++) {
         NODE *body = code_repo_body_at(i);
-        if (astro_cs_load(body, NULL)) swaps++;
+        if (astro_cs_load(body, ty && i >= g_prelude_repo_count ? korb_body_loc(c->vm, body) : NULL)) swaps++;
         else if (OPTION.compiled_only && !body->head.flags.no_inline) body->head.dispatcher = korb_poison_dispatch;
     }
     return swaps;
@@ -1531,7 +1555,7 @@ main(int argc, char *argv[])
     if (!OPTION.plain) {
         ensure_preload();                        /* bake (if stale) + dlopen preload.so */
         INIT();                                  /* dlopen code_store/all.so if present */
-        unsigned int swaps = swap_in_cached_sds(ast);
+        unsigned int swaps = swap_in_cached_sds(c, ast);
         koruby_instantiate_sds(ast, 0);
         if (prelude_ast && prelude_ast->head.flags.is_specialized) koruby_instantiate_sds(prelude_ast, code_repo_count());
         koruby_instantiate_report();
@@ -1791,7 +1815,7 @@ main(int argc, char *argv[])
          * it — both are printed.  Read the (possibly moved) exception back. */
         if (uncaught && !handler_exited && !sig_quiet) korb_report_uncaught_detailed(c, toplevel_cursor + 4, toplevel_cursor[0]);
         fflush(stdout);
-        if (exit_status >= 0 || uncaught || r.state == KORB_THROW || die_sig > 0) bake_at_exit(ast);
+        if (exit_status >= 0 || uncaught || r.state == KORB_THROW || die_sig > 0) bake_at_exit(c, ast);
         if (die_sig > 0) {   /* even over an at_exit's exit, as CRuby */
             korb_io_flush_all(c->vm);
             korb_die_by_signal(die_sig);
@@ -1811,6 +1835,14 @@ main(int argc, char *argv[])
             return 1;
         }
 
+        {
+            extern void korb_entry_map_dump(const struct korb_vm *vm, const char *path);
+            const char *const em = getenv("KORUBY_ENTRY_MAP");   /* EXPERIMENT */
+            if (em && em[0]) korb_entry_map_dump(c->vm, em);
+            extern void korb_tyhint_dump(const struct korb_vm *vm, const char *path);
+            const char *const td = getenv("KORUBY_TYHINT_DUMP");   /* EXPERIMENT KORB_TYHINT */
+            if (td && td[0]) korb_tyhint_dump(c->vm, td);
+        }
         if (getenv("KORUBY_GC_STATS")) {
             double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
             fprintf(stderr, "__KORUBY_GC__ alloc_bytes=%zu gc_count=%zu minor=%zu major=%zu "
@@ -1822,7 +1854,7 @@ main(int argc, char *argv[])
 
     /* Bodies were registered in the code repo at parse time, so the whole
      * program bakes whether or not it ran. */
-    bake_at_exit(ast);
+    bake_at_exit(c, ast);
 
     korb_ctx_free(c);
     korb_io_flush_all(c->vm);   /* stdio is gone: the std streams flush here */

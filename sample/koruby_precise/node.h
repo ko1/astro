@@ -22,7 +22,9 @@ void SPECIALIZE(FILE *fp, NODE *n);
  * structural hash (the code store references HOPT only when PG naming is
  * active, which M0 never enables). */
 #define HORG(n) HASH(n)
-#define HOPT(n) HASH(n)
+#define HOPT(n) hash_node_opt_root(n)   /* EXPERIMENT KORB_TYHINT: node_hopt.c (storageless type hints in the key) */
+node_hash_t hash_node_opt(struct Node *n);        /* node.c */
+node_hash_t hash_node_opt_root(struct Node *n);
 
 #define DISPATCHER_NAME(n) \
     ((n)->head.flags.no_inline ? (#n "->head.dispatcher") : (n)->head.dispatcher_name)
@@ -40,6 +42,8 @@ struct NodeHead {
         bool no_inline : 1;
         bool is_vcall : 1;          /* bare identifier (`foo`): a miss is NameError */
         bool yield_simple : 1;      /* node_entry block: korb_block_yield's fast path applies (set on first yield) */
+        bool ty_observed : 1;       /* EXPERIMENT KORB_TYHINT: ty_l / ty_r hold the operand kinds this site saw */
+        uint8_t ty_l, ty_r;         /* bit (kind - 1) per korb_ty_kind seen (a body can be the site itself, so not head.line) */
         uint8_t sd_inl;             /* node_send: which AOT-only inline body its SD calls (enum korb_sdi, 0 = none) */
     } flags;
     const struct NodeKind *kind;
@@ -892,7 +896,7 @@ bool code_repo_skip_specialize_at(uint32_t i);
  * newly-registered bodies [repo_from, count) to baked SDs, and — under
  * --aot-compile/--pg-compile — compile them first.  Defined in main.c.  Call
  * once, after the file is parsed (offsets finalized).  No-op under --plain. */
-void korb_load_time_specialize(NODE *ast, uint32_t repo_from, const char *file);
+void korb_load_time_specialize(CTX *c, NODE *ast, uint32_t repo_from, const char *file);
 
 extern size_t node_cnt;
 
@@ -1269,6 +1273,42 @@ korb_invoke_entry_cc(CTX *c, korb_value *slots, const struct korb_callcache *cc,
     if (LIKELY(r.state == KORB_NORMAL)) return r;
     return korb_call_ret_cold(c, r, slots[-(korb_sword_t)argc - 3], mid, korb_id_get(slots - argc));
 }
+
+/* ---- EXPERIMENT KORB_TYHINT: per-site operand kinds, observed in the interpreter, baked into the SD ---- */
+typedef uint32_t korb_tyhint_t;
+enum korb_ty_kind { KORB_TY_NONE = 0, KORB_TY_FIX = 1, KORB_TY_FLO, KORB_TY_IMM, KORB_TY_STR, KORB_TY_ARY, KORB_TY_HASH, KORB_TY_OBJ, KORB_TY_OTHER };
+#define KORB_TY2(a, b) (((a) << 4) | (b))
+#define KORB_TY_IMM_P(v) (!AROH_IS_GC_OBJECT(v) && !FIXNUM_P(v) && !FLONUM_P(v))
+static inline unsigned
+korb_ty_kind(const korb_value v)
+{
+    if (FIXNUM_P(v)) return KORB_TY_FIX;
+    if (FLONUM_P(v)) return KORB_TY_FLO;
+    if (!AROH_IS_GC_OBJECT(v)) return KORB_TY_IMM;
+    const uint16_t f = ((const AroObjectHeader *)(uintptr_t)v)->flags & (KORB_OBJ_TYPE_MASK | KORB_FL_HAS_KLASS);
+    if (f == KORB_OBJ_STRING) return KORB_TY_STR;
+    if (f == KORB_OBJ_ARRAY) return KORB_TY_ARY;
+    if (f == KORB_OBJ_HASH) return KORB_TY_HASH;
+    if (f == KORB_OBJ_OBJECT) return KORB_TY_OBJ;
+    return KORB_TY_OTHER;
+}
+/* the hint an observed site bakes: KORB_TY2(lhs kind, rhs kind), each 0 unless exactly one kind was seen; 0 = the generic body */
+static inline korb_tyhint_t
+korb_tyhint_of(const struct Node *n)
+{
+    if (!n->head.flags.ty_observed) return 0;
+    const uint32_t l = n->head.flags.ty_l, r = n->head.flags.ty_r;
+    if (__builtin_popcount(l) != 1) return 0;   /* one lhs kind; the rhs kind only when it is one too (else 0) */
+    return KORB_TY2(__builtin_ctz(l) + 1, __builtin_popcount(r) == 1 ? __builtin_ctz(r) + 1 : 0);
+}
+void korb_ty_observe(CTX *c, struct Node *n, unsigned lk, unsigned rk);   /* node.c */
+#ifdef ASTRO_SD_POOL
+#define KORB_TY_OBSERVE(c, n, l, r) ((void)0)
+#else
+#define KORB_TY_OBSERVE(c, n, l, r) do { if (UNLIKELY((c)->vm->ty_observe)) korb_ty_observe((c), (n), korb_ty_kind(l), korb_ty_kind(r)); } while (0)
+#endif
+RESULT korb_eq_generic(CTX *c, korb_value *slots, korb_value l, korb_value rhs, uint64_t flink);   /* node.def, binary only */
+RESULT korb_aref_generic(CTX *c, korb_value *slots, korb_value r, korb_value idx, uint64_t flink, struct korb_inlcache *ic);
 
 /* Builtin receiver → class object (2 loads); mirrors korb_runtime.c's korb_builtin_class_obj. */
 static inline korb_value

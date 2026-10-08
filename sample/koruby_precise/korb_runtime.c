@@ -19620,7 +19620,7 @@ korb_eval_toplevel_wrap(CTX *c, korb_value *slots, const char *src, size_t len, 
     if (UNLIKELY(ast == NULL)) {
         return korb_raise_syntax_at(c, slots, "syntax error", fname);   /* prism's diagnostics, as CRuby; #path = the file */
     }
-    korb_load_time_specialize(ast, repo_before, fname);          /* AOT: bind (+compile when producing) at load */
+    korb_load_time_specialize(c, ast, repo_before, fname);          /* AOT: bind (+compile when producing) at load */
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0; slots[3] = 0;   /* frame meta: fb[-4]=identity, fb[-3]=link, fb[-2]=EP, fb[-1]=self */
     korb_value *const fb = slots + 4;
@@ -19793,6 +19793,16 @@ static uint32_t korb_srcloc_slot(const struct korb_vm *const vm, const struct No
     while (vm->srcloc_idx[slot] != 0 && vm->srclocs[vm->srcloc_idx[slot] - 1].node != node)
         slot = (slot + 1) & vm->srcloc_idx_mask;
     return slot;
+}
+/* EXPERIMENT (KORUBY_ENTRY_MAP): the file / line a node was registered with */
+bool
+korb_srcloc_find(const struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line)
+{
+    if (vm->srcloc_idx == NULL) return false;
+    const uint32_t i = vm->srcloc_idx[korb_srcloc_slot(vm, node)];
+    if (i == 0) return false;
+    *file_sym = vm->srclocs[i - 1].file_sym; *line = vm->srclocs[i - 1].line;
+    return true;
 }
 void
 korb_reg_srcloc(struct korb_vm *vm, struct Node *node, uint32_t file_sym, uint32_t line)
@@ -21911,7 +21921,7 @@ korb_eval_str_self(CTX *c, korb_value *slots, korb_value str, korb_value self_va
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
     /* AOT: bind (+ compile when producing) as a loaded file is — class_eval'd methods (Rails' attribute
      * methods, compiled ERB views) ran on the interpreter: 16% of railsbench's AOT instructions */
-    korb_load_time_specialize(ast, repo_before, fname);
+    korb_load_time_specialize(c, ast, repo_before, fname);
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0; slots[3] = 0;   /* eval frame meta: fb[-4..-1] */
     korb_value *const fb = slots + 4;
@@ -22256,7 +22266,7 @@ korb_bi_eval(CTX *c, korb_value *slots, korb_slice args)
     NODE *ast = koruby_parse_source_at(c, korb_str_ptr(s), s->len, fname, eline, false,
                                        korb_enc_name_of(c->vm, KORB_STR_ENC(sv)), 0, NULL, 0, true);   /* immortal AST; no GC */
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
-    korb_load_time_specialize(ast, repo_before, fname);   /* AOT: bind (+ compile when producing), as a loaded file */
+    korb_load_time_specialize(c, ast, repo_before, fname);   /* AOT: bind (+ compile when producing), as a loaded file */
     const uint32_t locals = koruby_toplevel_locals_cnt;
     slots[0] = 0; slots[1] = 0; slots[2] = 0; slots[3] = 0;   /* eval frame meta: fb[-4..-1] */
     korb_value *const fb = slots + 4;
@@ -23597,7 +23607,8 @@ korb_ctx_new(void)
     c->vm = calloc(1, sizeof(struct korb_vm));
     if (!c->vm) { fprintf(stderr, "koruby_precise: out of memory (VM)\n"); abort(); }
     c->vm->sigfd = -1;                                  /* calloc's 0 is a real fd */
-    korb_sdi_preinit(c->vm);                            /* calloc's NULL would match a Ruby method's rfn */
+    korb_sdi_preinit(c->vm);
+    { const char *const e = getenv("KORUBY_TYHINT"); c->vm->ty_observe = e && *e && strcmp(e, "0") != 0; }   /* EXPERIMENT KORB_TYHINT */                            /* calloc's NULL would match a Ruby method's rfn */
 #ifndef KORB_WASI
     korb_signal_arm_init(c->vm);
 #endif

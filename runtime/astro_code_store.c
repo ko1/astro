@@ -769,6 +769,21 @@ astro_cs_load(NODE *n, const char *file)
                 n->head.flags.is_specialized = true;
                 return true;
             }
+#if ASTRO_LOADER_SUPPORTED
+            // Loader-only store (EXPERIMENT KORB_TYHINT): bind the PGSD name + pool as the AOT branch below does.
+            if (astro_cs_loader_only && astro_cs_dlsym_desc(sym_name)) {
+                char *name = malloc(strlen(sym_name) + 1);
+                strcpy(name, sym_name);
+                n->head.dispatcher_name = name;
+                n->head.hash_opt = hopt;
+                n->head.flags.has_hash_opt = true;
+                astro_cs_bind_pool(n, sym_name);
+                if (n->head.dispatcher == NULL && n->head.kind->default_dispatcher)
+                    n->head.dispatcher = n->head.kind->default_dispatcher;
+                n->head.flags.is_specialized = true;
+                return true;
+            }
+#endif
         }
     }
 
@@ -831,6 +846,10 @@ astro_cs_compile(NODE *entry, const char *file)
     if (file) {
         astro_cs_use_hopt_name = 1;  // alloc_dispatcher_name → SD_<Hopt>
         h = HOPT(entry);
+        // Index this entry's key now: two entries with one Hopt share the .c (the
+        // second returns at the exists-check below) but each needs its own key.
+        node_hash_t key = hopt_index_key(horg, file, entry->head.line), seen;
+        if (!hopt_index_lookup(key, &seen)) { hopt_index_add_mem(key, h); hopt_index_append_file(key, h); }
     } else {
         astro_cs_use_hopt_name = 0;
         h = horg;
@@ -937,10 +956,8 @@ astro_cs_compile(NODE *entry, const char *file)
     }
 
     if (file) {
-        // Index this entry so the next process can find SD_<Hopt>.
+        // (indexed above, before the exists-check)
         node_hash_t key = hopt_index_key(horg, file, entry->head.line);
-        hopt_index_add_mem(key, h);
-        hopt_index_append_file(key, h);
         if (getenv("ASTRO_CS_TRACE")) {
             fprintf(stderr, "cs_compile pgc: horg=%lx file=%s line=%d key=%lx hopt=%lx\n",
                     (unsigned long)horg, file, entry->head.line,
