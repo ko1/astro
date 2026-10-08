@@ -16789,6 +16789,26 @@ static bool korb_sdi_class_resolve(CTX *c, korb_value kl, unsigned k);
 /* The AOT inline send's miss side (its site cache holds another class): kl's own per-kind answer.
  * Out of line and cold, so the hit path keeps the shape it had before the masks (nil_p +4.6%
  * instructions with this inlined). */
+/* korb_sdi_klass for all but a plain instance: one shared copy for the SDs built with KORB_SD_SHARE_KL */
+__attribute__((noinline)) korb_value
+korb_sdi_klass_slow(const struct korb_vm *vm, const korb_value r)
+{
+    if (AROH_IS_GC_OBJECT(r)) {
+        const uint16_t f = ((const AroObjectHeader *)(uintptr_t)r)->flags & (KORB_OBJ_TYPE_MASK | KORB_FL_HAS_KLASS);
+        if (f == KORB_OBJ_OBJECT) return VAL2OBJ(r)->klass;
+        if (f == KORB_OBJ_STRING) return korb_builtin_class_obj(vm, KORB_C_STRING);
+        if (f == KORB_OBJ_ARRAY) return korb_builtin_class_obj(vm, KORB_C_ARRAY);
+        if (f == KORB_OBJ_HASH) return korb_builtin_class_obj(vm, KORB_C_HASH);
+        if (f == KORB_OBJ_REGEXP) return korb_builtin_class_obj(vm, KORB_C_REGEXP);
+        return KORB_NIL;
+    }
+    if (FIXNUM_P(r)) return korb_builtin_class_obj(vm, KORB_C_INTEGER);
+    if (FLONUM_P(r)) return korb_builtin_class_obj(vm, KORB_C_FLOAT);
+    if (r == KORB_NIL) return korb_builtin_class_obj(vm, KORB_C_NIL);
+    if (r == KORB_TRUE) return korb_builtin_class_obj(vm, KORB_C_TRUE);
+    if (r == KORB_FALSE) return korb_builtin_class_obj(vm, KORB_C_FALSE);
+    return KORB_NIL;
+}
 __attribute__((noinline, cold)) bool
 korb_sdi_class_ok(CTX *c, korb_value kl, unsigned k)
 {

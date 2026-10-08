@@ -630,6 +630,7 @@ static inline bool korb_kwargs_hash_p(korb_value v) {
 }
 
 bool korb_sdi_class_ok(CTX *c, korb_value kl, unsigned k);   /* korb_runtime.c: the AOT inline send's miss side */
+korb_value korb_sdi_klass_slow(const struct korb_vm *vm, korb_value r);   /* korb_runtime.c: korb_sdi_klass past a plain instance */
 struct korb_vm;
 void korb_sdi_preinit(struct korb_vm *vm);   /* korb_runtime.c */
 
