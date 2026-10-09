@@ -2729,10 +2729,10 @@ node_send(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, 
      * class receiver's simple public method.  The site's own check + a direct call; the runtime only on a miss. */
     if (LIKELY(c->vm->send_inl) && LIKELY(ic->serial == c->vm->method_serial) && LIKELY(!c->vm->refinements_active)) {
         if (ic->cfunc_ok) {   /* the receiver's tag against the cached class's (no class lookup: ~10 instructions, 30 B) */
-            if (ic->cfunc_ok == 0xFF ? recv == ic->klass : korb_recv_tag_is(recv, ic->cfunc_ok))
+            if (ic->cfunc_ok >= 0xFE ? recv == ic->klass : korb_recv_tag_is(recv, ic->cfunc_ok)) {
+                if (ic->cfunc_ok == 0xFE) return korb_send_simple_hit(c, slots, mid, slots[-(korb_sword_t)argv_cnt - 2], argc, ic);
                 return korb_send_cfunc_hit(c, slots, mid, slots[-(korb_sword_t)argv_cnt - 2], argc, ic->m);
-        } else if (ic->kind == KORB_IC_SMETHOD && ic->dispatch != NULL && recv == ic->klass) {
-            return korb_invoke_entry_ic(c, slots, ic, argc, mid);
+            }
         }
     }
     /* self_off == INT32_MIN → a synthetic send (op-assign/[]/=== desugar): public,

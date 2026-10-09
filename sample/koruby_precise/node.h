@@ -470,6 +470,7 @@ RESULT korb_send_blk_fwd(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
                          korb_value *def_env, korb_value *captured_self, korb_value flink, korb_value caller_self,
                          struct korb_inlcache *ic);   /* node_send_blkfwd: the method's own block passed on */
 RESULT korb_send_cfunc_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc, const struct korb_method *m);   /* EXPERIMENT acct46 */
+RESULT korb_send_simple_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc, const struct korb_inlcache *ic);
 RESULT korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
                         struct korb_inlcache *ic, korb_value caller_self,
                         struct korb_inlcache *site_ic);   /* caller_self = KORB_UNDEF → no visibility check; site_ic = the node's own cache (shared-cc patch key) or NULL */
@@ -1404,14 +1405,13 @@ korb_ic_fill_raw(const struct korb_vm *vm, struct korb_inlcache *ic, uint64_t se
 {
     ic->serial = serial; ic->klass = klass; ic->m = m; ic->def_class = def_class; ic->kind = kind;
     ic->body = NULL; ic->dispatch = NULL;
-    ic->cfunc_ok = 0;   /* EXPERIMENT acct46 */
+    ic->cfunc_ok = 0;   /* EXPERIMENT acct46: what the SD may call itself (the tag test / class compare selects it) */
     if (m != NULL && m->kind == KORB_METHOD_CFUNC && (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
         if (kind == KORB_IC_INSTANCE) ic->cfunc_ok = korb_bi_tag_code(vm, klass);
         else if (kind == KORB_IC_SMETHOD && !m->uses_block && m->visibility == 0) ic->cfunc_ok = 0xFF;
-    }
-    if (kind == KORB_IC_SMETHOD && m != NULL && m->kind == KORB_METHOD_ISEQ && m->is_simple && m->visibility == 0 &&
-        m->simple_entry != NULL && argc == (uint32_t)m->params_cnt) {   /* EXPERIMENT acct46: a class's simple public method: entry dispatch too */
-        ic->body = m->simple_entry; ic->dispatch = m->simple_entry->head.dispatcher; return;
+    } else if (kind == KORB_IC_SMETHOD && m != NULL && m->kind == KORB_METHOD_ISEQ && m->is_simple && m->visibility == 0) {
+        ic->cfunc_ok = 0xFE;   /* a class's simple public method: korb_send_simple_hit (dispatch stays NULL: node_send's
+                                * plain-object check must not take a class-method cache for an instance of that class) */
     }
     if (m == NULL || kind != KORB_IC_INSTANCE) return;
     if (m->simple_entry != NULL && argc == (uint32_t)m->params_cnt) {   /* ISEQ simple entry or attr_reader (its ivar node) */

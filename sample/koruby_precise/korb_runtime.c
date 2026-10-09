@@ -16246,6 +16246,12 @@ korb_send_cfunc_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, u
     if (LIKELY(r.state == KORB_NORMAL)) return r;
     return korb_call_ret_cold(c, r, flink, mid, (korb_value)((uintptr_t)m | KORB_FID_CFUNC));
 }
+/* the class receiver's simple public ISEQ hit, reached from the SD's own check: korb_invoke_simple with its frame here */
+__attribute__((noinline, no_stack_protector)) RESULT
+korb_send_simple_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc, const struct korb_inlcache *ic)
+{
+    return korb_invoke_simple(c, slots, ic->m, argc, korb_flink_line(flink), mid, slots[-(korb_sword_t)argc - 1], ic->def_class);
+}
 __attribute__((no_stack_protector)) RESULT
 korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
                  struct korb_inlcache *ic, korb_value caller_self, struct korb_inlcache *site_ic)
