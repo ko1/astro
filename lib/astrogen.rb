@@ -396,6 +396,9 @@ module ASTroGen
       # e.g. abruby caches c->current_frame so clang's __builtin_assume can
       # help the compiler CSE reloads inside the evaluated tree.
       def specializer_prologue = nil
+
+      # C lines at the top of every DISPATCH_<name> body (interpreter TU only); "" by default.
+      def dispatch_prologue = ""
       def specializer_epilogue = nil
 
       # --------------------------------------------------------------------
@@ -836,7 +839,7 @@ module ASTroGen
           static __attribute__((no_stack_protector)) #{result_type}
           DISPATCH_#{@name}(#{@prefix_args.join(', ')})
           {
-          #{sp_advance}    return EVAL_#{name}(#{prefix_call_args.join(', ')}#{
+          #{dispatch_prologue}#{sp_advance}    return EVAL_#{name}(#{prefix_call_args.join(', ')}#{
                 comma_operands(@operands.map{
                   if it.storageless?
                     it.dispatch_default_expr
@@ -913,7 +916,7 @@ module ASTroGen
           static __attribute__((no_stack_protector)) #{result_type}
           DISPATCH_#{@name}(#{@prefix_args.join(', ')})
           {
-          #{decl_stmts.empty? ? "" : decl_stmts + "\n"}#{sp_advance}#{spill_stmts}
+          #{dispatch_prologue}#{decl_stmts.empty? ? "" : decl_stmts + "\n"}#{sp_advance}#{spill_stmts}
               return EVAL_#{name}(#{prefix_call_args.join(', ')}#{body_args});
           }
           C

@@ -518,6 +518,8 @@ bake_from(void)
  * through hopt_index.txt, keyed by (Horg, file, line) = the body's source location (a simple entry: its body's). */
 bool korb_srcloc_find(const struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line);   /* korb_runtime.c */
 static bool korb_tyhint_on(void) { const char *const e = getenv("KORUBY_TYHINT"); return e && *e && strcmp(e, "0") != 0; }
+/* profile-at-exit bake (KORB_TYHINT / KORB_COLDCUT): nothing is emitted at load time; the exit bakes with the run's observations */
+static bool korb_pgexit_on(void) { return korb_tyhint_on() || korb_coldcut_on(); }
 static const char *
 korb_body_loc(const struct korb_vm *vm, NODE *b)
 {
@@ -536,13 +538,22 @@ korb_body_loc(const struct korb_vm *vm, NODE *b)
 static void
 bake_code_store(CTX *c, NODE *ast)
 {
-    const bool ty = korb_tyhint_on();
+    const bool ty = korb_pgexit_on(), cc = korb_coldcut_on();
+    struct korb_cc_stats st = {0};
+    if (cc) korb_coldcut_pass(ast, &st);
     astro_cs_compile(ast, NULL);
     for (uint32_t i = bake_from(); i < code_repo_count(); i++) {
         if (code_repo_skip_specialize_at(i)) continue;
         NODE *const b = code_repo_body_at(i);
+        if (cc) {   /* KORB_COLDCUT: a body the run never entered is not baked; inside, unvisited subtrees go no_inline */
+            st.entries++;
+            if (!b->head.flags.ran) continue;
+            st.entries_ran++;
+            korb_coldcut_pass(b, &st);
+        }
         astro_cs_compile(b, ty ? korb_body_loc(c->vm, b) : NULL);
     }
+    if (cc) fprintf(stderr, "koruby_precise: coldcut: entries %u ran %u, nodes %u cold %u\n", st.entries, st.entries_ran, st.nodes, st.cold);
 
     char extra_cflags[2048];
     koruby_extra_cflags(extra_cflags, sizeof(extra_cflags));
@@ -593,7 +604,7 @@ korb_load_time_specialize(CTX *c, NODE *ast, uint32_t repo_from, const char *fil
 {
     (void)file;
     if (OPTION.plain || ast == NULL) return;
-    const bool ty = korb_tyhint_on();
+    const bool ty = korb_pgexit_on();
 
     if (OPTION.aot_compile || OPTION.pg_compile) {
         if (ty) return;   /* KORB_TYHINT: emitted at exit, after the run observed the sites */
@@ -654,7 +665,7 @@ static unsigned int
 swap_in_cached_sds(CTX *c, NODE *ast)
 {
     unsigned int swaps = 0;
-    const bool ty = korb_tyhint_on();
+    const bool ty = korb_pgexit_on();
     if (astro_cs_load(ast, NULL)) swaps++;
     else if (OPTION.compiled_only && !ast->head.flags.no_inline) ast->head.dispatcher = korb_poison_dispatch;
     for (uint32_t i = 0; i < code_repo_count(); i++) {
@@ -1842,6 +1853,8 @@ main(int argc, char *argv[])
             extern void korb_tyhint_dump(const struct korb_vm *vm, const char *path);
             const char *const td = getenv("KORUBY_TYHINT_DUMP");   /* EXPERIMENT KORB_TYHINT */
             if (td && td[0]) korb_tyhint_dump(c->vm, td);
+            const char *const cd = getenv("KORUBY_COLDCUT_DUMP");   /* EXPERIMENT KORB_COLDCUT */
+            if (cd && cd[0]) korb_coldcut_report(cd);
         }
         if (getenv("KORUBY_GC_STATS")) {
             double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;

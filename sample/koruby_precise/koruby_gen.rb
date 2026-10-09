@@ -27,6 +27,21 @@ class KorubyNodeDef < ASTroGen::NodeDef
     func_prefix: "HOPT_",
     kind_field: "node_hash_func_t hopt_func"
 
+  # EXPERIMENT KORB_COLDCUT: WALK_<name> visits the NODE operands (pre-order through korb_node_walk)
+  register_gen_task :walk,
+    func_typedef: "typedef bool (*node_walk_fn_t)(struct Node *n, void *a); typedef void (*node_walk_func_t)(struct Node *n, node_walk_fn_t fn, void *a);",
+    func_prefix: "WALK_",
+    kind_field: "node_walk_func_t walk_func"
+
+  def build_walk
+    <<~C__
+    // This file is auto-generated from #{@file}.
+    // NODE operand walkers — EXPERIMENT KORB_COLDCUT
+
+    #{@nodes.map{|name, n| n.build_walk_func}.join("\n")}
+    C__
+  end
+
   def build_hopt
     <<~C__
     // This file is auto-generated from #{@file}.
@@ -37,6 +52,28 @@ class KorubyNodeDef < ASTroGen::NodeDef
   end
   class Node < ASTroGen::NodeDef::Node
     def result_type = "RESULT"
+
+    # EXPERIMENT KORB_COLDCUT: the interpreter marks every node it dispatches
+    def dispatch_prologue = "    KORB_NODE_RAN(n);\n"
+
+    def build_walk_func
+      lines = @operands.filter_map do |op|
+        fld = "n->u.#{@name}.#{op.name}"
+        if op.children?
+          "    for (uint32_t _i = 0; _i < #{fld}_cnt; _i++) korb_node_walk(#{fld}[_i], fn, a);"
+        elsif op.node?
+          "    korb_node_walk(#{fld}, fn, a);"
+        end
+      end
+      <<~C
+      static void
+      WALK_#{name}(NODE *n, node_walk_fn_t fn, void *a)
+      {
+          (void)n; (void)fn; (void)a;
+      #{lines.join("\n")}
+      }
+      C
+    end
 
     # Pool mode (docs/idea_code_store.md §7): site-specific operands come from
     # the SD instance's hole table.  `KORUBY_POOL=0` at codegen restores the
@@ -214,7 +251,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
       static __attribute__((no_stack_protector)) #{result_type}
       DISPATCH_#{@name}(#{@prefix_args.join(', ')})
       {
-          const uint32_t _cnt = #{f}_cnt;
+      #{dispatch_prologue}    const uint32_t _cnt = #{f}_cnt;
           NODE *const *const _av = #{f};
           slots += _cnt#{hdr};#{zero}
           for (uint32_t _i = 0; _i < _cnt; _i++)
@@ -267,7 +304,7 @@ class KorubyNodeDef < ASTroGen::NodeDef
       static __attribute__((no_stack_protector)) #{result_type}
       DISPATCH_#{@name}(#{@prefix_args.join(', ')})
       {
-      #{advance}#{stage_stmts}
+      #{dispatch_prologue}#{advance}#{stage_stmts}
           return EVAL_#{@name}(#{prefix_call_args.join(', ')}#{body_args});
       }
       C

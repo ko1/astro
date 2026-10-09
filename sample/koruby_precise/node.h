@@ -45,6 +45,7 @@ struct NodeHead {
         bool ty_observed : 1;       /* EXPERIMENT KORB_TYHINT: ty_l / ty_r hold the operand kinds this site saw */
         uint8_t ty_l, ty_r;         /* bit (kind - 1) per korb_ty_kind seen (a body can be the site itself, so not head.line) */
         uint8_t sd_inl;             /* node_send: which AOT-only inline body its SD calls (enum korb_sdi, 0 = none) */
+        uint8_t ran;                /* EXPERIMENT KORB_COLDCUT: the interpreter dispatched this node (DISPATCH_* prologue) */
     } flags;
     const struct NodeKind *kind;
     node_hash_t hash_value;
@@ -208,6 +209,15 @@ struct korb_inlcache {
 /* node_head.h provides NodeKind, per-node structs, the Node union, and
  * ALLOC_* declarations. */
 #include "node_head.h"
+
+/* EXPERIMENT KORB_COLDCUT: a subtree the producing run never dispatched is not baked into its
+ * entry's SD; the SD calls the subtree's runtime dispatcher (no_inline).  KORUBY_COLDCUT=1. */
+#define KORB_NODE_RAN(n) ((n)->head.flags.ran = 1)
+void korb_node_walk(struct Node *n, node_walk_fn_t fn, void *a);   /* pre-order; fn returns "descend" */
+bool korb_coldcut_on(void);
+struct korb_cc_stats { uint32_t entries, entries_ran, nodes, cold; };
+void korb_coldcut_pass(struct Node *root, struct korb_cc_stats *st);   /* marks !ran nodes under root no_inline */
+void korb_coldcut_report(const char *path);                            /* KORUBY_COLDCUT_DUMP: per-kind ran / cold counts */
 
 /* ---- runtime helpers (korb_runtime.c) — the slots ABI surface ---------- */
 

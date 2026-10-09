@@ -42,6 +42,7 @@ NODE_GENFILES = node_eval.c \
                 node_alloc.c \
                 node_hash.c \
                 node_hopt.c \
+                node_walk.c \
                 node_emit_ast.c \
                 node_head.h
 

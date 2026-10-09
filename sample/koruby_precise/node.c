@@ -34,6 +34,7 @@ node_allocate(size_t size)
 #include "node_dump.c"
 #include "node_hash.c"
 #include "node_hopt.c"
+#include "node_walk.c"
 #include "node_specialize.c"
 #include "node_replace.c"
 #include "node_emit_ast.c"
@@ -162,7 +163,8 @@ hash_node_opt(NODE *n)
 {
     if (!n) return 0;
     if (n->head.flags.has_hash_opt) return n->head.hash_opt;
-    const node_hash_t h = (*n->head.kind->hopt_func)(n);
+    /* a no_inline child is reached through its dispatcher, so the parent's SD differs (KORB_COLDCUT) */
+    const node_hash_t h = hash_merge((*n->head.kind->hopt_func)(n), hash_uint32(n->head.flags.no_inline ? 0xc01dc07u : 0u));
     n->head.hash_opt = h; n->head.flags.has_hash_opt = true;
     return h;
 }
@@ -170,6 +172,68 @@ node_hash_t
 hash_node_opt_root(NODE *n)
 {
     return n ? (*n->head.kind->hopt_func)(n) : 0;
+}
+void
+korb_node_walk(NODE *n, node_walk_fn_t fn, void *a)
+{
+    if (n && fn(n, a)) (*n->head.kind->walk_func)(n, fn, a);
+}
+bool
+korb_coldcut_on(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *const e = getenv("KORUBY_COLDCUT"); on = e && *e && strcmp(e, "0") != 0; }
+    return on;
+}
+struct korb_cc_kind { const struct NodeKind *k; uint32_t ran, cold; };
+#define KORB_CC_KINDS 512
+struct korb_cc_walk { struct korb_cc_stats *st; const NODE *root; bool mark; struct korb_cc_kind *kinds; unsigned *nk; };
+static bool
+korb_cc_visit(NODE *n, void *a)
+{
+    struct korb_cc_walk *const w = a;
+    const bool cold = n != w->root && !n->head.flags.ran;
+    w->st->nodes++;
+    if (cold) {
+        w->st->cold++;
+        if (w->mark) { n->head.flags.no_inline = true; n->head.flags.has_hash_opt = false; }
+    }
+    if (w->kinds) {
+        unsigned i = 0;
+        while (i < *w->nk && w->kinds[i].k != n->head.kind) i++;
+        if (i == *w->nk && i < KORB_CC_KINDS) { w->kinds[i].k = n->head.kind; w->kinds[i].ran = w->kinds[i].cold = 0; (*w->nk)++; }
+        if (i < KORB_CC_KINDS) { if (cold) w->kinds[i].cold++; else w->kinds[i].ran++; }
+    }
+    return true;
+}
+void
+korb_coldcut_pass(NODE *root, struct korb_cc_stats *st)
+{
+    struct korb_cc_walk w = { st, root, true, NULL, NULL };
+    korb_node_walk(root, korb_cc_visit, &w);
+}
+void
+korb_coldcut_report(const char *path)
+{
+    FILE *const f = fopen(path, "w");
+    if (!f) return;
+    struct korb_cc_stats st = {0};
+    struct korb_cc_kind *const kinds = calloc(KORB_CC_KINDS, sizeof(*kinds));
+    unsigned nk = 0;
+    struct korb_cc_walk w = { &st, NULL, false, kinds, &nk };
+    for (uint32_t i = 0; i < code_repo_count(); i++) {
+        NODE *const b = code_repo_body_at(i);
+        st.entries++;
+        if (!b->head.flags.ran) continue;
+        st.entries_ran++;
+        w.root = b;
+        korb_node_walk(b, korb_cc_visit, &w);
+    }
+    fprintf(f, "entries\t%u\tran\t%u\n", st.entries, st.entries_ran);
+    fprintf(f, "nodes\t%u\tcold\t%u\n", st.nodes, st.cold);
+    for (unsigned i = 0; i < nk; i++) fprintf(f, "%s\t%u\t%u\n", kinds[i].k->default_dispatcher_name, kinds[i].ran, kinds[i].cold);
+    free(kinds);
+    fclose(f);
 }
 void
 korb_ty_observe(CTX *c, NODE *n, unsigned lk, unsigned rk)
