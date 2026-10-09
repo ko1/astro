@@ -105,6 +105,44 @@ typedef intptr_t VALUE;
  * the framework — sample bridges them via AROH_VISIT_ROOTS macro. */
 #define ARO_GC_COMMON(c) ((AroGcCommonState *)((c)->astro_gc))
 
+#if BARUBY_GC == 5
+/* EXPERIMENT (acct43): the copy backend's bump allocation inlined at the sample's allocator.  Mirrors the leading
+ * fields of gc_copy.c's ASTroGC (it _Static_asserts the offsets); the same tests and stores as aro_gc_alloc_raw's
+ * fast path, so the semantics are unchanged — only the three nested calls (korb_alloc -> aro_gc_alloc ->
+ * aro_gc_alloc_raw) and their frames go. */
+#include <string.h>
+typedef struct AroGcCopyFront {
+    AroGcCommonState common;
+    char *active_base, *active_top, *active_end, *space0, *space1;
+    int active_idx;
+    char *purge_arena_base, *purge_arena_end;
+    size_t bytes_since_gc, gc_threshold;
+} AroGcCopyFront;
+void *aro_gc_alloc_raw(CTX *c, size_t payload_size);
+static inline void *
+aro_gc_alloc_inline(CTX *c, size_t payload_size)
+{
+    AroGcCopyFront *const g = (AroGcCopyFront *)(c)->astro_gc;
+    const size_t aligned = (payload_size + 7u) & ~(size_t)7u;
+    char *const p = g->active_top;
+    if (__builtin_expect(payload_size < 4096u && !g->common.stress &&
+                         g->bytes_since_gc + g->common.external_bytes + payload_size <= g->gc_threshold &&
+                         p + aligned <= g->active_end, 1)) {
+        AroObjectHeader *const h = (AroObjectHeader *)p;
+        h->flags = 0; h->gc_flags = 0; h->gc_size = (uint32_t)payload_size;
+        g->active_top = p + aligned;
+        g->bytes_since_gc += payload_size;
+        uint64_t *const zw = (uint64_t *)(p + sizeof(AroObjectHeader));
+        const size_t znw = (aligned - sizeof(AroObjectHeader)) / sizeof(uint64_t);
+        if (znw <= 8) { for (size_t i = 0; i < znw; i++) zw[i] = 0; } else memset(zw, 0, znw * sizeof(uint64_t));
+        g->common.stats.total_bytes += payload_size;
+        g->common.stats.heap_bytes  += payload_size;
+        return p;
+    }
+    return aro_gc_alloc_raw(c, payload_size);
+}
+#endif
+
 /* `aro_gc_backend_name` identifies which backend was compiled in (=
  * compile-time constant per binary).  It is not per-instance state, so
  * keeping it as `const char *` global is fine. */

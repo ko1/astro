@@ -202,6 +202,11 @@ typedef struct ASTroGC {
     int edge_check;
     const char *phase;          /* "roots" / "cheney" / "large" — for the edge check message */
 } ASTroGC;
+#include <stddef.h>
+_Static_assert(offsetof(ASTroGC, active_top) == offsetof(AroGcCopyFront, active_top) &&
+               offsetof(ASTroGC, active_end) == offsetof(AroGcCopyFront, active_end) &&
+               offsetof(ASTroGC, bytes_since_gc) == offsetof(AroGcCopyFront, bytes_since_gc) &&
+               offsetof(ASTroGC, gc_threshold) == offsetof(AroGcCopyFront, gc_threshold), "AroGcCopyFront mirrors ASTroGC");
 
 // ----------------------------------------------------------------------------
 // Initialization

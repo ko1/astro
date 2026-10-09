@@ -103,7 +103,11 @@ korb_alloc(CTX *c, korb_value *slots, size_t size, unsigned int type)
      * and zero the tail so a VALUE_ARRAY's gc_size-derived edge scan reads a nil
      * phantom slot rather than garbage. */
     const size_t asize = size < 16 ? 16 : size;
+#if BARUBY_GC == 5
+    korb_value v = (korb_value)(uintptr_t)aro_gc_alloc_inline(c, asize);   /* EXPERIMENT acct43: bump inlined; may collect */
+#else
     korb_value v = aro_gc_alloc(c, asize);     /* may collect; scans [slots, slots_top) */
+#endif
     AroObjectHeader *h = (AroObjectHeader *)(uintptr_t)v;
     h->flags = (uint16_t)type;
     if (asize > size) memset((char *)h + size, 0, asize - size);
