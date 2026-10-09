@@ -7051,13 +7051,13 @@ korb_cc_intern(struct korb_vm *vm, uint64_t serial, korb_value klass, struct kor
         vm->cc_probes++;
         if (e->kkey == kkey && e->mid == mid && e->argc == argc && e->ic.kind == kind && e->ic.smid == smid) {
             if (e->ic.serial != serial || e->ic.m != m || e->ic.klass != klass || e->ic.def_class != def_class)   /* stale, or the class moved */
-                { korb_ic_fill_raw(&e->ic, serial, klass, m, def_class, kind, argc); e->ic.smid = smid; }
+                { korb_ic_fill_raw(vm, &e->ic, serial, klass, m, def_class, kind, argc); e->ic.smid = smid; }
             vm->cc_hits++;
             return &e->ic;
         }
     }
     struct korb_cc_entry *const e = calloc(1, sizeof(*e));
-    korb_ic_fill_raw(&e->ic, serial, klass, m, def_class, kind, argc); e->ic.smid = smid; e->mid = mid; e->argc = argc; e->kkey = kkey; e->ic.shared = 1;
+    korb_ic_fill_raw(vm, &e->ic, serial, klass, m, def_class, kind, argc); e->ic.smid = smid; e->mid = mid; e->argc = argc; e->kkey = kkey; e->ic.shared = 1;
     vm->cc_tab[i] = &e->ic; vm->cc_n++; vm->cc_interns++;
     if (UNLIKELY(vm->cc_check)) {   /* debug: the entry just inserted must be found again by the same key */
         uint32_t j = korb_cc_hash_k(kind, kkey, mid, argc, smid) & (vm->cc_cap - 1); uint32_t steps = 0;
@@ -7088,7 +7088,7 @@ korb_ic_fill_site(CTX *c, struct korb_inlcache *site_ic, struct korb_inlcache *i
         fprintf(stderr, "CC-CHECK: fill_site with a shared site_ic=%p (shared %u) ic=%p (shared %u) kind %u mid %u argc %u\n", (void *)site_ic, site_ic ? site_ic->shared : 9, (void *)ic, ic ? ic->shared : 9, kind, mid, argc);
         void *bt[24]; const int nb = backtrace(bt, 24); backtrace_symbols_fd(bt, nb, 2);
     }
-    korb_ic_fill(own, serial, klass, m, def_class, kind, argc); own->smid = smid;
+    korb_ic_fill(c->vm, own, serial, klass, m, def_class, kind, argc); own->smid = smid;
     c->vm->cc_fills++;
     if (site_ic == NULL || !c->vm->cc_share || serial == 0 || site_ic->poly) return own;   /* serial 0: a refined site; poly: keeps its own */
     if (ic == site_ic) c->vm->cc_fill_own++; else c->vm->cc_fill_shared++;   /* what the caller's immediate pointed at */
@@ -13336,7 +13336,7 @@ korb_call_kw(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, struct korb
                 m = korb_mcache_find(vm, klass, mid, &def_class);
                 /* kwargs 経路は simple entry を使わない (argc の意味が違う)。
                  * 決して一致しない値を渡して高速路の設置だけ抑える。  miss も覚える (main の特異クラス) */
-                korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, UINT32_MAX);
+                korb_ic_fill(c->vm, ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, UINT32_MAX);
             }
         }
         /* main has a singleton class (to_s / inspect): a top-level def misses there and
@@ -13445,7 +13445,7 @@ korb_send_kw(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, struct k
                 /* only what this path takes: the fallback's korb_send_cached shares the ic, and reads
                  * an INSTANCE hit as a public, present method */
                 if (m != NULL && m->kind == KORB_METHOD_ISEQ && m->visibility == 0)
-                    korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, UINT32_MAX);   /* argc differs: no entry fast path */
+                    korb_ic_fill(c->vm, ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, UINT32_MAX);   /* argc differs: no entry fast path */
             }
             if (m != NULL && m->kind == KORB_METHOD_ISEQ && m->visibility == 0) {
                 const struct korb_kw_info *const mkw = (const struct korb_kw_info *)m->kw_info;
@@ -16227,35 +16227,25 @@ korb_attr_write(CTX *c, korb_value *slots, const struct korb_method *m, uint32_t
     return RESULT_OK(slots[-1]);
 }
 
-/* the class korb_send_cached_full keys a plain builtin receiver's cache on, or nil */
-static inline __attribute__((always_inline)) korb_value
-korb_send_builtin_klass(struct korb_vm *vm, const korb_value recv)
-{
-    if (UNLIKELY(!AROH_IS_GC_OBJECT(recv))) {   /* immediates after the heap objects a C-method send mostly sees */
-        if (FIXNUM_P(recv)) return korb_builtin_class_obj(vm, KORB_C_INTEGER);
-        if (FLONUM_P(recv)) return korb_builtin_class_obj(vm, KORB_C_FLOAT);
-        if (SYMBOL_P(recv)) return korb_builtin_class_obj(vm, KORB_C_SYMBOL);
-        if (recv == KORB_NIL) return korb_builtin_class_obj(vm, KORB_C_NIL);
-        if (recv == KORB_TRUE) return korb_builtin_class_obj(vm, KORB_C_TRUE);
-        if (recv == KORB_FALSE) return korb_builtin_class_obj(vm, KORB_C_FALSE);
-        return KORB_NIL;
-    }
-    if (((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) return KORB_NIL;
-    switch (KORB_OBJ_TYPE(recv)) {   /* tags whose korb_dispatch_class is korb_builtin_class_obj(korb_class_of(recv)) */
-      case KORB_OBJ_ARRAY:     return korb_builtin_class_obj(vm, KORB_C_ARRAY);
-      case KORB_OBJ_STRING:    return korb_builtin_class_obj(vm, KORB_C_STRING);
-      case KORB_OBJ_HASH:      return korb_builtin_class_obj(vm, KORB_C_HASH);
-      case KORB_OBJ_PROC:      return korb_builtin_class_obj(vm, KORB_C_PROC);
-      case KORB_OBJ_RANGE:     return korb_builtin_class_obj(vm, KORB_C_RANGE);
-      case KORB_OBJ_REGEXP:    return korb_builtin_class_obj(vm, KORB_C_REGEXP);
-      case KORB_OBJ_MATCHDATA: return korb_builtin_class_obj(vm, KORB_C_MATCHDATA);
-      default:                 return KORB_NIL;
-    }
-}
 
 /* A class / module receiver's cached public simple method (liquid-il's `_H.oa(...)`, 1.2M per
  * iteration) goes straight to its body: in korb_send_cached_full the hit was tested only after
  * the instance / send-family cascade, inside a frame big enough to cost more than the call. */
+/* EXPERIMENT acct46: the C-method hit, reached from the SD's own check (node_send): its own frame holds framed /
+ * saved / flink / mid across the method.  6 arguments: no stack slot. */
+__attribute__((noinline, no_stack_protector)) RESULT
+korb_send_cfunc_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc, const struct korb_method *m)
+{
+    korb_value *const cbase = &slots[-(korb_sword_t)argc];
+    const bool framed = KORB_FLINK_FRAMED(flink);
+    const korb_value saved = LIKELY(framed) ? korb_cframe_enter(c, cbase, m) : 0;
+    const RESULT r = m->uses_block
+        ? m->rbfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc), NULL, NULL, NULL)
+        : m->rfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc));
+    if (LIKELY(framed)) korb_cframe_leave(c, saved);
+    if (LIKELY(r.state == KORB_NORMAL)) return r;
+    return korb_call_ret_cold(c, r, flink, mid, (korb_value)((uintptr_t)m | KORB_FID_CFUNC));
+}
 __attribute__((no_stack_protector)) RESULT
 korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
                  struct korb_inlcache *ic, korb_value caller_self, struct korb_inlcache *site_ic)
@@ -16630,7 +16620,7 @@ korb_send_blk_ic_x(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
             } else {
                 def_class = KORB_NIL;
                 m = korb_mcache_find(vm, klass, mid, &def_class);
-                korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, UINT32_MAX);   /* no entry fast path: a block call never takes it */
+                korb_ic_fill(c->vm, ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, UINT32_MAX);   /* no entry fast path: a block call never takes it */
             }
             if (m != NULL && m->visibility == 0 &&
                 (m->kind == KORB_METHOD_ISEQ || (m->kind == KORB_METHOD_CFUNC && m->uses_block))) {
@@ -16704,7 +16694,7 @@ korb_deopt_send_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
         def = KORB_NIL;
         m = korb_mcache_find(vm, start, mid, &def);
         if (m == NULL || m->visibility != 0) return false;
-        korb_ic_fill(ic, korb_ic_serial_mc(c), key, m, def, kind, UINT32_MAX);
+        korb_ic_fill(c->vm, ic, korb_ic_serial_mc(c), key, m, def, kind, UINT32_MAX);
     }
     if (m == NULL || m->visibility != 0) return false;
     if (m->kind == KORB_METHOD_CFUNC && !m->uses_block && (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
@@ -16755,7 +16745,7 @@ korb_caseeq_class_cached(CTX *c, korb_value w, korb_value subj, struct korb_inlc
     korb_value def = KORB_NIL;
     struct korb_method *const m = korb_mcache_find(vm, dk, vm->mid_eqq, &def);
     if (m == NULL || m->kind != KORB_METHOD_CFUNC || m->rfn != korb_m_class_case_eq || m->visibility != 0) return false;
-    korb_ic_fill(ic, korb_ic_serial_mc(c), w, m, def, KORB_IC_SMETHOD, UINT32_MAX);
+    korb_ic_fill(c->vm, ic, korb_ic_serial_mc(c), w, m, def, KORB_IC_SMETHOD, UINT32_MAX);
     *out = RESULT_OK(korb_obj_kind_of_p(c, subj, w) ? KORB_TRUE : KORB_FALSE);   /* w is a class: is_a? without korb_case_eq's Range test */
     return true;
 }
@@ -16782,7 +16772,7 @@ korb_cfunc_ic_call(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
         korb_value def = KORB_NIL;
         struct korb_method *const m = korb_mcache_find(vm, klass, mid, &def);
         if (m == NULL || m->kind != KORB_METHOD_CFUNC || m->uses_block || m->visibility != 0) return false;
-        korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def, KORB_IC_INSTANCE, argc);
+        korb_ic_fill(c->vm, ic, korb_ic_serial_mc(c), klass, m, def, KORB_IC_INSTANCE, argc);
     }
     const struct korb_method *const m = ic->m;
     if (m == NULL || m->kind != KORB_METHOD_CFUNC || m->uses_block || !(m->params_cnt < 0 || (uint32_t)m->params_cnt == argc))
@@ -23707,7 +23697,8 @@ korb_ctx_new(void)
     c->vm->sigfd = -1;                                  /* calloc's 0 is a real fd */
     korb_sdi_preinit(c->vm);
     { const char *const e = getenv("KORUBY_TYHINT"); c->vm->ty_observe = e && *e && strcmp(e, "0") != 0; }   /* EXPERIMENT KORB_TYHINT */
-    { const char *const e = getenv("KORUBY_CC_SHARE"); c->vm->cc_share = !(e && strcmp(e, "0") == 0); c->vm->cc_check = getenv("KORUBY_CC_CHECK") != NULL; }   /* EXPERIMENT acct45: default on */                            /* calloc's NULL would match a Ruby method's rfn */
+    { const char *const e = getenv("KORUBY_CC_SHARE"); c->vm->cc_share = !(e && strcmp(e, "0") == 0); c->vm->cc_check = getenv("KORUBY_CC_CHECK") != NULL; }   /* EXPERIMENT acct45: default on */
+    { const char *const e = getenv("KORUBY_SEND_INL"); c->vm->send_inl = !(e && strcmp(e, "0") == 0); }   /* EXPERIMENT acct46: default on */                            /* calloc's NULL would match a Ruby method's rfn */
 #ifndef KORB_WASI
     korb_signal_arm_init(c->vm);
 #endif

@@ -205,6 +205,8 @@ struct korb_inlcache {
     uint8_t  kind;
     uint8_t  shared;                 /* EXPERIMENT acct45: an interned, shared cache (in kind's pad): never written through korb_ic_fill */
     uint8_t  poly;                   /* EXPERIMENT acct45 (a node's own cache): the site missed while shared -> keeps its own cache for good */
+    uint8_t  cfunc_ok;               /* EXPERIMENT acct46: 0 = no; else m is a C method callable with this site's argc and this is the
+                                      * receiver's tag code the SD compares (korb_recv_tag_is), 0xFF = compare recv == klass (a class receiver) */
     uint32_t smid;                   /* KORB_IC_SEND: the name `send(:name, ...)` resolved (in kind's pad) */
 };
 
@@ -467,6 +469,7 @@ RESULT korb_send_blk_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, 
 RESULT korb_send_blk_fwd(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc, NODE *block,
                          korb_value *def_env, korb_value *captured_self, korb_value flink, korb_value caller_self,
                          struct korb_inlcache *ic);   /* node_send_blkfwd: the method's own block passed on */
+RESULT korb_send_cfunc_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc, const struct korb_method *m);   /* EXPERIMENT acct46 */
 RESULT korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
                         struct korb_inlcache *ic, korb_value caller_self,
                         struct korb_inlcache *site_ic);   /* caller_self = KORB_UNDEF → no visibility check; site_ic = the node's own cache (shared-cc patch key) or NULL */
@@ -1336,18 +1339,80 @@ korb_bi_class(const struct korb_vm *vm, enum korb_class e)
     return (idx == UINT32_MAX) ? KORB_NIL : vm->const_vals[idx];
 }
 
+/* EXPERIMENT acct46 (from korb_runtime.c): the builtin class a C-method cache is keyed on for this receiver, or nil
+ * (a plain / singleton-classed object).  Immediates after the heap objects a C-method send mostly sees. */
+static inline __attribute__((always_inline)) korb_value
+korb_send_builtin_klass(struct korb_vm *vm, const korb_value recv)
+{
+    if (UNLIKELY(!AROH_IS_GC_OBJECT(recv))) {
+        if (FIXNUM_P(recv)) return korb_bi_class(vm, KORB_C_INTEGER);
+        if (FLONUM_P(recv)) return korb_bi_class(vm, KORB_C_FLOAT);
+        if (SYMBOL_P(recv)) return korb_bi_class(vm, KORB_C_SYMBOL);
+        if (recv == KORB_NIL) return korb_bi_class(vm, KORB_C_NIL);
+        if (recv == KORB_TRUE) return korb_bi_class(vm, KORB_C_TRUE);
+        if (recv == KORB_FALSE) return korb_bi_class(vm, KORB_C_FALSE);
+        return KORB_NIL;
+    }
+    if (((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) return KORB_NIL;
+    switch (KORB_OBJ_TYPE(recv)) {
+      case KORB_OBJ_ARRAY:     return korb_bi_class(vm, KORB_C_ARRAY);
+      case KORB_OBJ_STRING:    return korb_bi_class(vm, KORB_C_STRING);
+      case KORB_OBJ_HASH:      return korb_bi_class(vm, KORB_C_HASH);
+      case KORB_OBJ_PROC:      return korb_bi_class(vm, KORB_C_PROC);
+      case KORB_OBJ_RANGE:     return korb_bi_class(vm, KORB_C_RANGE);
+      case KORB_OBJ_REGEXP:    return korb_bi_class(vm, KORB_C_REGEXP);
+      case KORB_OBJ_MATCHDATA: return korb_bi_class(vm, KORB_C_MATCHDATA);
+      default:                 return KORB_NIL;
+    }
+}
+
 
 /* Fill an inline cache.  The `simple` fast path is installed only when the
  * callee has a node_simple_entry AND this site's argc matches its arity — the
  * ic is per site, so argc is fixed for it.  That moves the arity check off the
  * hot path entirely: a mismatched site simply never caches, and falls through
  * to the general path which raises ArgumentError. */
+/* EXPERIMENT acct46: the tag code of a builtin class, for the SD's receiver test (0 = not a builtin class) */
+#define KORB_TAG_IMM 0xF0u
+static inline uint8_t
+korb_bi_tag_code(const struct korb_vm *vm, korb_value klass)
+{
+    static const struct { enum korb_class c; unsigned t; } tab[] = {
+        { KORB_C_STRING, KORB_OBJ_STRING }, { KORB_C_ARRAY, KORB_OBJ_ARRAY }, { KORB_C_HASH, KORB_OBJ_HASH }, { KORB_C_PROC, KORB_OBJ_PROC },
+        { KORB_C_RANGE, KORB_OBJ_RANGE }, { KORB_C_REGEXP, KORB_OBJ_REGEXP }, { KORB_C_MATCHDATA, KORB_OBJ_MATCHDATA } };
+    for (unsigned i = 0; i < sizeof(tab) / sizeof(tab[0]); i++) if (korb_bi_class(vm, tab[i].c) == klass) return (uint8_t)(tab[i].t + 1);
+    static const enum korb_class imm[] = { KORB_C_INTEGER, KORB_C_FLOAT, KORB_C_SYMBOL, KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE };
+    for (unsigned i = 0; i < 6; i++) if (korb_bi_class(vm, imm[i]) == klass) return (uint8_t)(KORB_TAG_IMM + 1 + i);
+    return 0;
+}
+static inline bool
+korb_recv_tag_is(korb_value recv, uint8_t code)
+{
+    if (LIKELY(AROH_IS_GC_OBJECT(recv))) {
+        const uint16_t f = ((const AroObjectHeader *)(uintptr_t)recv)->flags;
+        return !(f & KORB_FL_HAS_KLASS) && (unsigned)(f & KORB_OBJ_TYPE_MASK) + 1 == code;
+    }
+    if (code < KORB_TAG_IMM) return false;
+    if (FIXNUM_P(recv)) return code == KORB_TAG_IMM + 1;
+    if (FLONUM_P(recv)) return code == KORB_TAG_IMM + 2;
+    if (SYMBOL_P(recv)) return code == KORB_TAG_IMM + 3;
+    return (recv == KORB_NIL && code == KORB_TAG_IMM + 4) || (recv == KORB_TRUE && code == KORB_TAG_IMM + 5) || (recv == KORB_FALSE && code == KORB_TAG_IMM + 6);
+}
 static inline void
-korb_ic_fill_raw(struct korb_inlcache *ic, uint64_t serial, korb_value klass, struct korb_method *m,
+korb_ic_fill_raw(const struct korb_vm *vm, struct korb_inlcache *ic, uint64_t serial, korb_value klass, struct korb_method *m,
                  korb_value def_class, uint8_t kind, uint32_t argc)
 {
     ic->serial = serial; ic->klass = klass; ic->m = m; ic->def_class = def_class; ic->kind = kind;
     ic->body = NULL; ic->dispatch = NULL;
+    ic->cfunc_ok = 0;   /* EXPERIMENT acct46 */
+    if (m != NULL && m->kind == KORB_METHOD_CFUNC && (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
+        if (kind == KORB_IC_INSTANCE) ic->cfunc_ok = korb_bi_tag_code(vm, klass);
+        else if (kind == KORB_IC_SMETHOD && !m->uses_block && m->visibility == 0) ic->cfunc_ok = 0xFF;
+    }
+    if (kind == KORB_IC_SMETHOD && m != NULL && m->kind == KORB_METHOD_ISEQ && m->is_simple && m->visibility == 0 &&
+        m->simple_entry != NULL && argc == (uint32_t)m->params_cnt) {   /* EXPERIMENT acct46: a class's simple public method: entry dispatch too */
+        ic->body = m->simple_entry; ic->dispatch = m->simple_entry->head.dispatcher; return;
+    }
     if (m == NULL || kind != KORB_IC_INSTANCE) return;
     if (m->simple_entry != NULL && argc == (uint32_t)m->params_cnt) {   /* ISEQ simple entry or attr_reader (its ivar node) */
         ic->body = m->simple_entry; ic->dispatch = m->simple_entry->head.dispatcher;
@@ -1356,11 +1421,11 @@ korb_ic_fill_raw(struct korb_inlcache *ic, uint64_t serial, korb_value klass, st
 
 /* The same, for a site's own cache: a shared one (EXPERIMENT acct45) is only ever refreshed by korb_cc_intern. */
 static inline void
-korb_ic_fill(struct korb_inlcache *ic, uint64_t serial, korb_value klass, struct korb_method *m,
+korb_ic_fill(const struct korb_vm *vm, struct korb_inlcache *ic, uint64_t serial, korb_value klass, struct korb_method *m,
              korb_value def_class, uint8_t kind, uint32_t argc)
 {
     if (UNLIKELY(ic->shared)) { korb_cc_check_fail(ic, kind); return; }
-    korb_ic_fill_raw(ic, serial, klass, m, def_class, kind, argc);
+    korb_ic_fill_raw(vm, ic, serial, klass, m, def_class, kind, argc);
 }
 
 /* Mirror of korb_ic_fill for the top-level call cache. */
