@@ -203,6 +203,8 @@ struct korb_inlcache {
      * 判定そのもの。別フラグは要らない — どのみち呼ぶために load する。 */
     node_dispatcher_func_t dispatch; /* m->simple_entry->head.dispatcher at fill time */
     uint8_t  kind;
+    uint8_t  shared;                 /* EXPERIMENT acct45: an interned, shared cache (in kind's pad): never written through korb_ic_fill */
+    uint8_t  poly;                   /* EXPERIMENT acct45 (a node's own cache): the site missed while shared -> keeps its own cache for good */
     uint32_t smid;                   /* KORB_IC_SEND: the name `send(:name, ...)` resolved (in kind's pad) */
 };
 
@@ -475,6 +477,7 @@ RESULT korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flin
                         uint32_t argc, korb_value self, const NODE *site, struct korb_inlcache *site_ic);
 /* EXPERIMENT acct45: fill the site's own cache, intern the shared one for the key and re-point the SD's immediates at
  * it; returns the cache the caller must use from here on (the shared one, or the site's own when not shared). */
+void korb_cc_check_fail(const struct korb_inlcache *ic, uint8_t kind);
 struct korb_inlcache *korb_ic_fill_site(CTX *c, struct korb_inlcache *site_ic, struct korb_inlcache *ic, uint64_t serial, korb_value klass,
                                         struct korb_method *m, korb_value def_class, uint8_t kind, uint32_t argc, uint32_t mid, uint32_t smid);
 /* Implicit-self keyword call: positionals at base[0..pos_argc), keyword korb_values at
@@ -1340,8 +1343,8 @@ korb_bi_class(const struct korb_vm *vm, enum korb_class e)
  * hot path entirely: a mismatched site simply never caches, and falls through
  * to the general path which raises ArgumentError. */
 static inline void
-korb_ic_fill(struct korb_inlcache *ic, uint64_t serial, korb_value klass, struct korb_method *m,
-             korb_value def_class, uint8_t kind, uint32_t argc)
+korb_ic_fill_raw(struct korb_inlcache *ic, uint64_t serial, korb_value klass, struct korb_method *m,
+                 korb_value def_class, uint8_t kind, uint32_t argc)
 {
     ic->serial = serial; ic->klass = klass; ic->m = m; ic->def_class = def_class; ic->kind = kind;
     ic->body = NULL; ic->dispatch = NULL;
@@ -1349,6 +1352,15 @@ korb_ic_fill(struct korb_inlcache *ic, uint64_t serial, korb_value klass, struct
     if (m->simple_entry != NULL && argc == (uint32_t)m->params_cnt) {   /* ISEQ simple entry or attr_reader (its ivar node) */
         ic->body = m->simple_entry; ic->dispatch = m->simple_entry->head.dispatcher;
     }
+}
+
+/* The same, for a site's own cache: a shared one (EXPERIMENT acct45) is only ever refreshed by korb_cc_intern. */
+static inline void
+korb_ic_fill(struct korb_inlcache *ic, uint64_t serial, korb_value klass, struct korb_method *m,
+             korb_value def_class, uint8_t kind, uint32_t argc)
+{
+    if (UNLIKELY(ic->shared)) { korb_cc_check_fail(ic, kind); return; }
+    korb_ic_fill_raw(ic, serial, klass, m, def_class, kind, argc);
 }
 
 /* Mirror of korb_ic_fill for the top-level call cache. */

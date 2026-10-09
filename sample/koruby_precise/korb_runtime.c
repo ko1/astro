@@ -7013,15 +7013,18 @@ static korb_value korb_mod_refinements_ary(struct korb_vm *vm, korb_value mod); 
 
 /* EXPERIMENT acct45: shared call caches.  One korb_inlcache per (kind, klass, mid, argc, smid) in a vm-wide open
  * table; a stale one (older serial) is refilled in place, so every site sharing it sees the new resolution. */
+#include <execinfo.h>
 unsigned astro_ld_patch_imm(uintptr_t key, uintptr_t value);   /* runtime/astro_code_store.h */
-struct korb_cc_entry { struct korb_inlcache ic; uint32_t mid, argc; };
+struct korb_cc_entry { struct korb_inlcache ic; uint64_t kkey; uint32_t mid, argc; };
+/* the key's class part: the class's GC-stable serial (a moved class keeps its entry, refreshed in place: no
+ * re-intern and no code patch after a collection), the address only for a non-class */
+static inline uint64_t korb_cc_klass_key(korb_value klass) { return KORB_CLASS_P(klass) ? (uint64_t)VAL2CLASS(klass)->serial | (1ull << 62) : (uint64_t)klass; }
+static inline uint64_t korb_mix64(uint64_t x) { x ^= x >> 30; x *= 0xbf58476d1ce4e5b9ull; x ^= x >> 27; x *= 0x94d049bb133111ebull; x ^= x >> 31; return x; }
 static inline uint32_t
-korb_cc_hash(uint8_t kind, korb_value klass, uint32_t mid, uint32_t argc, uint32_t smid)
-{
-    uint64_t h = (uint64_t)klass * 0x9E3779B97F4A7C15ull;
-    h ^= ((uint64_t)mid << 32) | argc; h *= 0xff51afd7ed558ccdull;
-    h ^= ((uint64_t)smid << 8) | kind; h ^= h >> 29;
-    return (uint32_t)h;
+korb_cc_hash_k(uint8_t kind, uint64_t kkey, uint32_t mid, uint32_t argc, uint32_t smid)
+{   /* every field through a full mixer: the first version left mid in the high bits only, and the probe chains were
+     * thousands long (korb_ic_fill_site = 2,800 instructions per fill) */
+    return (uint32_t)korb_mix64(korb_mix64(kkey) ^ korb_mix64(((uint64_t)mid << 32) | argc) ^ (((uint64_t)smid << 8) | kind) * 0x9E3779B97F4A7C15ull);
 }
 static struct korb_inlcache *
 korb_cc_intern(struct korb_vm *vm, uint64_t serial, korb_value klass, struct korb_method *m, korb_value def_class,
@@ -7034,37 +7037,71 @@ korb_cc_intern(struct korb_vm *vm, uint64_t serial, korb_value klass, struct kor
         for (uint32_t i = 0; i < vm->cc_cap; i++) {
             struct korb_cc_entry *const e = (struct korb_cc_entry *)vm->cc_tab[i];
             if (!e) continue;
-            uint32_t j = korb_cc_hash(e->ic.kind, e->ic.klass, e->mid, e->argc, e->ic.smid) & (nc - 1);
+            uint32_t j = korb_cc_hash_k(e->ic.kind, e->kkey, e->mid, e->argc, e->ic.smid) & (nc - 1);   /* never through e->ic.klass: it may have moved */
             while (nt[j]) j = (j + 1) & (nc - 1);
             nt[j] = &e->ic;
         }
         free(vm->cc_tab); vm->cc_tab = nt; vm->cc_cap = nc;
     }
-    uint32_t i = korb_cc_hash(kind, klass, mid, argc, smid) & (vm->cc_cap - 1);
+    const uint64_t kkey = korb_cc_klass_key(klass);
+    uint32_t i = korb_cc_hash_k(kind, kkey, mid, argc, smid) & (vm->cc_cap - 1);
     for (;; i = (i + 1) & (vm->cc_cap - 1)) {
         struct korb_cc_entry *const e = (struct korb_cc_entry *)vm->cc_tab[i];
         if (!e) break;
-        if (e->ic.kind == kind && e->ic.klass == klass && e->mid == mid && e->argc == argc && e->ic.smid == smid) {
-            if (e->ic.serial != serial || e->ic.m != m) { korb_ic_fill(&e->ic, serial, klass, m, def_class, kind, argc); e->ic.smid = smid; }
+        vm->cc_probes++;
+        if (e->kkey == kkey && e->mid == mid && e->argc == argc && e->ic.kind == kind && e->ic.smid == smid) {
+            if (e->ic.serial != serial || e->ic.m != m || e->ic.klass != klass || e->ic.def_class != def_class)   /* stale, or the class moved */
+                { korb_ic_fill_raw(&e->ic, serial, klass, m, def_class, kind, argc); e->ic.smid = smid; }
             vm->cc_hits++;
             return &e->ic;
         }
     }
     struct korb_cc_entry *const e = calloc(1, sizeof(*e));
-    korb_ic_fill(&e->ic, serial, klass, m, def_class, kind, argc); e->ic.smid = smid; e->mid = mid; e->argc = argc;
+    korb_ic_fill_raw(&e->ic, serial, klass, m, def_class, kind, argc); e->ic.smid = smid; e->mid = mid; e->argc = argc; e->kkey = kkey; e->ic.shared = 1;
     vm->cc_tab[i] = &e->ic; vm->cc_n++; vm->cc_interns++;
+    if (UNLIKELY(vm->cc_check)) {   /* debug: the entry just inserted must be found again by the same key */
+        uint32_t j = korb_cc_hash_k(kind, kkey, mid, argc, smid) & (vm->cc_cap - 1); uint32_t steps = 0;
+        for (;; j = (j + 1) & (vm->cc_cap - 1), steps++) {
+            struct korb_cc_entry *const x = (struct korb_cc_entry *)vm->cc_tab[j];
+            if (!x) { fprintf(stderr, "CC-CHECK: not found after insert! kind %u kkey %llx mid %u argc %u smid %u slot %u\n", kind, (unsigned long long)kkey, mid, argc, smid, i); abort(); }
+            if (x == e) break;
+            if (x->kkey == kkey && x->mid == mid && x->argc == argc && x->ic.kind == kind && x->ic.smid == smid)
+                { fprintf(stderr, "CC-CHECK: DUPLICATE inserted: kind %u kkey %llx mid %u argc %u smid %u: existing at %u (kind %u smid %u serial %llu), new at %u, steps %u\n", kind, (unsigned long long)kkey, mid, argc, smid, j, x->ic.kind, x->ic.smid, (unsigned long long)x->ic.serial, i, steps); break; }
+        }
+    }
     return &e->ic;
+}
+void
+korb_cc_check_fail(const struct korb_inlcache *ic, uint8_t kind)
+{
+    if (!getenv("KORUBY_CC_CHECK")) return;
+    fprintf(stderr, "CC-CHECK: korb_ic_fill on a SHARED cache with other contents (kind %u -> %u)\n", ic->kind, kind);
+    void *bt[24]; const int n = backtrace(bt, 24); backtrace_symbols_fd(bt, n, 2);
+    abort();
 }
 struct korb_inlcache *
 korb_ic_fill_site(CTX *c, struct korb_inlcache *site_ic, struct korb_inlcache *ic, uint64_t serial, korb_value klass,
                   struct korb_method *m, korb_value def_class, uint8_t kind, uint32_t argc, uint32_t mid, uint32_t smid)
 {
     struct korb_inlcache *const own = site_ic ? site_ic : ic;   /* the node's own cache: the interpreter's, and the fallback */
+    if (UNLIKELY(c->vm->cc_check) && ((site_ic && site_ic->shared) || (own->shared))) {   /* debug only: getenv here cost 60 instructions per fill */
+        fprintf(stderr, "CC-CHECK: fill_site with a shared site_ic=%p (shared %u) ic=%p (shared %u) kind %u mid %u argc %u\n", (void *)site_ic, site_ic ? site_ic->shared : 9, (void *)ic, ic ? ic->shared : 9, kind, mid, argc);
+        void *bt[24]; const int nb = backtrace(bt, 24); backtrace_symbols_fd(bt, nb, 2);
+    }
     korb_ic_fill(own, serial, klass, m, def_class, kind, argc); own->smid = smid;
     c->vm->cc_fills++;
-    if (site_ic == NULL || !c->vm->cc_share || serial == 0) return own;   /* serial 0: a refined site, never shared */
+    if (site_ic == NULL || !c->vm->cc_share || serial == 0 || site_ic->poly) return own;   /* serial 0: a refined site; poly: keeps its own */
+    if (ic == site_ic) c->vm->cc_fill_own++; else c->vm->cc_fill_shared++;   /* what the caller's immediate pointed at */
+    if (ic != site_ic && ic != NULL && ic->shared) {
+        /* the site missed while pointing at a shared cache: it is polymorphic.  Back to its own cache for good: a
+         * site that flip-flops between classes must not patch code on every miss (railsbench: 300 misses per
+         * request at such sites, each a code write and a pipeline flush) */
+        site_ic->poly = 1;
+        c->vm->cc_patches += astro_ld_patch_imm((uintptr_t)site_ic, (uintptr_t)site_ic);
+        return own;
+    }
     struct korb_inlcache *const cc = korb_cc_intern(c->vm, serial, klass, m, def_class, kind, argc, mid, smid);
-    if (ic != cc) c->vm->cc_patches += astro_ld_patch_imm((uintptr_t)site_ic, (uintptr_t)cc);
+    if (ic != cc) { const unsigned np = astro_ld_patch_imm((uintptr_t)site_ic, (uintptr_t)cc); c->vm->cc_patches += np; if (np == 0) c->vm->cc_patch0++; }
     return cc;
 }
 
@@ -16464,7 +16501,8 @@ korb_send_cached_full(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
         }
         return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, def_class, NULL, NULL, NULL, framed);
     }
-    korb_ic_fill(ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, argc);
+    ic = korb_ic_fill_site(c, site_ic, ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, argc, mid, 0);   /* the 9th fill site, missed at first: it wrote shared caches with another key */
+    (void)ic;
     return korb_dispatch_method(c, slots, m, mid, korb_flink_line(flink), argc, def_class, NULL, NULL, NULL, framed);
 }
 
@@ -23669,7 +23707,7 @@ korb_ctx_new(void)
     c->vm->sigfd = -1;                                  /* calloc's 0 is a real fd */
     korb_sdi_preinit(c->vm);
     { const char *const e = getenv("KORUBY_TYHINT"); c->vm->ty_observe = e && *e && strcmp(e, "0") != 0; }   /* EXPERIMENT KORB_TYHINT */
-    { const char *const e = getenv("KORUBY_CC_SHARE"); c->vm->cc_share = !(e && strcmp(e, "0") == 0); }   /* EXPERIMENT acct45: default on */                            /* calloc's NULL would match a Ruby method's rfn */
+    { const char *const e = getenv("KORUBY_CC_SHARE"); c->vm->cc_share = !(e && strcmp(e, "0") == 0); c->vm->cc_check = getenv("KORUBY_CC_CHECK") != NULL; }   /* EXPERIMENT acct45: default on */                            /* calloc's NULL would match a Ruby method's rfn */
 #ifndef KORB_WASI
     korb_signal_arm_init(c->vm);
 #endif

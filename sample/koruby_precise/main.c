@@ -1977,7 +1977,22 @@ main(int argc, char *argv[])
             if (td && td[0]) korb_tyhint_dump(c->vm, td);
             const char *const cd = getenv("KORUBY_COLDCUT_DUMP");   /* EXPERIMENT KORB_COLDCUT */
             if (cd && cd[0]) korb_coldcut_report(cd);
-            if (getenv("KORUBY_CC_STATS")) fprintf(stderr, "koruby_precise: cc: share %d, fills %llu, interns %llu, hits %llu, patches %llu, table %u\n", (int)c->vm->cc_share, (unsigned long long)c->vm->cc_fills, (unsigned long long)c->vm->cc_interns, (unsigned long long)c->vm->cc_hits, (unsigned long long)c->vm->cc_patches, c->vm->cc_n);   /* EXPERIMENT acct45 */
+            if (getenv("KORUBY_CC_STATS")) {   /* table shape: capacity, longest run of occupied slots */
+                uint32_t run = 0, maxrun = 0;
+                for (uint32_t i = 0; i < c->vm->cc_cap; i++) { if (c->vm->cc_tab[i]) { if (++run > maxrun) maxrun = run; } else run = 0; }
+                fprintf(stderr, "koruby_precise: cc table cap %u n %u longest run %u\n", c->vm->cc_cap, c->vm->cc_n, maxrun);
+                const char *const dp = getenv("KORUBY_CC_DUMP");
+                if (dp && dp[0]) {   /* slot, kind, kkey, mid, argc, smid, serial */
+                    FILE *const f = fopen(dp, "w");
+                    struct korb_cc_entry_dbg { struct korb_inlcache ic; uint64_t kkey; uint32_t mid, argc; };
+                    for (uint32_t i = 0; f && i < c->vm->cc_cap; i++) if (c->vm->cc_tab[i]) {
+                        const struct korb_cc_entry_dbg *const e = (const struct korb_cc_entry_dbg *)c->vm->cc_tab[i];
+                        fprintf(f, "%u\t%u\t%llx\t%u\t%u\t%u\t%llu\n", i, e->ic.kind, (unsigned long long)e->kkey, e->mid, e->argc, e->ic.smid, (unsigned long long)e->ic.serial);
+                    }
+                    if (f) fclose(f);
+                }
+            }
+            if (getenv("KORUBY_CC_STATS")) fprintf(stderr, "koruby_precise: cc: share %d, fills %llu (from own %llu, from shared %llu), interns %llu, hits %llu, patches %llu (no location %llu), table %u, probes %llu\n", (int)c->vm->cc_share, (unsigned long long)c->vm->cc_fills, (unsigned long long)c->vm->cc_fill_own, (unsigned long long)c->vm->cc_fill_shared, (unsigned long long)c->vm->cc_interns, (unsigned long long)c->vm->cc_hits, (unsigned long long)c->vm->cc_patches, (unsigned long long)c->vm->cc_patch0, c->vm->cc_n, (unsigned long long)c->vm->cc_probes);   /* EXPERIMENT acct45 */
             const char *const pd = getenv("KORUBY_PROFILE_DUMP");   /* EXPERIMENT KORB_PROFILE */
             if (pd && pd[0]) korb_profile_dump(c->vm, ast, pd);
         }
