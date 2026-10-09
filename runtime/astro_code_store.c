@@ -37,6 +37,7 @@
 #define ASTRO_LOADER_SUPPORTED 1
 #else
 #define ASTRO_LOADER_SUPPORTED 0
+unsigned astro_ld_patch_imm(uintptr_t key, uintptr_t value) { (void)key; (void)value; return 0; }   /* EXPERIMENT acct45: no loader, nothing to patch */
 #endif
 #if ASTRO_LOADER_SUPPORTED
 static char astro_ld_preload_dir[512];   // = ASTRO_CS_DIR_MAX (defined below)

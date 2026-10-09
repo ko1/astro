@@ -466,12 +466,17 @@ RESULT korb_send_blk_fwd(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
                          korb_value *def_env, korb_value *captured_self, korb_value flink, korb_value caller_self,
                          struct korb_inlcache *ic);   /* node_send_blkfwd: the method's own block passed on */
 RESULT korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
-                        struct korb_inlcache *ic, korb_value caller_self);   /* caller_self = KORB_UNDEF → no visibility check */
+                        struct korb_inlcache *ic, korb_value caller_self,
+                        struct korb_inlcache *site_ic);   /* caller_self = KORB_UNDEF → no visibility check; site_ic = the node's own cache (shared-cc patch key) or NULL */
 /* `site` is the call node, or NULL when there is none; read ONLY on the
  * method-miss path (for head.flags.is_vcall), never on the hot path. */
 RESULT korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
                         struct korb_callcache *cc, struct korb_inlcache *ic,
-                        uint32_t argc, korb_value self, const NODE *site);
+                        uint32_t argc, korb_value self, const NODE *site, struct korb_inlcache *site_ic);
+/* EXPERIMENT acct45: fill the site's own cache, intern the shared one for the key and re-point the SD's immediates at
+ * it; returns the cache the caller must use from here on (the shared one, or the site's own when not shared). */
+struct korb_inlcache *korb_ic_fill_site(CTX *c, struct korb_inlcache *site_ic, struct korb_inlcache *ic, uint64_t serial, korb_value klass,
+                                        struct korb_method *m, korb_value def_class, uint8_t kind, uint32_t argc, uint32_t mid, uint32_t smid);
 /* Implicit-self keyword call: positionals at base[0..pos_argc), keyword korb_values at
  * base[pos_argc..+kw_argc) named by kw_syms[]; binds keywords without a Hash when
  * the callee allows (else materializes one). */

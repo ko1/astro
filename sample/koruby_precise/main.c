@@ -1977,6 +1977,7 @@ main(int argc, char *argv[])
             if (td && td[0]) korb_tyhint_dump(c->vm, td);
             const char *const cd = getenv("KORUBY_COLDCUT_DUMP");   /* EXPERIMENT KORB_COLDCUT */
             if (cd && cd[0]) korb_coldcut_report(cd);
+            if (getenv("KORUBY_CC_STATS")) fprintf(stderr, "koruby_precise: cc: share %d, fills %llu, interns %llu, hits %llu, patches %llu, table %u\n", (int)c->vm->cc_share, (unsigned long long)c->vm->cc_fills, (unsigned long long)c->vm->cc_interns, (unsigned long long)c->vm->cc_hits, (unsigned long long)c->vm->cc_patches, c->vm->cc_n);   /* EXPERIMENT acct45 */
             const char *const pd = getenv("KORUBY_PROFILE_DUMP");   /* EXPERIMENT KORB_PROFILE */
             if (pd && pd[0]) korb_profile_dump(c->vm, ast, pd);
         }

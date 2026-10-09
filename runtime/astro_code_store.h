@@ -12,6 +12,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* EXPERIMENT acct45: re-point every 64-bit hole immediate the loader wrote with `key` at `value`; the count written. */
+unsigned astro_ld_patch_imm(uintptr_t key, uintptr_t value);
+
 // Initialize code store and load all.so from store_dir (if it exists).
 // src_dir: directory containing node.h, node_eval.c etc. (used for #include in generated .c)
 //          Can be overridden by ASTRO_CS_SRC_DIR environment variable.

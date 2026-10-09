@@ -317,6 +317,55 @@ struct astro_ld_obj {
 
 static char astro_ld_preload_dir[ASTRO_CS_DIR_MAX];   // set by astro_cs_set_preload
 
+// EXPERIMENT (acct45, shared call caches): every 64-bit hole immediate the loader wrote, keyed by the value it
+// wrote (for an ASTRO_HOLE_ADDR hole that is the address of the node's own cache struct, unique per site).  The
+// runtime re-points a site's immediates at a shared cache with astro_ld_patch_imm (through the writable view; the
+// code runs on this thread, so the next call sees it).  Entries are never freed (instances are immortal).
+struct astro_ld_patch { uintptr_t key; char *where; unsigned type; uint32_t next; };
+static struct { struct astro_ld_patch *v; uint32_t n, capa; uint32_t *idx; uint32_t idx_mask; } astro_ld_patches;
+static void
+astro_ld_patch_register(uintptr_t key, char *where, unsigned type)
+{
+    if (astro_ld_patches.n == astro_ld_patches.capa) {
+        const uint32_t nc = astro_ld_patches.capa ? astro_ld_patches.capa * 2 : 65536;
+        struct astro_ld_patch *const nv = realloc(astro_ld_patches.v, nc * sizeof(*nv));
+        if (!nv) return;
+        astro_ld_patches.v = nv; astro_ld_patches.capa = nc;
+        // rebuild the index (chains by entry number: key -> first entry, entry.next -> the next with that key)
+        free(astro_ld_patches.idx);
+        astro_ld_patches.idx_mask = nc * 2 - 1;
+        astro_ld_patches.idx = malloc((astro_ld_patches.idx_mask + 1) * sizeof(uint32_t));
+        if (!astro_ld_patches.idx) { astro_ld_patches.capa = 0; return; }
+        memset(astro_ld_patches.idx, 0xff, (astro_ld_patches.idx_mask + 1) * sizeof(uint32_t));
+        for (uint32_t i = 0; i < astro_ld_patches.n; i++) {
+            uint32_t h = (uint32_t)((astro_ld_patches.v[i].key * 0x9E3779B97F4A7C15ull) >> 40) & astro_ld_patches.idx_mask;
+            while (astro_ld_patches.idx[h] != UINT32_MAX && astro_ld_patches.v[astro_ld_patches.idx[h]].key != astro_ld_patches.v[i].key) h = (h + 1) & astro_ld_patches.idx_mask;
+            astro_ld_patches.v[i].next = astro_ld_patches.idx[h] == UINT32_MAX ? UINT32_MAX : astro_ld_patches.idx[h];
+            astro_ld_patches.idx[h] = i;
+        }
+    }
+    const uint32_t i = astro_ld_patches.n++;
+    astro_ld_patches.v[i] = (struct astro_ld_patch){ key, where, type, UINT32_MAX };
+    uint32_t h = (uint32_t)((key * 0x9E3779B97F4A7C15ull) >> 40) & astro_ld_patches.idx_mask;
+    while (astro_ld_patches.idx[h] != UINT32_MAX && astro_ld_patches.v[astro_ld_patches.idx[h]].key != key) h = (h + 1) & astro_ld_patches.idx_mask;
+    astro_ld_patches.v[i].next = astro_ld_patches.idx[h];
+    astro_ld_patches.idx[h] = i;
+}
+unsigned
+astro_ld_patch_imm(uintptr_t key, uintptr_t value)
+{
+    if (!astro_ld_patches.idx) return 0;
+    uint32_t h = (uint32_t)((key * 0x9E3779B97F4A7C15ull) >> 40) & astro_ld_patches.idx_mask;
+    while (astro_ld_patches.idx[h] != UINT32_MAX && astro_ld_patches.v[astro_ld_patches.idx[h]].key != key) h = (h + 1) & astro_ld_patches.idx_mask;
+    unsigned n = 0;
+    for (uint32_t i = astro_ld_patches.idx[h]; i != UINT32_MAX; i = astro_ld_patches.v[i].next) {
+        const struct astro_ld_patch *const p = &astro_ld_patches.v[i];
+        const uintptr_t wherex = (uintptr_t)(astro_ld_arena.x + (p->where - astro_ld_arena.w));
+        if (astro_arch_reloc_apply(p->type, p->where, wherex, value, 0, NULL, 0)) n++;
+    }
+    return n;
+}
+
 static bool
 astro_ld_read(struct astro_ld_obj *o, const char *path)
 {
@@ -541,6 +590,7 @@ astro_cs_instantiate(NODE *n)
                 ok = astro_arch_reloc_apply(t, where, wherex,
                                             (uintptr_t)hv.v[A], 0, NULL, 0);
                 if (!ok) break;
+                if (rw == 8) astro_ld_patch_register((uintptr_t)hv.v[A], where, t);   // EXPERIMENT acct45
                 continue;
             }
             uintptr_t S;

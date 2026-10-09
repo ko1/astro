@@ -1581,6 +1581,8 @@ struct korb_vm {
     /* EXPERIMENT KORB_TYHINT: observe operand kinds per node_eq / node_aref site (KORUBY_TYHINT); the observed
      * nodes, for the exit dump and the bake */
     bool ty_observe;
+    /* EXPERIMENT acct45 (shared call caches): (kind, klass, mid, argc, smid) -> one korb_inlcache for every site */
+    bool cc_share; struct korb_inlcache **cc_tab; uint32_t cc_cap, cc_n; uint64_t cc_interns, cc_hits, cc_patches, cc_fills;
     struct Node **ty_nodes; uint32_t ty_n, ty_capa;
     /* set when Integer#[] is redefined: node_aref's Integer bit-test fast path
      * then deopts.  optcarrot does ~5M Fixnum n[bit] tests/run; the fast path

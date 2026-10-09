@@ -718,7 +718,7 @@ node_shl(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@
         return KP_OPD(c, flink, slots, lhs, "<<", korb_str_shl_str(c, slots + 1, lhs, KORB_REF_AT(&slots[0])));   /* an encoding error names String#<< as the send did */
     }
     if (LIKELY(KORB_STRING_P(l) && KORB_PLAIN_BUILTIN(l)))   /* hot String#<< (a CFUNC) keeps its inline cache; a subclass's own #<< needs the frame below */
-        return KP_DEOPT(c, flink, slots, korb_send_cached(c, slots + 1, c->vm->mid_shl, korb_flink_make(korb_flink_line(flink), 0), 1, ic, KORB_UNDEF));
+        return KP_DEOPT(c, flink, slots, korb_send_cached(c, slots + 1, c->vm->mid_shl, korb_flink_make(korb_flink_line(flink), 0), 1, ic, KORB_UNDEF, NULL));
     /* A user (ISEQ) `<<` needs a full call frame; node_shl's slot window is too
      * tight for korb_send_cached's direct dispatch when the operand is staged by a
      * multiple-assignment / array-literal RHS (frame collision → stack overflow),
@@ -2586,7 +2586,7 @@ node_call(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, 
     }
     (void)flink;   /* codegen stores it into base[-3]; the body never reads it */
     /* the link is in the frame; korb_call_cached takes it raw and decodes once */
-    return korb_call_cached(c, slots, mid, slots[-(korb_sword_t)argv_cnt - 2], cc, ic, argc, self, n);
+    return korb_call_cached(c, slots, mid, slots[-(korb_sword_t)argv_cnt - 2], cc, ic, argc, self, n, &n->u.node_call.ic);   /* EXPERIMENT acct45 */
 }
 
 // Implicit-self call whose trailing arg is a keyword bundle carrying a **splat
@@ -2604,7 +2604,7 @@ node_call_kws(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t fli
     korb_value *cur = slots;
     if (LIKELY(argc > 0) && KORB_HASH_P(slots[-1]) && VAL2HASH(slots[-1])->len == 0) { argc--; cur = slots - 1; }
     const korb_value self = slots[-(korb_sword_t)argv_cnt];       /* base[-1] (absolute slot; unchanged by the drop) */
-    return korb_call_cached(c, cur, mid, flink, cc, ic, argc, self, n);
+    return korb_call_cached(c, cur, mid, flink, cc, ic, argc, self, n, &n->u.node_call_kws.ic);
 }
 
 // Implicit-self keyword call `f(pos..., k: v...)`.  @children stages the pos args
@@ -2730,7 +2730,7 @@ node_send(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, 
     const korb_value caller_self = (self_off == INT32_MIN) ? KORB_UNDEF : slots[self_off];
     (void)flink;   /* codegen stores it into base[-3]; the body never reads it */
     /* the link is in the frame; korb_send_cached takes it raw and decodes once */
-    return korb_send_cached(c, slots, mid, slots[-(korb_sword_t)argv_cnt - 2], argc, ic, caller_self);
+    return korb_send_cached(c, slots, mid, slots[-(korb_sword_t)argv_cnt - 2], argc, ic, caller_self, &n->u.node_send.ic);   /* EXPERIMENT acct45 */
 }
 
 /* ---- AOT-only inline sends (enum korb_sdi, korb_sdi_tab) -------------------------------
@@ -3057,7 +3057,7 @@ node_send_kws(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t fli
     korb_value *cur = slots;
     if (LIKELY(argc > 0) && KORB_HASH_P(slots[-1]) && VAL2HASH(slots[-1])->len == 0) { argc--; cur = slots - 1; }
     const korb_value caller_self = (self_off == INT32_MIN) ? KORB_UNDEF : slots[self_off];
-    return korb_send_cached(c, cur, mid, flink, argc, ic, caller_self);
+    return korb_send_cached(c, cur, mid, flink, argc, ic, caller_self, NULL);
 }
 
 // safe navigation `recv&.m(args)`: if recv is nil, yield nil without dispatch.
@@ -3208,7 +3208,7 @@ korb_aref_body(CTX *c, korb_value *slots, korb_value r, korb_value idx, uint64_t
     if (KORB_OBJECT_P(r) && !(((const AroObjectHeader *)(uintptr_t)r)->flags & KORB_FL_HAS_KLASS) &&
         ic->klass == VAL2OBJ(r)->klass && ic->serial == c->vm->method_serial && ic->dispatch)
         return korb_invoke_entry_ic(c, slots + 5, ic, 1, c->vm->mid_aref);
-    return korb_send_cached(c, slots + 5, c->vm->mid_aref, flink, 1, ic, KORB_UNDEF);
+    return korb_send_cached(c, slots + 5, c->vm->mid_aref, flink, 1, ic, KORB_UNDEF, NULL);
 }
 #ifndef NODE_SKIP_COLD
 RESULT
@@ -3283,7 +3283,7 @@ node_aset(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@chil
         ic->klass == VAL2OBJ(r)->klass && ic->serial == c->vm->method_serial && ic->dispatch)
         CHECK(korb_invoke_entry_ic(c, slots + 7, ic, 2, c->vm->mid_aset));
     else
-        CHECK(korb_send_cached(c, slots + 7, c->vm->mid_aset, flink, 2, ic, KORB_UNDEF));
+        CHECK(korb_send_cached(c, slots + 7, c->vm->mid_aset, flink, 2, ic, KORB_UNDEF, NULL));
     return RESULT_OK(slots[0]);
 }
 
