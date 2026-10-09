@@ -178,14 +178,19 @@ korb_node_walk(NODE *n, node_walk_fn_t fn, void *a)
 {
     if (n && fn(n, a)) (*n->head.kind->walk_func)(n, fn, a);
 }
-bool
-korb_coldcut_on(void)
+unsigned
+korb_coldcut_threshold(void)
 {
-    static int on = -1;
-    if (on < 0) { const char *const e = getenv("KORUBY_COLDCUT"); on = e && *e && strcmp(e, "0") != 0; }
-    return on;
+    static int n = -1;
+    if (n < 0) {
+        const char *const e = getenv("KORUBY_COLDCUT");
+        n = !e || !*e ? 0 : (strcmp(e, "0") == 0 ? 0 : (atoi(e) > 0 ? atoi(e) : 1));   /* "1" / any other text = 1 */
+    }
+    return (unsigned)n;
 }
-struct korb_cc_kind { const struct NodeKind *k; uint32_t ran, cold; };
+#define KORB_CC_BUCKETS 6   /* 0, 1-9, 10-99, 100-999, 1000-9999, >= 10000 */
+static unsigned korb_cc_bucket(unsigned r) { unsigned b = 0; while (r && b < KORB_CC_BUCKETS - 1) { r /= 10; b++; } return b; }
+struct korb_cc_kind { const struct NodeKind *k; uint32_t ran, cold; uint32_t b[KORB_CC_BUCKETS]; };
 #define KORB_CC_KINDS 512
 struct korb_cc_walk { struct korb_cc_stats *st; const NODE *root; bool mark; struct korb_cc_kind *kinds; unsigned *nk; const NODE **ents; uint32_t nents; };
 static int korb_cc_ptr_cmp(const void *a, const void *b) { const NODE *const x = *(const NODE *const *)a, *const y = *(const NODE *const *)b; return x < y ? -1 : x > y; }
@@ -195,7 +200,7 @@ korb_cc_visit(NODE *n, void *a)
     struct korb_cc_walk *const w = a;
     /* the report counts each entry's own nodes once: another entry's root (a def body under a class body) is a boundary */
     if (w->ents && n != w->root && bsearch(&n, w->ents, w->nents, sizeof(*w->ents), korb_cc_ptr_cmp)) return false;
-    const bool cold = n != w->root && !n->head.flags.ran;
+    const bool cold = n != w->root && n->head.flags.ran < korb_coldcut_threshold();
     w->st->nodes++;
     if (cold) {
         w->st->cold++;
@@ -204,8 +209,8 @@ korb_cc_visit(NODE *n, void *a)
     if (w->kinds) {
         unsigned i = 0;
         while (i < *w->nk && w->kinds[i].k != n->head.kind) i++;
-        if (i == *w->nk && i < KORB_CC_KINDS) { w->kinds[i].k = n->head.kind; w->kinds[i].ran = w->kinds[i].cold = 0; (*w->nk)++; }
-        if (i < KORB_CC_KINDS) { if (cold) w->kinds[i].cold++; else w->kinds[i].ran++; }
+        if (i == *w->nk && i < KORB_CC_KINDS) { memset(&w->kinds[i], 0, sizeof(w->kinds[i])); w->kinds[i].k = n->head.kind; (*w->nk)++; }
+        if (i < KORB_CC_KINDS) { if (cold) w->kinds[i].cold++; else w->kinds[i].ran++; w->kinds[i].b[korb_cc_bucket(n->head.flags.ran)]++; }
     }
     return true;
 }
@@ -228,17 +233,24 @@ korb_coldcut_report(const char *path)
     for (uint32_t i = 0; i < nents; i++) ents[i] = code_repo_body_at(i);
     qsort(ents, nents, sizeof(*ents), korb_cc_ptr_cmp);
     struct korb_cc_walk w = { &st, NULL, false, kinds, &nk, ents, nents };
+    const unsigned th = korb_coldcut_threshold() ? korb_coldcut_threshold() : 1;
+    uint32_t eb[KORB_CC_BUCKETS] = {0};
     for (uint32_t i = 0; i < code_repo_count(); i++) {
         NODE *const b = code_repo_body_at(i);
         st.entries++;
-        if (!b->head.flags.ran) continue;
+        eb[korb_cc_bucket(b->head.flags.ran)]++;
+        if (b->head.flags.ran < th) continue;
         st.entries_ran++;
         w.root = b;
         korb_node_walk(b, korb_cc_visit, &w);
     }
-    fprintf(f, "entries\t%u\tran\t%u\n", st.entries, st.entries_ran);
-    fprintf(f, "nodes\t%u\tcold\t%u\n", st.nodes, st.cold);
-    for (unsigned i = 0; i < nk; i++) fprintf(f, "%s\t%u\t%u\n", kinds[i].k->default_dispatcher_name, kinds[i].ran, kinds[i].cold);
+    fprintf(f, "# threshold %u; columns: kind, ran (>= threshold), cold, then dispatch-count buckets 0 / 1-9 / 10-99 / 100-999 / 1000-9999 / 10000+ (counter saturates at 65535)\n", th);
+    fprintf(f, "entries\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\n", st.entries_ran, st.entries - st.entries_ran, eb[0], eb[1], eb[2], eb[3], eb[4], eb[5]);
+    fprintf(f, "nodes\t%u\t%u\n", st.nodes - st.cold, st.cold);
+    for (unsigned i = 0; i < nk; i++) {
+        const struct korb_cc_kind *const k = &kinds[i];
+        fprintf(f, "%s\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\n", k->k->default_dispatcher_name, k->ran, k->cold, k->b[0], k->b[1], k->b[2], k->b[3], k->b[4], k->b[5]);
+    }
     free(kinds); free(ents);
     fclose(f);
 }

@@ -519,7 +519,7 @@ bake_from(void)
 bool korb_srcloc_find(const struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line);   /* korb_runtime.c */
 static bool korb_tyhint_on(void) { const char *const e = getenv("KORUBY_TYHINT"); return e && *e && strcmp(e, "0") != 0; }
 /* profile-at-exit bake (KORB_TYHINT / KORB_COLDCUT): nothing is emitted at load time; the exit bakes with the run's observations */
-static bool korb_pgexit_on(void) { return korb_tyhint_on() || korb_coldcut_on(); }
+static bool korb_pgexit_on(void) { return korb_tyhint_on() || korb_coldcut_threshold() > 0; }
 static const char *
 korb_body_loc(const struct korb_vm *vm, NODE *b)
 {
@@ -533,13 +533,135 @@ korb_body_loc(const struct korb_vm *vm, NODE *b)
     return korb_sym_name(vm, fs);
 }
 
+/* EXPERIMENT KORB_PROFILE: the raw node profile as a file, so the bake decides from it (and other tools can read it).
+ * One line per entry (every repo body, then the program), then one per node of the entry's own subtree in
+ * korb_node_walk order (another entry's root is a boundary: listed, not descended):
+ *   e\t<Horg hex>\t<file>\t<line>\t<kind>\t<nodes>\t<ran>
+ *   n\t<idx>\t<kind>\t<ran>\t<ty_l>\t<ty_r>\t<b>      b = 1: another entry's root (boundary)
+ * KORUBY_PROFILE_DUMP=path writes it at exit.  KORUBY_PROFILE=path makes bake_code_store overwrite every count
+ * (and type observation) from it before the cold-cut; an entry missing from the file counts as never run. */
+struct korb_prof_walk {
+    FILE *f; const NODE *root; const NODE **ents; uint32_t nents; uint32_t idx;
+    const uint16_t *ran; const uint8_t *tyl, *tyr; uint32_t n;   /* load: counts of this entry */
+};
+static int korb_prof_ptr_cmp(const void *a, const void *b) { const NODE *const x = *(const NODE *const *)a, *const y = *(const NODE *const *)b; return x < y ? -1 : x > y; }
+static bool korb_prof_boundary(const struct korb_prof_walk *w, const NODE *n) { return n != w->root && bsearch(&n, w->ents, w->nents, sizeof(*w->ents), korb_prof_ptr_cmp) != NULL; }
+static bool korb_prof_count_visit(NODE *n, void *a) { struct korb_prof_walk *const w = a; w->idx++; return !korb_prof_boundary(w, n); }
+static bool
+korb_prof_dump_visit(NODE *n, void *a)
+{
+    struct korb_prof_walk *const w = a;
+    const bool bd = korb_prof_boundary(w, n);
+    fprintf(w->f, "n\t%u\t%s\t%u\t%u\t%u\t%u\n", w->idx++, n->head.kind->default_dispatcher_name, n->head.flags.ran, n->head.flags.ty_l, n->head.flags.ty_r, bd);
+    return !bd;
+}
+static bool
+korb_prof_load_visit(NODE *n, void *a)
+{
+    struct korb_prof_walk *const w = a;
+    const uint32_t i = w->idx++;
+    if (i < w->n) {
+        n->head.flags.ran = w->ran[i];
+        if (w->tyl[i] | w->tyr[i]) { n->head.flags.ty_observed = true; n->head.flags.ty_l = w->tyl[i]; n->head.flags.ty_r = w->tyr[i]; }
+    } else n->head.flags.ran = 0;
+    return !korb_prof_boundary(w, n);
+}
+static uint64_t
+korb_prof_key(const struct korb_vm *vm, NODE *b, const char *fixed_file)
+{
+    const char *const file = fixed_file ? fixed_file : korb_body_loc(vm, b);
+    char buf[4096];
+    snprintf(buf, sizeof(buf), "%016llx\t%s\t%d", (unsigned long long)HORG(b), file ? file : "-", fixed_file ? 0 : (int)b->head.line);
+    uint64_t h = 1469598103934665603ULL;                                 /* FNV-1a */
+    for (const char *p = buf; *p; p++) { h ^= (unsigned char)*p; h *= 1099511628211ULL; }
+    return h;
+}
+static const NODE **
+korb_prof_ents(uint32_t *nents)
+{
+    *nents = code_repo_count();
+    const NODE **const ents = calloc(*nents, sizeof(*ents));
+    for (uint32_t i = 0; i < *nents; i++) ents[i] = code_repo_body_at(i);
+    qsort(ents, *nents, sizeof(*ents), korb_prof_ptr_cmp);
+    return ents;
+}
+static void
+korb_profile_dump(const struct korb_vm *vm, NODE *ast, const char *path)
+{
+    FILE *const f = fopen(path, "w");
+    if (!f) { fprintf(stderr, "koruby_precise: profile dump: cannot write %s\n", path); return; }
+    struct korb_prof_walk w = { f, NULL, NULL, 0, 0, NULL, NULL, NULL, 0 };
+    w.ents = korb_prof_ents(&w.nents);
+    fprintf(f, "# koruby raw node profile v1\n");
+    for (uint32_t i = 0; i <= code_repo_count(); i++) {
+        NODE *const b = i < code_repo_count() ? code_repo_body_at(i) : ast;
+        if (!b) continue;
+        const char *const file = i < code_repo_count() ? korb_body_loc(vm, b) : "(main)";
+        w.root = b; w.idx = 0; korb_node_walk(b, korb_prof_count_visit, &w);
+        fprintf(f, "e\t%016llx\t%s\t%d\t%s\t%u\t%u\n", (unsigned long long)HORG(b), file ? file : "-", i < code_repo_count() ? (int)b->head.line : 0,
+                b->head.kind->default_dispatcher_name, w.idx, b->head.flags.ran);
+        w.idx = 0; korb_node_walk(b, korb_prof_dump_visit, &w);
+    }
+    free(w.ents);
+    fclose(f);
+}
+struct korb_prof_entry { uint64_t key; uint32_t off, n, ran; };
+static int korb_prof_entry_cmp(const void *a, const void *b) { const uint64_t x = ((const struct korb_prof_entry *)a)->key, y = ((const struct korb_prof_entry *)b)->key; return x < y ? -1 : x > y; }
+static void
+korb_profile_load(const struct korb_vm *vm, NODE *ast, const char *path)
+{
+    FILE *const f = fopen(path, "r");
+    if (!f) { fprintf(stderr, "koruby_precise: profile: cannot read %s\n", path); exit(1); }
+    struct korb_prof_entry *es = NULL; uint32_t ne = 0, ecapa = 0;
+    uint16_t *ran = NULL; uint8_t *tyl = NULL, *tyr = NULL; uint32_t nn = 0, ncapa = 0;
+    char line[8192];
+    while (fgets(line, sizeof(line), f)) {
+        if (line[0] == 'e') {
+            char horg[32], file[4096], kind[128]; int ln; unsigned nodes, cnt;
+            if (sscanf(line, "e\t%31[^\t]\t%4095[^\t]\t%d\t%127[^\t]\t%u\t%u", horg, file, &ln, kind, &nodes, &cnt) != 6) continue;
+            if (ne == ecapa) { ecapa = ecapa ? ecapa * 2 : 1024; es = realloc(es, ecapa * sizeof(*es)); }
+            char buf[4096 + 64]; snprintf(buf, sizeof(buf), "%s\t%s\t%d", horg, file, ln);
+            uint64_t h = 1469598103934665603ULL;
+            for (const char *p = buf; *p; p++) { h ^= (unsigned char)*p; h *= 1099511628211ULL; }
+            es[ne].key = h; es[ne].off = nn; es[ne].n = 0; es[ne].ran = cnt; ne++;
+        } else if (line[0] == 'n' && ne) {
+            unsigned idx, cnt, l, r; char kind[128];
+            if (sscanf(line, "n\t%u\t%127[^\t]\t%u\t%u\t%u", &idx, kind, &cnt, &l, &r) != 5) continue;
+            if (nn == ncapa) { ncapa = ncapa ? ncapa * 2 : 65536; ran = realloc(ran, ncapa * sizeof(*ran)); tyl = realloc(tyl, ncapa); tyr = realloc(tyr, ncapa); }
+            ran[nn] = cnt > UINT16_MAX ? UINT16_MAX : (uint16_t)cnt; tyl[nn] = (uint8_t)l; tyr[nn] = (uint8_t)r; nn++; es[ne - 1].n++;
+        }
+    }
+    fclose(f);
+    qsort(es, ne, sizeof(*es), korb_prof_entry_cmp);
+    struct korb_prof_walk w = { NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, 0 };
+    w.ents = korb_prof_ents(&w.nents);
+    uint32_t found = 0, missing = 0, mismatch = 0;
+    for (uint32_t i = 0; i <= code_repo_count(); i++) {
+        NODE *const b = i < code_repo_count() ? code_repo_body_at(i) : ast;
+        if (!b) continue;
+        const struct korb_prof_entry k = { korb_prof_key(vm, b, i < code_repo_count() ? NULL : "(main)"), 0, 0, 0 };
+        const struct korb_prof_entry *const e = bsearch(&k, es, ne, sizeof(*es), korb_prof_entry_cmp);
+        w.root = b; w.idx = 0;
+        if (!e) { missing++; w.ran = NULL; w.n = 0; b->head.flags.ran = 0; korb_node_walk(b, korb_prof_load_visit, &w); continue; }
+        found++;
+        w.ran = ran + e->off; w.tyl = tyl + e->off; w.tyr = tyr + e->off; w.n = e->n;
+        korb_node_walk(b, korb_prof_load_visit, &w);
+        b->head.flags.ran = e->ran > UINT16_MAX ? UINT16_MAX : (uint16_t)e->ran;   /* the root's own count (the walk wrote idx 0 = the same) */
+        if (w.idx != e->n) mismatch++;
+    }
+    fprintf(stderr, "koruby_precise: profile %s: %u entries in file; bodies found %u, missing %u, node-count mismatch %u\n", path, ne, found, missing, mismatch);
+    if (found == 0) { fprintf(stderr, "koruby_precise: profile: nothing matched (wrong program or tree?)\n"); exit(1); }
+    free(es); free(ran); free(tyl); free(tyr); free(w.ents);
+}
+
 /* AOT bake: the program AST + every *user* method body (each is its own entry —
  * call sites dispatch through body->head.dispatcher at runtime). */
 static void
 bake_code_store(CTX *c, NODE *ast)
 {
-    const bool ty = korb_pgexit_on(), cc = korb_coldcut_on();
+    const bool ty = korb_pgexit_on(); const unsigned cc = korb_coldcut_threshold();
     struct korb_cc_stats st = {0};
+    { const char *const pf = getenv("KORUBY_PROFILE"); if (pf && pf[0]) korb_profile_load(c->vm, ast, pf); }   /* EXPERIMENT KORB_PROFILE */
     if (cc) korb_coldcut_pass(ast, &st);
     astro_cs_compile(ast, NULL);
     for (uint32_t i = bake_from(); i < code_repo_count(); i++) {
@@ -547,13 +669,13 @@ bake_code_store(CTX *c, NODE *ast)
         NODE *const b = code_repo_body_at(i);
         if (cc) {   /* KORB_COLDCUT: a body the run never entered is not baked; inside, unvisited subtrees go no_inline */
             st.entries++;
-            if (!b->head.flags.ran) continue;
+            if (b->head.flags.ran < cc) continue;
             st.entries_ran++;
             korb_coldcut_pass(b, &st);
         }
         astro_cs_compile(b, ty ? korb_body_loc(c->vm, b) : NULL);
     }
-    if (cc) fprintf(stderr, "koruby_precise: coldcut: entries %u ran %u, nodes %u cold %u\n", st.entries, st.entries_ran, st.nodes, st.cold);
+    if (cc) fprintf(stderr, "koruby_precise: coldcut: threshold %u, entries %u ran %u, nodes %u cold %u\n", cc, st.entries, st.entries_ran, st.nodes, st.cold);
 
     char extra_cflags[2048];
     koruby_extra_cflags(extra_cflags, sizeof(extra_cflags));
@@ -1855,6 +1977,8 @@ main(int argc, char *argv[])
             if (td && td[0]) korb_tyhint_dump(c->vm, td);
             const char *const cd = getenv("KORUBY_COLDCUT_DUMP");   /* EXPERIMENT KORB_COLDCUT */
             if (cd && cd[0]) korb_coldcut_report(cd);
+            const char *const pd = getenv("KORUBY_PROFILE_DUMP");   /* EXPERIMENT KORB_PROFILE */
+            if (pd && pd[0]) korb_profile_dump(c->vm, ast, pd);
         }
         if (getenv("KORUBY_GC_STATS")) {
             double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
