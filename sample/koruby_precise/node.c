@@ -187,11 +187,14 @@ korb_coldcut_on(void)
 }
 struct korb_cc_kind { const struct NodeKind *k; uint32_t ran, cold; };
 #define KORB_CC_KINDS 512
-struct korb_cc_walk { struct korb_cc_stats *st; const NODE *root; bool mark; struct korb_cc_kind *kinds; unsigned *nk; };
+struct korb_cc_walk { struct korb_cc_stats *st; const NODE *root; bool mark; struct korb_cc_kind *kinds; unsigned *nk; const NODE **ents; uint32_t nents; };
+static int korb_cc_ptr_cmp(const void *a, const void *b) { const NODE *const x = *(const NODE *const *)a, *const y = *(const NODE *const *)b; return x < y ? -1 : x > y; }
 static bool
 korb_cc_visit(NODE *n, void *a)
 {
     struct korb_cc_walk *const w = a;
+    /* the report counts each entry's own nodes once: another entry's root (a def body under a class body) is a boundary */
+    if (w->ents && n != w->root && bsearch(&n, w->ents, w->nents, sizeof(*w->ents), korb_cc_ptr_cmp)) return false;
     const bool cold = n != w->root && !n->head.flags.ran;
     w->st->nodes++;
     if (cold) {
@@ -209,7 +212,7 @@ korb_cc_visit(NODE *n, void *a)
 void
 korb_coldcut_pass(NODE *root, struct korb_cc_stats *st)
 {
-    struct korb_cc_walk w = { st, root, true, NULL, NULL };
+    struct korb_cc_walk w = { st, root, true, NULL, NULL, NULL, 0 };
     korb_node_walk(root, korb_cc_visit, &w);
 }
 void
@@ -220,7 +223,11 @@ korb_coldcut_report(const char *path)
     struct korb_cc_stats st = {0};
     struct korb_cc_kind *const kinds = calloc(KORB_CC_KINDS, sizeof(*kinds));
     unsigned nk = 0;
-    struct korb_cc_walk w = { &st, NULL, false, kinds, &nk };
+    const uint32_t nents = code_repo_count();
+    const NODE **const ents = calloc(nents, sizeof(*ents));
+    for (uint32_t i = 0; i < nents; i++) ents[i] = code_repo_body_at(i);
+    qsort(ents, nents, sizeof(*ents), korb_cc_ptr_cmp);
+    struct korb_cc_walk w = { &st, NULL, false, kinds, &nk, ents, nents };
     for (uint32_t i = 0; i < code_repo_count(); i++) {
         NODE *const b = code_repo_body_at(i);
         st.entries++;
@@ -232,7 +239,7 @@ korb_coldcut_report(const char *path)
     fprintf(f, "entries\t%u\tran\t%u\n", st.entries, st.entries_ran);
     fprintf(f, "nodes\t%u\tcold\t%u\n", st.nodes, st.cold);
     for (unsigned i = 0; i < nk; i++) fprintf(f, "%s\t%u\t%u\n", kinds[i].k->default_dispatcher_name, kinds[i].ran, kinds[i].cold);
-    free(kinds);
+    free(kinds); free(ents);
     fclose(f);
 }
 void
