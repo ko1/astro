@@ -1476,8 +1476,14 @@ korb_enc_ascii_compat_idx(const struct korb_vm *vm, uint32_t idx)
 static bool korb_str_ascii_only_p(const struct korb_vm *vm, korb_value sv) {
     if (!korb_enc_ascii_compat_idx(vm, KORB_STR_ENC(sv))) return false;
     const KorbString *const s = VAL2STR(sv);
-    for (uint32_t i = 0; i < s->len; i++)
-        if ((unsigned char)korb_str_ptr(s)[i] >= 0x80) return false;
+    const unsigned char *const p = (const unsigned char *)korb_str_ptr(s);
+    uint32_t i = 0;
+    for (; i + 8 <= s->len; i += 8) {               /* a word at a time: join / concat scan every element (railsbench 0.3%) */
+        uint64_t w; memcpy(&w, p + i, 8);
+        if (w & 0x8080808080808080ull) return false;
+    }
+    for (; i < s->len; i++)
+        if (p[i] >= 0x80) return false;
     return true;
 }
 /* CRuby's rb_str_comparable: whether byte-identical Strings in different
