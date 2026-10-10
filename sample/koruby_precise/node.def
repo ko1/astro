@@ -87,10 +87,15 @@ node_str_frozen(CTX *c, NODE *n, korb_value *slots, const char *bytes, uint32_t 
 // magic comment, or a `\xNN`/`\uNNNN` escape that forced binary/UTF-8.
 // `enc` is a KORB_ENC_* index; `mode` is 0 mutable / 1 chilled / 2 frozen.
 NODE_DEF
-node_str_enc(CTX *c, NODE *n, korb_value *slots, const char *bytes, uint32_t len, uint32_t enc, uint32_t mode)
+node_str_enc(CTX *c, NODE *n, korb_value *slots, const char *bytes, uint32_t len, uint32_t enc, uint32_t mode, struct korb_fscache *fc@ref)
 {
     (void)n;
-    if (mode == 2) return RESULT_OK(korb_fstr_get(c, slots, bytes, len, enc));
+    if (mode == 2) {                                 /* frozen: the pool slot is kept on the node, as node_str_frozen does */
+        if (LIKELY(fc->idx_plus1 != 0)) return RESULT_OK(c->vm->fstr_vals[fc->idx_plus1 - 1]);
+        const korb_value v = korb_fstr_get(c, slots, bytes, len, enc);
+        fc->idx_plus1 = korb_fstr_slot(c->vm, v) + 1;
+        return RESULT_OK(v);
+    }
     const RESULT r = korb_str_new(c, slots, bytes, len);
     if (LIKELY(r.state == KORB_NORMAL)) {
         KORB_STR_ENC_SET(r.value, enc);
