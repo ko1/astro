@@ -7015,6 +7015,8 @@ static korb_value korb_mod_refinements_ary(struct korb_vm *vm, korb_value mod); 
  * table; a stale one (older serial) is refilled in place, so every site sharing it sees the new resolution. */
 #include <execinfo.h>
 unsigned astro_ld_patch_imm(uintptr_t key, uintptr_t value);   /* runtime/astro_code_store.h */
+bool astro_ld_patch_call(const void *ret, uintptr_t target, uintptr_t expect);   /* EXPERIMENT acct48, same header */
+bool astro_ld_call_reset(const void *ret, uintptr_t host);
 struct korb_cc_entry { struct korb_inlcache ic; uint64_t kkey; uint32_t mid, argc; };
 /* the key's class part: the class's GC-stable serial (a moved class keeps its entry, refreshed in place: no
  * re-intern and no code patch after a collection), the address only for a non-class */
@@ -7070,6 +7072,28 @@ korb_cc_intern(struct korb_vm *vm, uint64_t serial, korb_value klass, struct kor
         }
     }
     return &e->ic;
+}
+/* EXPERIMENT acct48: the stub a woven instance calls in place of `(*body->head.dispatcher)(c, body, slots)`.  Once
+ * the body is woven (its dispatcher is arena code), the call that brought us here is rewritten to reach it
+ * directly; the site is remembered in the cache so a refill can undo it.  A shared cache (acct45) is used by many
+ * sites, so it never records one.  Not inlined: the return address IS the site. */
+__attribute__((noinline)) RESULT
+korb_entry_call(CTX *c, NODE *body, korb_value *slots, const struct korb_inlcache *ic)
+{
+    const node_dispatcher_func_t d = body->head.dispatcher;
+    const void *const ret = __builtin_return_address(0);
+    c->vm->dc_calls++;
+    if (ic->cs_ret == NULL && !ic->shared && astro_ld_patch_call(ret, (uintptr_t)d, (uintptr_t)korb_entry_call)) {
+        ((struct korb_inlcache *)ic)->cs_ret = ret;   /* the cache lives in the NODE: writable, const only on this path */
+        c->vm->dc_patches++;
+    }
+    return (*d)(c, body, slots);
+}
+void
+korb_entry_call_reset(struct korb_inlcache *ic)
+{
+    astro_ld_call_reset(ic->cs_ret, (uintptr_t)korb_entry_call);
+    ic->cs_ret = NULL;
 }
 void
 korb_cc_check_fail(const struct korb_inlcache *ic, uint8_t kind)
@@ -23704,7 +23728,8 @@ korb_ctx_new(void)
     korb_sdi_preinit(c->vm);
     { const char *const e = getenv("KORUBY_TYHINT"); c->vm->ty_observe = e && *e && strcmp(e, "0") != 0; }   /* EXPERIMENT KORB_TYHINT */
     { const char *const e = getenv("KORUBY_CC_SHARE"); c->vm->cc_share = !(e && strcmp(e, "0") == 0); c->vm->cc_check = getenv("KORUBY_CC_CHECK") != NULL; }   /* EXPERIMENT acct45: default on */
-    { const char *const e = getenv("KORUBY_SEND_INL"); c->vm->send_inl = !(e && strcmp(e, "0") == 0); }   /* EXPERIMENT acct46: default on */                            /* calloc's NULL would match a Ruby method's rfn */
+    { const char *const e = getenv("KORUBY_SEND_INL"); c->vm->send_inl = !(e && strcmp(e, "0") == 0); }   /* EXPERIMENT acct46: default on */
+    { const char *const e = getenv("KORUBY_DIRECT_CALL"); c->vm->direct_call = !(e && strcmp(e, "0") == 0); }   /* EXPERIMENT acct48: default on */                            /* calloc's NULL would match a Ruby method's rfn */
 #ifndef KORB_WASI
     korb_signal_arm_init(c->vm);
 #endif

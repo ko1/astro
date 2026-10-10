@@ -14,6 +14,9 @@
 
 /* EXPERIMENT acct45: re-point every 64-bit hole immediate the loader wrote with `key` at `value`; the count written. */
 unsigned astro_ld_patch_imm(uintptr_t key, uintptr_t value);
+/* EXPERIMENT acct48: bind the instance call returning to `ret` (now calling host `expect`) to `target`; undo it. */
+bool astro_ld_patch_call(const void *ret, uintptr_t target, uintptr_t expect);
+bool astro_ld_call_reset(const void *ret, uintptr_t host);
 
 // Initialize code store and load all.so from store_dir (if it exists).
 // src_dir: directory containing node.h, node_eval.c etc. (used for #include in generated .c)

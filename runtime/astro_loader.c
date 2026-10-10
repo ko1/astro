@@ -366,6 +366,55 @@ astro_ld_patch_imm(uintptr_t key, uintptr_t value)
     return n;
 }
 
+// EXPERIMENT (acct48, direct entry calls): rewrite the rel32 of the `call` that returns to `ret` (an instance's call
+// of a host stub) so it reaches `target` directly — a woven SD in the arena — like a lazy PLT binding.  The site
+// must be in the arena, the opcode a call (E8), and its current target the host function `expect` or the arena
+// stub for it.  astro_ld_call_reset puts the host (or its stub) back.  Single-thread: the write is 4 unaligned bytes.
+static bool
+astro_ld_call_site(const void *ret, char **wp, int32_t *cur)
+{
+    const char *const x = (const char *)ret;
+    if (!astro_ld_arena.w || x < astro_ld_arena.x + 5 || x > astro_ld_arena.x + astro_ld_arena.used) return false;
+    char *const w = astro_ld_arena.w + (x - astro_ld_arena.x) - 5;
+    if ((unsigned char)w[0] != 0xE8) return false;
+    memcpy(cur, w + 1, 4);
+    *wp = w + 1;
+    return true;
+}
+static uintptr_t
+astro_ld_host_reach(const uintptr_t host, const uintptr_t ret)
+{
+    const int64_t v = (int64_t)(host - ret);
+    if (v >= INT32_MIN && v <= INT32_MAX) return host;
+#if ASTRO_ARCH_STUB_SIZE
+    return astro_ld_stub_for(host);
+#else
+    return 0;
+#endif
+}
+bool
+astro_ld_patch_call(const void *ret, uintptr_t target, uintptr_t expect)
+{
+    char *w; int32_t cur;
+    if (!astro_ld_call_site(ret, &w, &cur)) return false;
+    if ((uintptr_t)ret + (int64_t)cur != astro_ld_host_reach(expect, (uintptr_t)ret)) return false;   // not our call any more
+    if ((char *)target < astro_ld_arena.x || (char *)target >= astro_ld_arena.x + astro_ld_arena.used) return false;   // not woven code
+    const int32_t rel = (int32_t)(target - (uintptr_t)ret);
+    memcpy(w, &rel, 4);
+    return true;
+}
+bool
+astro_ld_call_reset(const void *ret, uintptr_t host)
+{
+    char *w; int32_t cur;
+    if (!astro_ld_call_site(ret, &w, &cur)) return false;
+    const uintptr_t t = astro_ld_host_reach(host, (uintptr_t)ret);
+    if (!t) return false;
+    const int32_t rel = (int32_t)(t - (uintptr_t)ret);
+    memcpy(w, &rel, 4);
+    return true;
+}
+
 static bool
 astro_ld_read(struct astro_ld_obj *o, const char *path)
 {

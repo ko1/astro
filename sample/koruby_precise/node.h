@@ -208,6 +208,7 @@ struct korb_inlcache {
     uint8_t  cfunc_ok;               /* EXPERIMENT acct46: 0 = no; else m is a C method callable with this site's argc and this is the
                                       * receiver's tag code the SD compares (korb_recv_tag_is), 0xFF = compare recv == klass (a class receiver) */
     uint32_t smid;                   /* KORB_IC_SEND: the name `send(:name, ...)` resolved (in kind's pad) */
+    const void *cs_ret;              /* EXPERIMENT acct48: the SD call site bound directly to body's SD (its return address), or NULL */
 };
 
 /* node_head.h provides NodeKind, per-node structs, the Node union, and
@@ -1266,6 +1267,10 @@ korb_invoke_simple(CTX *c, korb_value *slots, struct korb_method *m, uint32_t ar
 }
 
 
+/* EXPERIMENT acct48 (korb_runtime.c): the binding stub an instance calls, and the undo when its cache is refilled. */
+RESULT korb_entry_call(CTX *c, NODE *body, korb_value *slots, const struct korb_inlcache *ic);
+void korb_entry_call_reset(struct korb_inlcache *ic);
+
 /* Cache-driven simple invoke.  The frame setup now lives in the callee's
  * node_simple_entry SD (where params_cnt / locals_cnt are constants), so all
  * that remains here is: write the callee's identity into base[-4] — where it
@@ -1278,7 +1283,15 @@ korb_invoke_entry_ic(CTX *c, korb_value *slots, const struct korb_inlcache *ic, 
     korb_id_set(slots - argc, (korb_value)((uintptr_t)ic->m | KORB_FID_METHOD));   /* the callee frame's identity */
     /* the body's dispatcher now, not the one cached at fill: a body still on the weave trampoline when the
      * site filled stays there otherwise (each call went through korb_first_dispatch's forward, 16% of o.m0) */
+#if defined(ASTRO_SD_PATCH)
+    /* EXPERIMENT acct48: in a woven instance the call goes to a host stub that binds this very call to the body's
+     * woven SD (a direct rel32, as a PLT entry would), so later calls are one predicted direct call, not an
+     * indirect one through two loads.  KORUBY_DIRECT_CALL=0 keeps the indirect call. */
+    const RESULT r = LIKELY(c->vm->direct_call) ? korb_entry_call(c, ic->body, slots, ic)
+                                                : (*ic->body->head.dispatcher)(c, ic->body, slots);
+#else
     const RESULT r = (*ic->body->head.dispatcher)(c, ic->body, slots);
+#endif
     if (LIKELY(r.state == KORB_NORMAL)) return r;
     /* The site's line rides the frame link it stored in base[-3]; reading it
      * back here keeps it out of the hot path entirely. */
@@ -1425,6 +1438,7 @@ korb_ic_fill(const struct korb_vm *vm, struct korb_inlcache *ic, uint64_t serial
              korb_value def_class, uint8_t kind, uint32_t argc)
 {
     if (UNLIKELY(ic->shared)) { korb_cc_check_fail(ic, kind); return; }
+    if (UNLIKELY(ic->cs_ret != NULL)) korb_entry_call_reset(ic);   /* EXPERIMENT acct48: the site's direct call followed the old contents */
     korb_ic_fill_raw(vm, ic, serial, klass, m, def_class, kind, argc);
 }
 
