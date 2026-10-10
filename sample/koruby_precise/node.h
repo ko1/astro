@@ -280,6 +280,16 @@ RESULT korb_capture_backtrace(CTX *c, korb_value *slots, const korb_value *fbase
 RESULT korb_ary_push_val(CTX *c, korb_value *slots, korb_ref aref, korb_value elem);
 void   korb_ary_store_at(CTX *c, korb_value ary, uint32_t i, korb_value val);   /* in-range ary[i]=val (WB) */
 int32_t korb_hash_find(const KorbHash *h, korb_value key);   /* index of key in pair array, or -1 (Hash#[] fast path) */
+/* korb_hash_find's immediate-key path without its frame: an immediate is eql? only to itself, so a small
+ * (unindexed) Hash is scanned by identity in place (railsbench: 919 of 1,573 lookups a request, 56% misses). */
+static inline int32_t korb_hash_find_inl(const KorbHash *const h, const korb_value key) {
+    if (LIKELY(h->idx_mask == 0 && (key & 7u) != 0 && !FLONUM_P(key))) {   /* fixnum / symbol / true / false (a flonum is eql? by value: 0.0 and -0.0) */
+        const korb_value *const d = korb_hash_pairs(h);
+        for (uint32_t i = 0; i < h->len; i++) if (d[2 * i] == key) return (int32_t)i;
+        return -1;
+    }
+    return korb_hash_find(h, key);
+}
 RESULT korb_ary_concat_val(CTX *c, korb_value *slots, korb_ref aref, korb_value val);
 
 /* Hash (korb_runtime.c) */

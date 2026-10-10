@@ -3195,7 +3195,7 @@ korb_aref_body(CTX *c, korb_value *slots, korb_value r, korb_value idx, uint64_t
     if (LIKELY(KORB_HASH_P(r) && KORB_PLAIN_BUILTIN(r) && !c->vm->hash_aref_redefined &&
                !(AROH_IS_GC_OBJECT(idx) && (korb_eq_needs_send(idx) || (KORB_CLASS_P(idx) && c->vm->sing_hash_redef))))) {   /* hash[key] → inline lookup, skip the send + dispatch (a key whose equality Ruby owns falls to the CTX-aware method) */
         const KorbHash *const h = VAL2HASH(r);
-        const int32_t hi = korb_hash_find(h, idx);
+        const int32_t hi = korb_hash_find_inl(h, idx);
         if (hi >= 0) return RESULT_OK(korb_hash_pairs(h)[2 * hi + 1]);
         /* miss → default; a default_proc or a subclass (which may override
          * #default) falls through to the send */
@@ -3246,7 +3246,7 @@ node_aref(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@chil
     if (LIKELY(KORB_HASH_P(r) && KORB_PLAIN_BUILTIN(r) && !c->vm->hash_aref_redefined &&
                !(AROH_IS_GC_OBJECT(idx) && (korb_eq_needs_send(idx) || (KORB_CLASS_P(idx) && c->vm->sing_hash_redef))))) {   /* hash[key] → inline lookup, skip the send + dispatch (a key whose equality Ruby owns falls to the CTX-aware method) */
         const KorbHash *const h = VAL2HASH(r);
-        const int32_t hi = korb_hash_find(h, idx);
+        const int32_t hi = korb_hash_find_inl(h, idx);
         if (hi >= 0) return RESULT_OK(korb_hash_pairs(h)[2 * hi + 1]);
         /* miss → default; a default_proc or a subclass (which may override
          * #default) falls through to the send */
@@ -4050,7 +4050,7 @@ node_ivar_get(CTX *c, NODE *n, korb_value *slots, int32_t self_off, uint32_t nam
         const korb_value *const kv = korb_hash_pairs(hh);
         const uint32_t i = (uint32_t)ic->slot;
         if (LIKELY(ic->shape_id == KORB_IVC_CLASS && i < hh->len && kv[2 * i] == ID2SYM(name))) return RESULT_OK(kv[2 * i + 1]);
-        const int32_t idx = korb_hash_find(hh, ID2SYM(name));
+        const int32_t idx = korb_hash_find_inl(hh, ID2SYM(name));
         if (idx < 0) return RESULT_OK(KORB_NIL);
         ic->shape_id = KORB_IVC_CLASS; ic->slot = idx;
         return RESULT_OK(kv[2 * idx + 1]);

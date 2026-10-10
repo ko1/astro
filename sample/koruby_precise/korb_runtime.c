@@ -2172,7 +2172,7 @@ korb_hash_find_ctx(CTX *c, korb_value *slots, korb_ref href, korb_value key, RES
     if (LIKELY(!(h->head.flags & KORB_FL_CMP_BY_ID) && !korb_eq_needs_send(key) &&
                !(UNLIKELY(c->vm->sing_hash_redef) && KORB_CLASS_P(key)))) {
         *out_err = RESULT_OK(KORB_NIL);
-        return korb_hash_find(h, key);
+        return korb_hash_find_inl(h, key);
     }
     return korb_hash_find_ctx_h(c, slots, href, key, out_err, NULL);
 }
