@@ -7073,32 +7073,58 @@ korb_cc_intern(struct korb_vm *vm, uint64_t serial, korb_value klass, struct kor
     }
     return &e->ic;
 }
-/* EXPERIMENT acct48: the stub a woven instance calls in place of `(*body->head.dispatcher)(c, body, slots)`.  Once
- * the body is woven (its dispatcher is arena code), the call that brought us here is rewritten to reach it
- * directly; the site is remembered in the cache so a refill can undo it.  A shared cache (acct45) is used by many
- * sites, so it never records one.  Not inlined: the return address IS the site. */
+/* EXPERIMENT acct48: the stub a woven instance calls in place of `(*body->head.dispatcher)(c, body, slots)`.  Unless
+ * the body is still on the weave trampoline, the call that brought us here is rewritten to reach its dispatcher
+ * directly (a woven SD, or the interpreter's dispatcher of an unbaked body through an arena stub); the site is
+ * remembered in vm->dc_tab (ic -> return address) so a refill can undo it.  A shared cache (acct45) is used by many
+ * sites and a polymorphic one (poly) refills on every class change: neither binds.  Not inlined: the return
+ * address IS the site. */
+struct korb_dc_ent { const struct korb_inlcache *ic; const void *ret; };
+static struct korb_dc_ent *
+korb_dc_slot(struct korb_vm *vm, const struct korb_inlcache *ic)
+{
+    if (vm->dc_tab == NULL) { vm->dc_cap = 1u << 12; vm->dc_tab = calloc(vm->dc_cap, sizeof(*vm->dc_tab)); }
+    if (vm->dc_n * 2 >= vm->dc_cap) {
+        const uint32_t nc = vm->dc_cap * 2;
+        struct korb_dc_ent *const nt = calloc(nc, sizeof(*nt));
+        for (uint32_t i = 0; i < vm->dc_cap; i++) {
+            const struct korb_dc_ent *const e = &vm->dc_tab[i];
+            if (!e->ic) continue;
+            uint32_t j = (uint32_t)(((uintptr_t)e->ic * 0x9E3779B97F4A7C15ull) >> 40) & (nc - 1);
+            while (nt[j].ic) j = (j + 1) & (nc - 1);
+            nt[j] = *e;
+        }
+        free(vm->dc_tab); vm->dc_tab = nt; vm->dc_cap = nc;
+    }
+    uint32_t i = (uint32_t)(((uintptr_t)ic * 0x9E3779B97F4A7C15ull) >> 40) & (vm->dc_cap - 1);
+    while (vm->dc_tab[i].ic && vm->dc_tab[i].ic != ic) i = (i + 1) & (vm->dc_cap - 1);
+    return &vm->dc_tab[i];   /* the entry, or the empty slot it would go in */
+}
 __attribute__((noinline)) RESULT
 korb_entry_call(CTX *c, NODE *body, korb_value *slots, const struct korb_inlcache *ic)
 {
     const node_dispatcher_func_t d = body->head.dispatcher;
     const void *const ret = __builtin_return_address(0);
-    c->vm->dc_calls++;
-    /* bind to anything but the weave trampoline: a woven SD, or the interpreter's dispatcher of a body that is not
-     * baked (cold-cut) — a host function reached through an arena stub; railsbench: 570k such calls per iteration */
-    if (ic->cs_ret == NULL && !ic->shared && d != korb_hot_tramp() && astro_ld_patch_call(ret, (uintptr_t)d, (uintptr_t)korb_entry_call)) {
-        ((struct korb_inlcache *)ic)->cs_ret = ret;   /* the cache lives in the NODE: writable, const only on this path */
-        c->vm->dc_patches++;
-    } else if (ic->cs_ret == NULL) c->vm->dc_unbound++;   /* still on the trampoline, shared, out of stubs, or not a call site */
+    struct korb_vm *const vm = c->vm;
+    vm->dc_calls++;
+    if (!ic->poly && !ic->shared && d != korb_hot_tramp()) {
+        struct korb_dc_ent *const e = korb_dc_slot(vm, ic);
+        if (e->ic == NULL && astro_ld_patch_call(ret, (uintptr_t)d, (uintptr_t)korb_entry_call)) {
+            e->ic = ic; e->ret = ret; vm->dc_n++; vm->dc_patches++;
+        } else vm->dc_unbound++;   /* out of stubs, or not a call site (a reset site is refused by poly above) */
+    } else vm->dc_unbound++;
     return (*d)(c, body, slots);
 }
-/* A refill at a bound site: unbind it, and never bind it again (KORB_DC_NEVER) — a polymorphic site refills on
- * every class change, and each rebind is a code write (railsbench: 34k rebinds per iteration before this). */
-#define KORB_DC_NEVER ((const void *)1)
+/* The site's cache is about to be refilled with `m`: the same method (a serial bump) keeps the binding; another
+ * unbinds it and marks the site polymorphic, so it never binds again (each rebind is a code write). */
 void
-korb_entry_call_reset(struct korb_inlcache *ic)
+korb_dc_refill(struct korb_vm *vm, struct korb_inlcache *ic, const struct korb_method *m)
 {
-    if (ic->cs_ret != KORB_DC_NEVER) astro_ld_call_reset(ic->cs_ret, (uintptr_t)korb_entry_call);
-    ic->cs_ret = KORB_DC_NEVER;
+    struct korb_dc_ent *const e = korb_dc_slot(vm, ic);
+    if (e->ic == NULL) return;
+    if (m != NULL && ic->m == m && ic->body == m->simple_entry) return;
+    astro_ld_call_reset(e->ret, (uintptr_t)korb_entry_call);
+    e->ret = NULL; ic->poly = 1; vm->dc_resets++;   /* the entry stays (a tombstone keyed by ic): the site is refused above */
 }
 void
 korb_cc_check_fail(const struct korb_inlcache *ic, uint8_t kind)
@@ -23734,7 +23760,7 @@ korb_ctx_new(void)
     { const char *const e = getenv("KORUBY_TYHINT"); c->vm->ty_observe = e && *e && strcmp(e, "0") != 0; }   /* EXPERIMENT KORB_TYHINT */
     { const char *const e = getenv("KORUBY_CC_SHARE"); c->vm->cc_share = !(e && strcmp(e, "0") == 0); c->vm->cc_check = getenv("KORUBY_CC_CHECK") != NULL; }   /* EXPERIMENT acct45: default on */
     { const char *const e = getenv("KORUBY_SEND_INL"); c->vm->send_inl = !(e && strcmp(e, "0") == 0); }   /* EXPERIMENT acct46: default on */
-    { const char *const e = getenv("KORUBY_DIRECT_CALL"); c->vm->direct_call = !(e && strcmp(e, "0") == 0); }   /* EXPERIMENT acct48: default on */                            /* calloc's NULL would match a Ruby method's rfn */
+                               /* calloc's NULL would match a Ruby method's rfn */
 #ifndef KORB_WASI
     korb_signal_arm_init(c->vm);
 #endif

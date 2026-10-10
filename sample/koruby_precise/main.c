@@ -1999,7 +1999,7 @@ main(int argc, char *argv[])
                     if (f) fclose(f);
                 }
             }
-            if (getenv("KORUBY_CC_STATS")) fprintf(stderr, "koruby_precise: dc: direct_call %d, stub calls %llu, sites bound %llu, unbound calls %llu\n", (int)c->vm->direct_call, (unsigned long long)c->vm->dc_calls, (unsigned long long)c->vm->dc_patches, (unsigned long long)c->vm->dc_unbound);   /* EXPERIMENT acct48 */
+            if (getenv("KORUBY_CC_STATS")) fprintf(stderr, "koruby_precise: dc: stub calls %llu, sites bound %llu, unbound calls %llu, resets %llu\n", (unsigned long long)c->vm->dc_calls, (unsigned long long)c->vm->dc_patches, (unsigned long long)c->vm->dc_unbound, (unsigned long long)c->vm->dc_resets);   /* EXPERIMENT acct48 */
             if (getenv("KORUBY_CC_STATS")) fprintf(stderr, "koruby_precise: cc: share %d, fills %llu (from own %llu, from shared %llu), interns %llu, hits %llu, patches %llu (no location %llu), table %u, probes %llu\n", (int)c->vm->cc_share, (unsigned long long)c->vm->cc_fills, (unsigned long long)c->vm->cc_fill_own, (unsigned long long)c->vm->cc_fill_shared, (unsigned long long)c->vm->cc_interns, (unsigned long long)c->vm->cc_hits, (unsigned long long)c->vm->cc_patches, (unsigned long long)c->vm->cc_patch0, c->vm->cc_n, (unsigned long long)c->vm->cc_probes);   /* EXPERIMENT acct45 */
             const char *const pd = getenv("KORUBY_PROFILE_DUMP");   /* EXPERIMENT KORB_PROFILE */
             if (pd && pd[0]) korb_profile_dump(c->vm, ast, pd);

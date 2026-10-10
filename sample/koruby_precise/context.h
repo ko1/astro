@@ -1582,7 +1582,7 @@ struct korb_vm {
      * nodes, for the exit dump and the bake */
     bool ty_observe;
     /* EXPERIMENT acct45 (shared call caches): (kind, klass, mid, argc, smid) -> one korb_inlcache for every site */
-    bool cc_share, cc_check, send_inl, direct_call; uint64_t dc_calls, dc_patches, dc_unbound;   /* direct_call / dc_*: EXPERIMENT acct48 */
+    bool cc_share, cc_check, send_inl; struct korb_dc_ent *dc_tab; uint32_t dc_cap, dc_n; uint64_t dc_calls, dc_patches, dc_unbound, dc_resets;   /* dc_*: EXPERIMENT acct48 (direct entry calls) */
     struct korb_inlcache **cc_tab; uint32_t cc_cap, cc_n; uint64_t cc_interns, cc_hits, cc_patches, cc_fills, cc_fill_own, cc_fill_shared, cc_patch0, cc_probes;
     struct Node **ty_nodes; uint32_t ty_n, ty_capa;
     /* set when Integer#[] is redefined: node_aref's Integer bit-test fast path

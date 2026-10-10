@@ -208,7 +208,6 @@ struct korb_inlcache {
     uint8_t  cfunc_ok;               /* EXPERIMENT acct46: 0 = no; else m is a C method callable with this site's argc and this is the
                                       * receiver's tag code the SD compares (korb_recv_tag_is), 0xFF = compare recv == klass (a class receiver) */
     uint32_t smid;                   /* KORB_IC_SEND: the name `send(:name, ...)` resolved (in kind's pad) */
-    const void *cs_ret;              /* EXPERIMENT acct48: the SD call site bound directly to body's SD (its return address), or NULL */
 };
 
 /* node_head.h provides NodeKind, per-node structs, the Node union, and
@@ -1269,7 +1268,7 @@ korb_invoke_simple(CTX *c, korb_value *slots, struct korb_method *m, uint32_t ar
 
 /* EXPERIMENT acct48 (korb_runtime.c): the binding stub an instance calls, and the undo when its cache is refilled. */
 RESULT korb_entry_call(CTX *c, NODE *body, korb_value *slots, const struct korb_inlcache *ic);
-void korb_entry_call_reset(struct korb_inlcache *ic);
+void korb_dc_refill(struct korb_vm *vm, struct korb_inlcache *ic, const struct korb_method *m);   /* before a bound site's cache is refilled */
 node_dispatcher_func_t korb_hot_tramp(void);   /* main.c: the weave trampoline a body may still be on */
 
 /* Cache-driven simple invoke.  The frame setup now lives in the callee's
@@ -1286,10 +1285,9 @@ korb_invoke_entry_ic(CTX *c, korb_value *slots, const struct korb_inlcache *ic, 
      * site filled stays there otherwise (each call went through korb_first_dispatch's forward, 16% of o.m0) */
 #if defined(ASTRO_SD_PATCH)
     /* EXPERIMENT acct48: in a woven instance the call goes to a host stub that binds this very call to the body's
-     * woven SD (a direct rel32, as a PLT entry would), so later calls are one predicted direct call, not an
-     * indirect one through two loads.  KORUBY_DIRECT_CALL=0 keeps the indirect call. */
-    const RESULT r = LIKELY(c->vm->direct_call) ? korb_entry_call(c, ic->body, slots, ic)
-                                                : (*ic->body->head.dispatcher)(c, ic->body, slots);
+     * dispatcher (a direct rel32, as a PLT entry would), so later calls are one predicted direct call, not an
+     * indirect one through two loads. */
+    const RESULT r = korb_entry_call(c, ic->body, slots, ic);
 #else
     const RESULT r = (*ic->body->head.dispatcher)(c, ic->body, slots);
 #endif
@@ -1435,13 +1433,13 @@ korb_ic_fill_raw(const struct korb_vm *vm, struct korb_inlcache *ic, uint64_t se
 
 /* The same, for a site's own cache: a shared one (EXPERIMENT acct45) is only ever refreshed by korb_cc_intern. */
 static inline void
-korb_ic_fill(const struct korb_vm *vm, struct korb_inlcache *ic, uint64_t serial, korb_value klass, struct korb_method *m,
+korb_ic_fill(struct korb_vm *vm, struct korb_inlcache *ic, uint64_t serial, korb_value klass, struct korb_method *m,
              korb_value def_class, uint8_t kind, uint32_t argc)
 {
     if (UNLIKELY(ic->shared)) { korb_cc_check_fail(ic, kind); return; }
-    /* EXPERIMENT acct48: a bound site keeps its direct call when the refill lands on the same method (a serial bump:
-     * railsbench refills every site about once per 250 requests); another method unbinds it for good */
-    if (UNLIKELY(ic->cs_ret != NULL) && (ic->m != m || m == NULL || ic->body != m->simple_entry)) korb_entry_call_reset(ic);
+    /* EXPERIMENT acct48: a bound site (vm->dc_n: any exist) keeps its direct call when the refill lands on the same
+     * method (a serial bump: railsbench refills every site about once per 250 requests); another method unbinds it */
+    if (UNLIKELY(vm->dc_n != 0) && !ic->poly) korb_dc_refill(vm, ic, m);
     korb_ic_fill_raw(vm, ic, serial, klass, m, def_class, kind, argc);
 }
 
