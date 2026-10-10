@@ -1731,38 +1731,38 @@ node_attr(CTX *c, NODE *n, korb_value *slots, int32_t self_off, void *descs, uin
 // method's incoming block is forwarded from its trio as node_super_fwd does.  `self_off`/`dc_off`
 // read the frame's self + def_class cells; mid is the enclosing method's name (baked).
 NODE_DEF
-node_super0(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off)
+node_super0(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, struct korb_supcache *sc@ref)
 {
     (void)n;
-    return korb_super_staged(c, slots, mid, line, 0, slots[dc_off], slots[self_off], slots[biseq_off], slots[def_env_off], slots[cself_off], KORB_FBASE_AT(slots, dc_off));
+    return korb_super_staged(c, slots, mid, line, 0, slots[dc_off], slots[self_off], slots[biseq_off], slots[def_env_off], slots[cself_off], KORB_FBASE_AT(slots, dc_off), sc);
 }
 
 NODE_DEF
-node_super1(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, korb_ref a0@child)
+node_super1(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, korb_ref a0@child, struct korb_supcache *sc@ref)
 {
     (void)n; (void)a0;
-    return korb_super_staged(c, slots, mid, line, 1, slots[dc_off], slots[self_off], slots[biseq_off], slots[def_env_off], slots[cself_off], KORB_FBASE_AT(slots, dc_off));
+    return korb_super_staged(c, slots, mid, line, 1, slots[dc_off], slots[self_off], slots[biseq_off], slots[def_env_off], slots[cself_off], KORB_FBASE_AT(slots, dc_off), sc);
 }
 
 NODE_DEF
-node_super2(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, korb_ref a0@child, korb_ref a1@child)
+node_super2(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, korb_ref a0@child, korb_ref a1@child, struct korb_supcache *sc@ref)
 {
     (void)n; (void)a0; (void)a1;
-    return korb_super_staged(c, slots, mid, line, 2, slots[dc_off], slots[self_off], slots[biseq_off], slots[def_env_off], slots[cself_off], KORB_FBASE_AT(slots, dc_off));
+    return korb_super_staged(c, slots, mid, line, 2, slots[dc_off], slots[self_off], slots[biseq_off], slots[def_env_off], slots[cself_off], KORB_FBASE_AT(slots, dc_off), sc);
 }
 
 NODE_DEF
-node_super3(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, korb_ref a0@child, korb_ref a1@child, korb_ref a2@child)
+node_super3(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, korb_ref a0@child, korb_ref a1@child, korb_ref a2@child, struct korb_supcache *sc@ref)
 {
     (void)n; (void)a0; (void)a1; (void)a2;
-    return korb_super_staged(c, slots, mid, line, 3, slots[dc_off], slots[self_off], slots[biseq_off], slots[def_env_off], slots[cself_off], KORB_FBASE_AT(slots, dc_off));
+    return korb_super_staged(c, slots, mid, line, 3, slots[dc_off], slots[self_off], slots[biseq_off], slots[def_env_off], slots[cself_off], KORB_FBASE_AT(slots, dc_off), sc);
 }
 
 // `super(*arr)` — explicit super with splat args.  `args` is the built args
 // Array; spread it above the cursor and dispatch with a runtime argc.  Stages
 // one child (the array), so self_off/dc_off match node_super1's.
 NODE_DEF
-node_super_splat(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, korb_ref args@child)
+node_super_splat(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, korb_ref args@child, struct korb_supcache *sc@ref)
 {
     (void)n; (void)args;
     const korb_value arr  = slots[-1];                         /* the staged args array */
@@ -1771,7 +1771,7 @@ node_super_splat(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t 
     const uint32_t N = VAL2ARY(arr)->len;
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_ary_ptr(VAL2ARY(arr))[i];
     if (N != 0) korb_splat_kwmark(&slots[N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
-    return korb_super(c, slots + N, mid, line, N, dc, self, NULL, NULL, KORB_NIL, KORB_FBASE_AT(slots, dc_off));
+    return korb_super(c, slots + N, mid, line, N, dc, self, NULL, NULL, KORB_NIL, KORB_FBASE_AT(slots, dc_off), sc);
 }
 
 // `super(args) { block }` — explicit super with a literal block.  Args come from a
@@ -1780,7 +1780,7 @@ node_super_splat(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t 
 // per-process NODE pointer (not bakeable).  self_off/dc_off match node_super_splat;
 // def_env_off = self_off+1 (the frame's local base), tagged for the eget path.
 NODE_DEF @noinline
-node_super_blk(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, NODE *block, int32_t def_env_off, korb_ref args@child)
+node_super_blk(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, NODE *block, int32_t def_env_off, korb_ref args@child, struct korb_supcache *sc@ref)
 {
     (void)n; (void)args; (void)block_dispatcher;
     const korb_value arr  = slots[-1];                         /* the staged args array */
@@ -1790,7 +1790,7 @@ node_super_blk(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t li
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_ary_ptr(VAL2ARY(arr))[i];
     if (N != 0) korb_splat_kwmark(&slots[N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
     korb_value *const denv = (korb_value *)((uintptr_t)&slots[def_env_off] | 1u);
-    RESULT r = korb_super(c, slots + N, mid, line, N, dc, self, block, denv, self, KORB_FBASE_AT(slots, dc_off));
+    RESULT r = korb_super(c, slots + N, mid, line, N, dc, self, block, denv, self, KORB_FBASE_AT(slots, dc_off), sc);
     if (r.state == KORB_BREAK && korb_break_owned(c, block, denv)) r.state = KORB_NORMAL;   /* `super { break v }` = v */
     return r;
 }
@@ -1798,7 +1798,7 @@ node_super_blk(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t li
 // `super(args, &blk)` — the block comes from an expression (`&blk`, `&:sym`,
 // `&nil`), converted with #to_proc and forwarded as this frame's block.
 NODE_DEF @noinline
-node_super_blkproc(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t proc_off, korb_ref args@child)
+node_super_blkproc(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t proc_off, korb_ref args@child, struct korb_supcache *sc@ref)
 {
     (void)n; (void)args;
     const korb_value arr  = slots[-1];                         /* the staged args array */
@@ -1811,10 +1811,10 @@ node_super_blkproc(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_ary_ptr(VAL2ARY(arr))[i];
     if (N != 0) korb_splat_kwmark(&slots[N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
     if (pv == KORB_NIL)                                   /* &nil → no block at all */
-        return korb_super(c, slots + N, mid, line, N, dc, self, NULL, NULL, KORB_NIL, KORB_FBASE_AT(slots, dc_off));
+        return korb_super(c, slots + N, mid, line, N, dc, self, NULL, NULL, KORB_NIL, KORB_FBASE_AT(slots, dc_off), sc);
     NODE *iseq = VAL2PROC(pv)->iseq;
     if (iseq == NULL) iseq = KORB_BLK_CPROC;              /* Symbol/Method#to_proc */
-    return korb_super(c, slots + N, mid, line, N, dc, self, iseq, KORB_BLK_FWD, slots[proc_off], KORB_FBASE_AT(slots, dc_off));   /* invoke_method parks cself in the callee frame */
+    return korb_super(c, slots + N, mid, line, N, dc, self, iseq, KORB_BLK_FWD, slots[proc_off], KORB_FBASE_AT(slots, dc_off), sc);   /* invoke_method parks cself in the callee frame */
 }
 
 // `super` / `super(args)` that forwards the CURRENT method's incoming block
@@ -1824,7 +1824,7 @@ node_super_blkproc(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_
 // threaded to korb_super so the parent method's `yield` reaches it.  A tagged
 // biseq cell (|1) means a block was passed; an untagged/zero cell → no block.
 NODE_DEF
-node_super_fwd(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, korb_ref args@child)
+node_super_fwd(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, korb_ref args@child, struct korb_supcache *sc@ref)
 {
     (void)n; (void)args;
     const korb_value arr  = slots[-1];                         /* the staged args array */
@@ -1840,14 +1840,14 @@ node_super_fwd(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t li
     const uint32_t N = VAL2ARY(arr)->len;
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_ary_ptr(VAL2ARY(arr))[i];
     if (N != 0) korb_splat_kwmark(&slots[N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
-    return korb_super(c, slots + N, mid, line, N, dc, self, block, def_env, cself, KORB_FBASE_AT(slots, dc_off));
+    return korb_super(c, slots + N, mid, line, N, dc, self, block, def_env, cself, KORB_FBASE_AT(slots, dc_off), sc);
 }
 
 // bare `super` in a method with positional parameters only: they are the frame's first `np` locals, so
 // they are copied straight into the argument window — node_super_fwd built an Array (+ its items) per call
 // (railsbench: 180k of each an iteration).
 NODE_DEF
-node_super_fwd_lv(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, int32_t loc0_off, uint32_t np)
+node_super_fwd_lv(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t biseq_off, int32_t def_env_off, int32_t cself_off, int32_t loc0_off, uint32_t np, struct korb_supcache *sc@ref)
 {
     (void)n;
     const korb_value dc   = slots[dc_off];
@@ -1864,7 +1864,7 @@ node_super_fwd_lv(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t
     korb_value *const w = slots + 1;
     for (uint32_t i = 0; i < np; i++) w[i] = slots[loc0_off + (int32_t)i];
     if (np != 0) korb_splat_kwmark(&w[np - 1]);   /* as node_super_fwd: a ruby2_keywords Hash is keywords again */
-    return korb_super(c, w + np, mid, line, np, dc, self, block, def_env, cself, KORB_FBASE_AT(slots, dc_off));
+    return korb_super(c, w + np, mid, line, np, dc, self, block, def_env, cself, KORB_FBASE_AT(slots, dc_off), sc);
 }
 
 // `super` written INSIDE a block: the block to forward belongs to the enclosing
@@ -1872,7 +1872,7 @@ node_super_fwd_lv(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t
 // trio_base the method frame's block trio (add-baked at its pop) — the same walk
 // node_yield_outer does.  self / def_class still come from this frame.
 NODE_DEF
-node_super_fwd_outer(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t prev_off, uint32_t depth, int32_t trio_base, korb_ref args@child)
+node_super_fwd_outer(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint32_t line, int32_t self_off, int32_t dc_off, int32_t prev_off, uint32_t depth, int32_t trio_base, korb_ref args@child, struct korb_supcache *sc@ref)
 {
     (void)n; (void)args;
     const korb_value arr  = slots[-1];                         /* the staged args array */
@@ -1894,7 +1894,7 @@ node_super_fwd_outer(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint3
     const uint32_t N = VAL2ARY(arr)->len;
     for (uint32_t i = 0; i < N; i++) slots[i] = korb_ary_ptr(VAL2ARY(arr))[i];
     if (N != 0) korb_splat_kwmark(&slots[N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
-    return korb_super(c, slots + N, mid, line, N, dc, self, block, def_env, cself, KORB_FBASE_AT(slots, dc_off));
+    return korb_super(c, slots + N, mid, line, N, dc, self, block, def_env, cself, KORB_FBASE_AT(slots, dc_off), sc);
 }
 
 // constant read (`Foo`) — classes only for now.  Inline cache: the const table

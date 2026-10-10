@@ -185,6 +185,9 @@ struct korb_oncecell { uint8_t done; };
 /* node_str_frozen: the literal's slot in the fstring pool; node_regexp: in vm->once_vals (+1; 0 = not yet).  The
  * pool is append-only and a GC root, so the index stays valid while the value moves. */
 struct korb_fscache { uint32_t idx_plus1; };
+/* a super site's last answer: (self's class, the running entry) → method.  Dies at every GC (classes may move,
+ * method_serial bumps) and is refilled from the forwarded vm->scache; a site rarely sees a second (class, entry). */
+struct korb_supcache { uint64_t serial; korb_value klass; const struct korb_method *cur; struct korb_method *m; korb_value def_class; };
 
 /* Fat inline cache: besides the resolved entry it copies what the simple-ISEQ
  * fast path needs (body, its dispatcher, frame sizes), so a cached call touches
@@ -404,11 +407,11 @@ RESULT korb_do_prepend(CTX *c, korb_value *slots, korb_value klass, korb_slice m
 /* `super`: invoke mid from def_class's superclass, same self.  args at slots[-argc..]. */
 RESULT korb_super(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
                   korb_value def_class, korb_value self, NODE *block, korb_value *def_env, korb_value captured_self,
-                  const korb_value *frame_top);
+                  const korb_value *frame_top, struct korb_supcache *const sc);
 /* node_super0..3: argc args staged at slots[-argc..-1]; bi/de/cs are the method's block trio cells */
 static inline RESULT korb_super_staged(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
                                        korb_value dc, korb_value self, korb_value bi, korb_value de, korb_value cs,
-                                       const korb_value *frame_base) {
+                                       const korb_value *frame_base, struct korb_supcache *const sc) {
     NODE *block = NULL; korb_value *def_env = NULL; korb_value cself = KORB_NIL;
     if ((uintptr_t)bi & 1u) {                             /* a block was passed to this frame */
         block = (NODE *)((uintptr_t)bi & ~(uintptr_t)1u);
@@ -418,7 +421,7 @@ static inline RESULT korb_super_staged(CTX *c, korb_value *slots, uint32_t mid, 
     /* the window node_super_fwd hands korb_super: one cell above the unstaged cursor */
     korb_value *const w = slots - argc + 1;
     for (uint32_t i = argc; i-- > 0; ) w[i] = slots[(korb_sword_t)i - (korb_sword_t)argc];
-    return korb_super(c, w + argc, mid, line, argc, dc, self, block, def_env, cself, frame_base);
+    return korb_super(c, w + argc, mid, line, argc, dc, self, block, def_env, cself, frame_base, sc);
 }
 
 /* Exception hierarchy (korb_runtime.c) */

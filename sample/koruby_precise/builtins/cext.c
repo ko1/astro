@@ -2458,7 +2458,7 @@ rb_call_super(int argc, const KVALUE *argv)
     for (int i = 0; i < argc; i++) s[i] = K(argv[i]);
     return W(kcx_check(c, korb_super(c, s + argc, e->orig_mid ? e->orig_mid : e->mid, 0, (uint32_t)argc,
                                      (korb_value)((uintptr_t)e | KORB_FID_METHOD), K(f->self), f->block, f->def_env,
-                                     f->captured_self ? *f->captured_self : KORB_NIL, NULL)));
+                                     f->captured_self ? *f->captured_self : KORB_NIL, NULL, NULL)));
 }
 KCX_API KVALUE
 rb_call_super_kw(int argc, const KVALUE *argv, int kw)

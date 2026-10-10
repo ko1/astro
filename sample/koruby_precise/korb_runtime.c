@@ -8541,7 +8541,7 @@ korb_dm_call_check(CTX *const c, korb_value *const slots, const NODE *const iseq
 RESULT
 korb_super(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
            korb_value entry_cell, korb_value self, NODE *block, korb_value *def_env, korb_value captured_self,
-           const korb_value *frame_base)
+           const korb_value *frame_base, struct korb_supcache *const sc)
 {
     if (UNLIKELY(mid == c->vm->mid_dm_super)) {   /* `super` in a define_method body */
         if (UNLIKELY(c->dm_entry == NULL))
@@ -8602,7 +8602,19 @@ korb_super(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc
         }
     }
     korb_value found_def = KORB_NIL;
-    struct korb_method *const m = korb_super_find(c, mid, entry_cell, self, &found_def);
+    struct korb_method *m;
+    if (sc != NULL && LIKELY(((uintptr_t)entry_cell & 7u) == KORB_FID_METHOD)) {
+        /* the site's own answer first: mid is a function of the site and the entry (the define_method / block
+         * cases above derive it from entry_cell), so the key is (self's class, entry) and no hash or entry load */
+        const struct korb_method *const cur = (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)7u);
+        const korb_value dk = korb_dispatch_class(c, self);
+        if (LIKELY(sc->serial == c->vm->method_serial && sc->klass == dk && sc->cur == cur)) {
+            m = sc->m; found_def = sc->def_class;
+        } else {
+            m = korb_super_find(c, mid, entry_cell, self, &found_def);
+            sc->serial = c->vm->method_serial; sc->klass = dk; sc->cur = cur; sc->m = m; sc->def_class = found_def;
+        }
+    } else m = korb_super_find(c, mid, entry_cell, self, &found_def);
     const korb_value def_class = (((uintptr_t)entry_cell & 7u) == KORB_FID_METHOD)
         ? ((const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)7u))->owner : KORB_NIL;
     if (m == NULL && mid == c->vm->mid_new && KORB_CLASS_P(self)) {
