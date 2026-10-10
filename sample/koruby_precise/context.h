@@ -2483,4 +2483,31 @@ struct koruby_option {
 #define OPTION korb_option
 extern struct koruby_option OPTION;
 
+/* A growable byte buffer for building a String's bytes in C (gsub / join):
+ * stack-backed until KORB_BB_SBUF, then malloc.  Replaces open_memstream, whose
+ * FILE + 4 KB calloc and per-fwrite locking were ~25 % of railsbench's gsub. */
+#define KORB_BB_SBUF 512u
+struct korb_bb { char *p; uint32_t len, cap; char sbuf[KORB_BB_SBUF]; };
+static inline void korb_bb_init(struct korb_bb *const b) { b->p = b->sbuf; b->len = 0; b->cap = KORB_BB_SBUF; }
+static inline void korb_bb_free(struct korb_bb *const b) { if (b->p != b->sbuf) free(b->p); }
+static __attribute__((noinline)) void korb_bb_grow(struct korb_bb *const b, const size_t need) {
+    size_t cap = (size_t)b->cap * 2; if (cap < (size_t)b->len + need) cap = (size_t)b->len + need;
+    if (cap > UINT32_MAX) { fprintf(stderr, "koruby_precise: string too long\n"); abort(); }
+    char *const np = b->p == b->sbuf ? memcpy(malloc(cap), b->sbuf, b->len) : realloc(b->p, cap);
+    if (!np) { fprintf(stderr, "koruby_precise: out of memory\n"); abort(); }
+    b->p = np; b->cap = (uint32_t)cap;
+}
+static inline void korb_bb_put(struct korb_bb *const b, const void *const restrict src, const size_t n) {
+    if (UNLIKELY((size_t)b->len + n > b->cap)) korb_bb_grow(b, n);
+    memcpy(b->p + b->len, src, n); b->len += (uint32_t)n;
+}
+static inline void korb_bb_putc(struct korb_bb *const b, const char ch) {
+    if (UNLIKELY(b->len == b->cap)) korb_bb_grow(b, 1);
+    b->p[b->len++] = ch;
+}
+/* Everything written to a memstream by fn lands in b (the slow path for values that only know how to print to a FILE). */
+#define KORB_BB_VIA_FILE(b, fn) do { char *vb_ = NULL; size_t vz_ = 0; FILE *const vf_ = open_memstream(&vb_, &vz_); \
+    if (!vf_) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); } \
+    fn; fclose(vf_); korb_bb_put((b), vb_, vz_); free(vb_); } while (0)
+
 #endif /* KORUBY_CONTEXT_H */

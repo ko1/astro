@@ -865,7 +865,7 @@ static void korb_join_enc_merge(CTX *c, korb_value str, uint32_t *enc, bool *asc
 }
 /* `enc`: the negotiated result encoding (KORB_ENC_USASCII until a non-ASCII-only
  * element sets it; UINT32_MAX once two incompatible ones meet). */
-static RESULT korb_join_rec(CTX *c, korb_value *slots, FILE *ms, korb_ref aref, korb_ref sepref, bool *first, uint32_t *enc, bool *asc, uint32_t bad[2]) {
+static RESULT korb_join_rec(CTX *c, korb_value *slots, struct korb_bb *const ms, korb_ref aref, korb_ref sepref, bool *first, uint32_t *enc, bool *asc, uint32_t bad[2]) {
     if (((AroObjectHeader *)(uintptr_t)KORB_REF_GET(aref))->flags & KORB_FL_JOIN_VISITING)
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "recursive array join");
     ((AroObjectHeader *)(uintptr_t)KORB_REF_GET(aref))->flags |= KORB_FL_JOIN_VISITING;
@@ -906,7 +906,7 @@ static RESULT korb_join_rec(CTX *c, korb_value *slots, FILE *ms, korb_ref aref, 
             if (!*first && KORB_STRING_P(KORB_REF_GET(sepref))) {
                 korb_join_enc_merge(c, KORB_REF_GET(sepref), enc, asc, bad);
                 const KorbString *const sep = VAL2STR(KORB_REF_GET(sepref));
-                fwrite(korb_str_ptr(sep), 1, sep->len, ms);
+                korb_bb_put(ms, korb_str_ptr(sep), sep->len);
             }
             bool inner_first = true;
             rr = korb_join_rec(c, slots + 1, ms, KORB_REF_AT(&slots[0]), sepref, &inner_first, enc, asc, bad);
@@ -917,14 +917,15 @@ static RESULT korb_join_rec(CTX *c, korb_value *slots, FILE *ms, korb_ref aref, 
         if (!*first && KORB_STRING_P(KORB_REF_GET(sepref))) {
             korb_join_enc_merge(c, KORB_REF_GET(sepref), enc, asc, bad);
             const KorbString *const sep = VAL2STR(KORB_REF_GET(sepref));
-            fwrite(korb_str_ptr(sep), 1, sep->len, ms);
+            korb_bb_put(ms, korb_str_ptr(sep), sep->len);
         }
         const korb_value sv = KORB_STRING_P(scalar) ? scalar : (KORB_STRING_P(slots[0]) ? slots[0] : KORB_NIL);
         if (sv != KORB_NIL) {
             korb_join_enc_merge(c, sv, enc, asc, bad);
-            fwrite(korb_str_ptr(VAL2STR(sv)), 1, VAL2STR(sv)->len, ms);   /* String element / #to_str result */
+            korb_bb_put(ms, korb_str_ptr(VAL2STR(sv)), VAL2STR(sv)->len);   /* String element / #to_str result */
         }
-        else korb_fprint_to_s_s(c, slots + 1, ms, slots[0]);           /* immediate / builtin / non-String #to_s (slots: a Class may override it) */
+        else if (FIXNUM_P(slots[0])) { char nb[24]; korb_bb_put(ms, nb, (size_t)snprintf(nb, sizeof nb, "%lld", (long long)FIX2LONG(slots[0]))); }
+        else KORB_BB_VIA_FILE(ms, korb_fprint_to_s_s(c, slots + 1, vf_, slots[0]));           /* immediate / builtin / non-String #to_s (slots: a Class may override it) */
         *first = false;
     }
   done:
@@ -990,23 +991,20 @@ static RESULT korb_m_ary_join(CTX *c, korb_value *slots, korb_ref self, korb_sli
             return RESULT_OK((korb_value)out);
         }
     }
-    char *buf = NULL; size_t sz = 0;
-    FILE *ms = open_memstream(&buf, &sz);
-    if (!ms) { fprintf(stderr, "koruby_precise: open_memstream failed\n"); abort(); }
+    struct korb_bb bb; korb_bb_init(&bb);
     slots[1] = KORB_REF_GET(self);                                 /* root the array across element #to_s GC */
     bool first = true;
     /* slots[0] = separator (String|nil), slots[1] = self; join drives from slots+2.
-     * The memstream buffer is C heap, unaffected by GC during #to_s dispatch. */
+     * The buffer is C memory, unaffected by GC during #to_s dispatch. */
     uint32_t jenc = KORB_JOIN_ENC_NONE, jbad[2] = {0, 0};
     bool jasc = true;
     /* the separator participates, but only after the first element has seeded
        the encoding — it is appended between elements, never in front */
-    RESULT jr = korb_join_rec(c, slots + 2, ms, KORB_REF_AT(&slots[1]), KORB_REF_AT(&slots[0]), &first, &jenc, &jasc, jbad);
-    fclose(ms);
-    if (UNLIKELY(jr.state != KORB_NORMAL)) { free(buf); return jr; }
-    if (UNLIKELY(jenc == UINT32_MAX)) { free(buf); return korb_raise_enc_compat(c, slots + 2, jbad[0], jbad[1]); }
-    RESULT r = korb_str_new(c, slots + 2, buf ? buf : "", (uint32_t)sz);
-    free(buf);
+    RESULT jr = korb_join_rec(c, slots + 2, &bb, KORB_REF_AT(&slots[1]), KORB_REF_AT(&slots[0]), &first, &jenc, &jasc, jbad);
+    if (UNLIKELY(jr.state != KORB_NORMAL)) { korb_bb_free(&bb); return jr; }
+    if (UNLIKELY(jenc == UINT32_MAX)) { korb_bb_free(&bb); return korb_raise_enc_compat(c, slots + 2, jbad[0], jbad[1]); }
+    RESULT r = korb_str_new(c, slots + 2, bb.p, bb.len);
+    korb_bb_free(&bb);
     if (LIKELY(r.state == KORB_NORMAL) && jenc != KORB_JOIN_ENC_NONE)
         KORB_STR_ENC_SET(r.value, jenc);
     return r;

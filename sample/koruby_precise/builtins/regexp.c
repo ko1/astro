@@ -1523,16 +1523,16 @@ static RESULT korb_m_str_scan(CTX *c, korb_value *slots, korb_ref self, korb_sli
 }
 
 /* ---- String#gsub/sub with a Regexp (forward-declared for string.c) -------- */
-static void korb_re_expand_repl(CTX *c, FILE *ms, const char *rep, uint32_t rn, const char *subj, uint32_t slen, const korb_re_match_t *m, korb_value re) {
+static void korb_re_expand_repl(CTX *c, struct korb_bb *const ms, const char *rep, uint32_t rn, const char *subj, uint32_t slen, const korb_re_match_t *m, korb_value re) {
     for (uint32_t i = 0; i < rn; i++) {
         if (rep[i] == '\\' && i + 1 < rn) {
             char nx = rep[i + 1];
-            if (nx >= '0' && nx <= '9') { int g = nx - '0'; if (g <= m->n_groups && m->starts[g] >= 0) fwrite(subj + m->starts[g], 1, (size_t)(m->ends[g] - m->starts[g]), ms); i++; continue; }
-            else if (nx == '&') { if (m->starts[0] >= 0) fwrite(subj + m->starts[0], 1, (size_t)(m->ends[0] - m->starts[0]), ms); i++; continue; }
-            else if (nx == '+') { for (int g = m->n_groups; g >= 1; g--) if (m->starts[g] >= 0) { fwrite(subj + m->starts[g], 1, (size_t)(m->ends[g] - m->starts[g]), ms); break; } i++; continue; }
-            else if (nx == '`') { fwrite(subj, 1, (size_t)m->starts[0], ms); i++; continue; }
-            else if (nx == '\'') { fwrite(subj + m->ends[0], 1, (size_t)(slen - m->ends[0]), ms); i++; continue; }
-            else if (nx == '\\') { fputc('\\', ms); i++; continue; }
+            if (nx >= '0' && nx <= '9') { int g = nx - '0'; if (g <= m->n_groups && m->starts[g] >= 0) korb_bb_put(ms, subj + m->starts[g], (size_t)(m->ends[g] - m->starts[g])); i++; continue; }
+            else if (nx == '&') { if (m->starts[0] >= 0) korb_bb_put(ms, subj + m->starts[0], (size_t)(m->ends[0] - m->starts[0])); i++; continue; }
+            else if (nx == '+') { for (int g = m->n_groups; g >= 1; g--) if (m->starts[g] >= 0) { korb_bb_put(ms, subj + m->starts[g], (size_t)(m->ends[g] - m->starts[g])); break; } i++; continue; }
+            else if (nx == '`') { korb_bb_put(ms, subj, (size_t)m->starts[0]); i++; continue; }
+            else if (nx == '\'') { korb_bb_put(ms, subj + m->ends[0], (size_t)(slen - m->ends[0])); i++; continue; }
+            else if (nx == '\\') { korb_bb_putc(ms, '\\'); i++; continue; }
             else if (nx == 'k' && i + 2 < rn && rep[i + 2] == '<') {
                 uint32_t j = i + 3; while (j < rn && rep[j] != '>') j++;
                 int gi = -1; korb_re_named_fn_t nf = (korb_re_named_fn_t)c->vm->re_named_fn;
@@ -1546,16 +1546,16 @@ static void korb_re_expand_repl(CTX *c, FILE *ms, const char *rep, uint32_t rn, 
                         if (strlen(gn) != j - (i + 3) || memcmp(gn, rep + i + 3, j - (i + 3)) != 0) continue;
                         if (idx <= m->n_groups && m->starts[idx] >= 0) gi = idx;   /* participated */
                         else if (gi < 0) gi = idx; } }
-                if (gi >= 0 && gi <= m->n_groups && m->starts[gi] >= 0) fwrite(subj + m->starts[gi], 1, (size_t)(m->ends[gi] - m->starts[gi]), ms);
+                if (gi >= 0 && gi <= m->n_groups && m->starts[gi] >= 0) korb_bb_put(ms, subj + m->starts[gi], (size_t)(m->ends[gi] - m->starts[gi]));
                 i = j; continue;
             }
         }
-        fputc(rep[i], ms);
+        korb_bb_putc(ms, rep[i]);
     }
 }
 /* korb_re_expand_repl for a UTF-16/32 replacement: `\\1` etc. are code units,
  * not bytes.  (\\k<name> is not expanded here.) */
-static void korb_re_expand_repl_wide(FILE *ms, const char *rep, uint32_t rn, const char *subj, uint32_t slen,
+static void korb_re_expand_repl_wide(struct korb_bb *const ms, const char *rep, uint32_t rn, const char *subj, uint32_t slen,
                                      const korb_re_match_t *m, const uint32_t unit, const bool be) {
     const unsigned char *const r = (const unsigned char *)rep;
     for (uint32_t i = 0; i + unit <= rn; i += unit) {
@@ -1567,13 +1567,13 @@ static void korb_re_expand_repl_wide(FILE *ms, const char *rep, uint32_t rn, con
             else if (nx == '+') { for (int g = m->n_groups; g >= 1; g--) if (m->starts[g] >= 0) { b = m->starts[g]; e = m->ends[g]; break; } }
             else if (nx == '`') { b = 0; e = m->starts[0]; }
             else if (nx == '\'') { b = m->ends[0]; e = (long)slen; }
-            else if (nx == '\\') { fwrite(r + i, 1, unit, ms); i += unit; continue; }
-            else { fwrite(r + i, 1, unit, ms); continue; }
-            if (b >= 0 && e >= b) fwrite(subj + b, 1, (size_t)(e - b), ms);
+            else if (nx == '\\') { korb_bb_put(ms, r + i, unit); i += unit; continue; }
+            else { korb_bb_put(ms, r + i, unit); continue; }
+            if (b >= 0 && e >= b) korb_bb_put(ms, subj + b, (size_t)(e - b));
             i += unit;
             continue;
         }
-        fwrite(r + i, 1, unit, ms);
+        korb_bb_put(ms, r + i, unit);
     }
 }
 /* String/Symbol → a literal (all-metachars-escaped) Regexp, for String-pattern
@@ -1583,13 +1583,13 @@ RESULT korb_re_literal_regexp(CTX *c, korb_value *slots, korb_value pv, korb_val
 }
 /* Emit v into ms as a String, dispatching a user-defined #to_s (CRuby coerces
  * gsub block results and Hash-replacement values with #to_s). */
-static RESULT korb_emit_to_s(CTX *c, korb_value *slots, FILE *ms, korb_value v) {
-    if (KORB_STRING_P(v)) { const KorbString *r = VAL2STR(v); fwrite(korb_str_ptr(r), 1, r->len, ms); return RESULT_OK(KORB_NIL); }
+static RESULT korb_emit_to_s(CTX *c, korb_value *slots, struct korb_bb *const ms, korb_value v) {
+    if (KORB_STRING_P(v)) { const KorbString *r = VAL2STR(v); korb_bb_put(ms, korb_str_ptr(r), r->len); return RESULT_OK(KORB_NIL); }
     slots[0] = v;
     RESULT sr = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "to_s", 4), 0, 0, NULL, NULL, NULL);
     if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-    if (KORB_STRING_P(sr.value)) { const KorbString *r = VAL2STR(sr.value); fwrite(korb_str_ptr(r), 1, r->len, ms); }
-    else korb_fprint_to_s(c, ms, sr.value);
+    if (KORB_STRING_P(sr.value)) { const KorbString *r = VAL2STR(sr.value); korb_bb_put(ms, korb_str_ptr(r), r->len); }
+    else KORB_BB_VIA_FILE(ms, korb_fprint_to_s(c, vf_, sr.value));
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_m_hash_aref(CTX *c, korb_value *slots, korb_ref self, korb_slice a);   /* fwd (hash.c) */
@@ -1646,7 +1646,7 @@ RESULT korb_re_str_gsub(CTX *c, korb_value *slots, korb_ref self, korb_slice a, 
             } else { free(src); return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, rv)); }
         }
     }
-    char *buf = NULL; size_t bz = 0; FILE *ms = open_memstream(&buf, &bz);
+    struct korb_bb bb_; struct korb_bb *const ms = &bb_; korb_bb_init(ms);
     long off = 0; bool replaced = false;
     /* the result encoding is negotiated with every replacement, as CRuby does */
     const uint32_t senc = KORB_STR_ENC(KORB_REF_GET(self));
@@ -1661,12 +1661,12 @@ RESULT korb_re_str_gsub(CTX *c, korb_value *slots, korb_ref self, korb_slice a, 
                 { renc_bad = true; renc_other = senc; } \
             break; \
         } \
-        fwrite((p), 1, kn_, ms); \
+        korb_bb_put(ms, (p), kn_); \
     } while (0)
     korb_re_match_t last_m; bool have_last = false;   /* POD copy of the final match → $~ after the loop */
     while (off <= (long)sn) {
         korb_re_match_t m; RESULT rr = korb_re_run(c, slots + 3, slots[1], slots[0], (size_t)off, &m);
-        if (UNLIKELY(rr.state != KORB_NORMAL)) { free(src); free(rep); fclose(ms); free(buf); return rr; }
+        if (UNLIKELY(rr.state != KORB_NORMAL)) { free(src); free(rep); korb_bb_free(ms); return rr; }
         if (rr.value != KORB_TRUE) break;
         korb_re_match_copy(&last_m, &m); have_last = true;
         const long ms0 = m.starts[0], me0 = m.ends[0];
@@ -1675,16 +1675,16 @@ RESULT korb_re_str_gsub(CTX *c, korb_value *slots, korb_ref self, korb_slice a, 
             slots[3] = UNWRAP(korb_re_build_md(c, slots + 3, slots[0], slots[1], &m)); korb_re_set_lastmatch(c, slots[3]);
             slots[4] = UNWRAP(korb_md_group(c, slots + 4, slots[3], 0));
             RESULT yr = korb_block_yield(c, slots + 5, block, def_env, &slots[4], 1, cself);
-            if (UNLIKELY(yr.state != KORB_NORMAL)) { free(src); fclose(ms); free(buf); return yr; }
+            if (UNLIKELY(yr.state != KORB_NORMAL)) { free(src); korb_bb_free(ms); return yr; }
             if (in_place && UNLIKELY(VAL2STR(slots[0])->len != sn)) {   /* the block resized self under us */
-                free(src); fclose(ms); free(buf);
+                free(src); korb_bb_free(ms);
                 return korb_raise(c, slots + 4, KORB_E_RUNTIME, 0, "string modified");
             }
             slots[4] = yr.value;
             if (KORB_STRING_P(slots[4]) && !renc_bad && !korb_str_enc_fold(c->vm, &renc, &rasc, slots[4]))
                 { renc_bad = true; renc_other = KORB_STR_ENC(slots[4]); }
             RESULT er = korb_emit_to_s(c, slots + 5, ms, slots[4]);
-            if (UNLIKELY(er.state != KORB_NORMAL)) { free(src); free(rep); fclose(ms); free(buf); return er; }
+            if (UNLIKELY(er.state != KORB_NORMAL)) { free(src); free(rep); korb_bb_free(ms); return er; }
         } else if (hashrep != KORB_NIL) {
             const uint32_t ml = (uint32_t)(me0 - ms0);
             slots[3] = UNWRAP(korb_str_new(c, slots + 3, src + ms0, ml));   /* whole match = hash key */
@@ -1695,12 +1695,12 @@ RESULT korb_re_str_gsub(CTX *c, korb_value *slots, korb_ref self, korb_slice a, 
             slots[4] = slots[2];
             slots[5] = slots[3];
             RESULT hr = korb_m_hash_aref(c, slots + 6, KORB_REF_AT(&slots[4]), KORB_SLICE_MAKE(&slots[5], 1));
-            if (UNLIKELY(hr.state != KORB_NORMAL)) { free(src); free(rep); fclose(ms); free(buf); return hr; }
+            if (UNLIKELY(hr.state != KORB_NORMAL)) { free(src); free(rep); korb_bb_free(ms); return hr; }
             slots[4] = hr.value;
             if (KORB_STRING_P(slots[4]) && !renc_bad && !korb_str_enc_fold(c->vm, &renc, &rasc, slots[4]))
                 { renc_bad = true; renc_other = KORB_STR_ENC(slots[4]); }
             RESULT er = korb_emit_to_s(c, slots + 5, ms, slots[4]);        /* nil → "", else #to_s */
-            if (UNLIKELY(er.state != KORB_NORMAL)) { free(src); free(rep); fclose(ms); free(buf); return er; }
+            if (UNLIKELY(er.state != KORB_NORMAL)) { free(src); free(rep); korb_bb_free(ms); return er; }
         } else {
             if (!rep_asc && !renc_bad && !korb_str_enc_fold_raw(c->vm, &renc, &rasc, rep_enc, false))
                 { renc_bad = true; renc_other = rep_enc; }
@@ -1726,15 +1726,15 @@ RESULT korb_re_str_gsub(CTX *c, korb_value *slots, korb_ref self, korb_slice a, 
     }
     if (off <= (long)sn) KORB_GSUB_KEEP(src + off, (size_t)(sn - off));
     #undef KORB_GSUB_KEEP
-    fclose(ms); free(src); free(rep);
+    free(src); free(rep);
     /* $~ = MatchData of the last match (nil if none), for access after gsub returns */
     if (have_last) {
         slots[3] = UNWRAP(korb_re_build_md(c, slots + 3, slots[0], slots[1], &last_m)); korb_re_set_lastmatch(c, slots[3]);
         if (in_place) CHECK(korb_re_lastmatch_detach(c, slots + 4));   /* $~ keeps the pre-substitution text */
     }
     else korb_re_set_lastmatch(c, KORB_NIL);
-    if (renc_bad) { free(buf); return korb_raise_enc_compat(c, slots + 3, KORB_STR_ENC(KORB_REF_GET(self)), renc_other); }
-    RESULT nr = korb_str_new(c, slots + 3, buf ? buf : "", (uint32_t)bz); free(buf);
+    if (renc_bad) { korb_bb_free(ms); return korb_raise_enc_compat(c, slots + 3, KORB_STR_ENC(KORB_REF_GET(self)), renc_other); }
+    RESULT nr = korb_str_new(c, slots + 3, ms->p, ms->len); korb_bb_free(ms);
     if (UNLIKELY(nr.state != KORB_NORMAL)) return nr;
     KORB_STR_ENC_SET(nr.value, renc);   /* self's encoding, widened by the replacements */
     if (!in_place) return nr;
