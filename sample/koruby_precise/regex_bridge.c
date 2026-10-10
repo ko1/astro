@@ -28,7 +28,7 @@ typedef struct koruby_re_match {
 
 /* ---- compiled-pattern cache (direct-mapped, source+flags keyed) ---------- */
 #define KRE_CACHE_SLOTS 16384   /* 2-way (slot, slot ^ 1): Rails' patterns thrashed a 1024-entry direct map (recompile per request) */
-typedef struct { char *pat; size_t len; unsigned flags; astrogre_pattern *p; } kre_cache_ent;
+typedef struct { char *pat; size_t len; unsigned flags; astrogre_pattern *p; unsigned gen; } kre_cache_ent;   /* gen: bumped whenever the slot's pattern changes (a handle = slot + gen) */
 static kre_cache_ent g_cache[KRE_CACHE_SLOTS];
 
 static uint64_t kre_hash(const char *b, size_t n, unsigned flags) {
@@ -44,49 +44,45 @@ static uint64_t kre_hash(const char *b, size_t n, unsigned flags) {
 #define KRE_MEMO_SLOTS 64
 static struct { const char *pat; size_t len; unsigned flags, slot; } g_memo[KRE_MEMO_SLOTS];
 
-/* Compile `pat`/`flags` (or return the cached pattern).  NULL on compile error. */
-static astrogre_pattern *kre_get(const char *pat, size_t patlen, unsigned flags) {
+/* Compile `pat`/`flags` (or return the cached entry).  NULL on compile error. */
+static kre_cache_ent *kre_get_ent(const char *pat, size_t patlen, unsigned flags) {
     const unsigned mi = (unsigned)(((uintptr_t)pat >> 4) % KRE_MEMO_SLOTS);
     if (g_memo[mi].pat == pat && g_memo[mi].len == patlen && g_memo[mi].flags == flags) {
-        const kre_cache_ent *const m = &g_cache[g_memo[mi].slot];
+        kre_cache_ent *const m = &g_cache[g_memo[mi].slot];
         if (m->p && m->len == patlen && m->flags == flags && (patlen == 0 || memcmp(m->pat, pat, patlen) == 0))
-            return m->p;
+            return m;
     }
     const unsigned idx = (unsigned)(kre_hash(pat, patlen, flags) % KRE_CACHE_SLOTS);
     g_memo[mi].pat = pat; g_memo[mi].len = patlen; g_memo[mi].flags = flags; g_memo[mi].slot = idx;
     kre_cache_ent *e = &g_cache[idx];
     if (e->p && e->len == patlen && e->flags == flags &&
         (patlen == 0 || memcmp(e->pat, pat, patlen) == 0))
-        return e->p;
+        return e;
     kre_cache_ent *const e2 = &g_cache[idx ^ 1u];
     if (e2->p && e2->len == patlen && e2->flags == flags &&
         (patlen == 0 || memcmp(e2->pat, pat, patlen) == 0)) {
+        const unsigned ge = e->gen, ge2 = e2->gen;
         const kre_cache_ent t = *e; *e = *e2; *e2 = t;   /* most recent in front */
-        return e->p;
+        e->gen = ge + 1; e2->gen = ge2 + 1;             /* both slots changed: handles into them go stale */
+        return e;
     }
     astrogre_pattern *np = astrogre_parse(pat, patlen, flags);
     if (np == NULL) return NULL;
     if (e2->p) { astrogre_pattern_free(e2->p); free(e2->pat); }   /* evict the older → fully released (astrogre owns the AST) */
-    *e2 = *e;
+    const unsigned ge = e->gen, ge2 = e2->gen;
+    *e2 = *e; e2->gen = ge2 + 1;
     e->p = NULL; e->pat = NULL;
     e->pat = (char *)malloc(patlen ? patlen : 1);
     if (patlen) memcpy(e->pat, pat, patlen);
-    e->len = patlen; e->flags = flags; e->p = np;
-    return np;
+    e->len = patlen; e->flags = flags; e->p = np; e->gen = ge + 1;
+    return e;
 }
-
-/* Search `str[start..]` for `pat` (compiled with prism-compatible `flags`).
- * Returns 1 on match (filling *out with per-group byte spans), 0 no match,
- * -1 compile error.  `out` may be NULL for a boolean match test. */
-__attribute__((visibility("default")))
-/* koruby calls this on fiber / green-thread switches with its own C-stack
- * floor, so astrogre's \g<> recursion guard uses the stack we run on. */
-void koruby_re_set_stack_floor(const void *floor) { astrogre_set_stack_floor((uintptr_t)floor); }
-
-int koruby_re_exec(const char *pat, size_t patlen, unsigned flags,
-                   const char *str, size_t slen, size_t start, koruby_re_match *out) {
-    astrogre_pattern *p = kre_get(pat, patlen, flags);
-    if (p == NULL) return -1;
+static astrogre_pattern *kre_get(const char *pat, size_t patlen, unsigned flags) {
+    kre_cache_ent *const e = kre_get_ent(pat, patlen, flags);
+    return e ? e->p : NULL;
+}
+/* Run `p` over str[start..] into *out (the body of koruby_re_exec). */
+static int kre_run(astrogre_pattern *p, const char *str, size_t slen, size_t start, koruby_re_match *out) {
     astrogre_match_t m;
     m.matched = false; m.n_groups = 0;
     m.overflow = false;
@@ -106,6 +102,36 @@ int koruby_re_exec(const char *pat, size_t patlen, unsigned flags,
         }
     }
     return 1;
+}
+/* A handle (cache slot + its generation) for `pat`/`flags`, so a Regexp object can run its
+ * compiled pattern without re-hashing or memcmp'ing the source per match.  0 ok, -1 compile error. */
+__attribute__((visibility("default")))
+int koruby_re_handle(const char *pat, size_t patlen, unsigned flags, unsigned *slot, unsigned *gen) {
+    const kre_cache_ent *const e = kre_get_ent(pat, patlen, flags);
+    if (e == NULL) return -1;
+    *slot = (unsigned)(e - g_cache); *gen = e->gen;
+    return 0;
+}
+/* koruby_re_exec through a handle: -3 when the slot no longer holds that pattern (re-handle). */
+__attribute__((visibility("default")))
+int koruby_re_exec_h(unsigned slot, unsigned gen, const char *str, size_t slen, size_t start, koruby_re_match *out) {
+    if (slot >= KRE_CACHE_SLOTS || g_cache[slot].gen != gen || g_cache[slot].p == NULL) return -3;
+    return kre_run(g_cache[slot].p, str, slen, start, out);
+}
+
+/* Search `str[start..]` for `pat` (compiled with prism-compatible `flags`).
+ * Returns 1 on match (filling *out with per-group byte spans), 0 no match,
+ * -1 compile error.  `out` may be NULL for a boolean match test. */
+__attribute__((visibility("default")))
+/* koruby calls this on fiber / green-thread switches with its own C-stack
+ * floor, so astrogre's \g<> recursion guard uses the stack we run on. */
+void koruby_re_set_stack_floor(const void *floor) { astrogre_set_stack_floor((uintptr_t)floor); }
+
+int koruby_re_exec(const char *pat, size_t patlen, unsigned flags,
+                   const char *str, size_t slen, size_t start, koruby_re_match *out) {
+    astrogre_pattern *p = kre_get(pat, patlen, flags);
+    if (p == NULL) return -1;
+    return kre_run(p, str, slen, start, out);
 }
 
 /* Number of capture groups (excluding group 0) for `pat`; -1 on compile error. */

@@ -346,7 +346,22 @@ static RESULT korb_re_run(CTX *c, korb_value *slots, korb_value re, korb_value s
     if (sb_subj && !(eff_flags & (512u | KORB_RE_U8FIX))) eff_flags |= 128u;   /* a UTF-8-fixed pattern passed korb_re_check_enc: the subject is ASCII */
     if (UNLIKELY(KORB_STR_ENC(VAL2RE(re)->source) != KORB_ENC_UTF8) && korb_re_pat_bytewise_p(c->vm, re)) eff_flags |= 128u;
     eff_flags &= ~KORB_RE_DERIVED;
-    const int rc = fn(korb_str_ptr(pat), pat->len, eff_flags, korb_str_ptr(s), s->len, startb, m);
+    /* The Regexp keeps the engine's handle for (source, eff_flags): the per-match re-hash / memcmp of the
+     * source (railsbench: kre_get 0.6% of cycles) goes away; a stale handle (-3: the slot was reused) is re-taken. */
+    int rc = -3;
+    KorbRegexp *const rp = VAL2RE(re);
+    if (LIKELY(c->vm->re_exec_h_fn != NULL)) {
+        if (LIKELY(rp->rvalid && rp->rflags == eff_flags))
+            rc = ((korb_re_exec_h_fn_t)c->vm->re_exec_h_fn)(rp->rslot, rp->rgen, korb_str_ptr(s), s->len, startb, m);
+        if (rc == -3) {
+            unsigned slot, gen;
+            if (((korb_re_handle_fn_t)c->vm->re_handle_fn)(korb_str_ptr(pat), pat->len, eff_flags, &slot, &gen) == 0) {
+                rp->rslot = slot; rp->rgen = gen; rp->rflags = eff_flags; rp->rvalid = 1;
+                rc = ((korb_re_exec_h_fn_t)c->vm->re_exec_h_fn)(slot, gen, korb_str_ptr(s), s->len, startb, m);
+            }
+        }
+    }
+    if (rc == -3) rc = fn(korb_str_ptr(pat), pat->len, eff_flags, korb_str_ptr(s), s->len, startb, m);
     if (UNLIKELY(rc == -2)) return korb_raise(c, slots, KORB_E_REGEXP, 0, "regexp match stack overflow");
     if (UNLIKELY(rc < 0)) {
         const char *const m = korb_re_error(c->vm);

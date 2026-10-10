@@ -404,6 +404,8 @@ typedef struct KorbRegexp {
      * here); astrogre's backtrack floor is what bounds a runaway pattern. */
     korb_value ARO_GC_EDGE timeout;
     korb_value ARO_GC_EDGE to_s;          /* #to_s's String, kept (a pattern never changes; each call returns a copy), 0 / nil = not yet */
+    uint32_t rslot, rgen, rflags;    /* the engine's handle for (source, rflags): run without re-hashing the source; rvalid = set */
+    uint8_t rvalid;
 } KorbRegexp;
 /* the flag bits that take part in Regexp identity (bit 7 is the "source is
  * already the literal's encoding" marker, not part of ==) */
@@ -1420,6 +1422,8 @@ struct korb_vm {
     void     *re_valid_fn;   /* koruby_re_valid */
     void     *re_err_fn;     /* koruby_re_error — why the last compile failed */
     void     *re_floor_fn;   /* koruby_re_set_stack_floor */
+    void     *re_handle_fn;  /* koruby_re_handle (NULL with an older engine) */
+    void     *re_exec_h_fn;  /* koruby_re_exec_h */
 
     /* exception etype → constant name (class looked up via the const table, so
      * no separate GC root needed).  Index by enum korb_etype. */

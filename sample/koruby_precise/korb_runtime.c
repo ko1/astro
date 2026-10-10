@@ -4336,6 +4336,8 @@ static inline void korb_re_match_copy(korb_re_match_t *restrict d, const korb_re
     memcpy(d->ends, s->ends, sizeof(long) * ng);
 }
 typedef int (*korb_re_exec_fn_t)(const char *, size_t, unsigned, const char *, size_t, size_t, korb_re_match_t *);
+typedef int (*korb_re_handle_fn_t)(const char *, size_t, unsigned, unsigned *, unsigned *);
+typedef int (*korb_re_exec_h_fn_t)(unsigned, unsigned, const char *, size_t, size_t, korb_re_match_t *);
 typedef const char *(*korb_re_named_fn_t)(const char *, size_t, unsigned, int, int *);
 typedef int (*korb_re_name_groups_fn_t)(const char *, size_t, unsigned, const char *, size_t, int *, int);
 typedef int (*korb_re_valid_fn_t)(const char *, size_t, unsigned);
@@ -4375,8 +4377,12 @@ extern int koruby_re_name_groups(const char *, size_t, unsigned, const char *, s
 extern int koruby_re_valid(const char *, size_t, unsigned);
 extern void koruby_re_set_stack_floor(const void *);
 extern const char *koruby_re_error(void);
+extern int koruby_re_handle(const char *, size_t, unsigned, unsigned *, unsigned *);
+extern int koruby_re_exec_h(unsigned, unsigned, const char *, size_t, size_t, void *);
 static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
     if (vm->re_fn == NULL) {
+        vm->re_handle_fn = (void *)koruby_re_handle;
+        vm->re_exec_h_fn = (void *)koruby_re_exec_h;
         vm->re_fn       = (void *)koruby_re_exec;
         vm->re_named_fn = (void *)koruby_re_named;
         vm->re_name_groups_fn = (void *)koruby_re_name_groups;
@@ -4396,6 +4402,9 @@ static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
         vm->re_valid_fn = h ? dlsym(h, "koruby_re_valid") : NULL;
         vm->re_floor_fn = h ? dlsym(h, "koruby_re_set_stack_floor") : NULL;
         vm->re_err_fn   = h ? dlsym(h, "koruby_re_error") : NULL;
+        vm->re_handle_fn = h ? dlsym(h, "koruby_re_handle") : NULL;
+        vm->re_exec_h_fn = h ? dlsym(h, "koruby_re_exec_h") : NULL;
+        if (vm->re_handle_fn == NULL || vm->re_exec_h_fn == NULL) vm->re_handle_fn = vm->re_exec_h_fn = NULL;
         if (vm->re_fn == NULL) vm->re_fn = (void *)(korb_sword_t)-1;   /* mark load failure */
     }
     return vm->re_fn == (void *)(korb_sword_t)-1 ? NULL : (korb_re_exec_fn_t)vm->re_fn;
@@ -8978,7 +8987,8 @@ korb_default_eq_p(CTX *c, korb_value v, uint32_t mid)
 {
     const korb_value dcls = korb_dispatch_class(c, v);
     if (!KORB_CLASS_P(dcls)) return true;
-    const struct korb_method *const m = korb_class_find_method(dcls, mid, NULL);
+    korb_value def = KORB_NIL;
+    const struct korb_method *const m = korb_mcache_find(c->vm, dcls, mid, &def);   /* cached: the default `==` sits at the bottom of the MRO */
     return m == NULL || m->kind == KORB_METHOD_CFUNC;   /* only the C defaults on Object/BasicObject are CFUNCs here */
 }
 static RESULT korb_m_obj_eq(CTX *c, korb_value *slots, korb_ref self, korb_slice a);    /* fwd (builtins/symbol.c): BasicObject#== */
