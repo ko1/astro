@@ -4854,7 +4854,7 @@ RESULT korb_kernel_user_method(CTX *c, korb_value *slots, korb_value self, uint3
     const korb_value dc = korb_dispatch_class(c, self);
     if (!KORB_CLASS_P(dc)) return RESULT_OK(KORB_NIL);
     korb_value def = KORB_NIL;
-    struct korb_method *const um = korb_class_find_method(dc, mid, &def);
+    struct korb_method *const um = korb_mcache_find(c->vm, dc, mid, &def);
     /* Only a RUBY-defined method counts as an override: koruby's own Kernel
      * entries are BUILTIN (`binding`) or CFUNC (`proc` / `lambda`), and
      * dispatching those instead of the node is both slower and wrong. */
@@ -8943,7 +8943,7 @@ korb_new_undefined_p(CTX *c, korb_value cls)
     while (KORB_CLASS_P(k) && !VAL2CLASS(k)->no_new) k = VAL2CLASS(k)->superclass;
     if (!KORB_CLASS_P(k)) return false;
     korb_value def = KORB_NIL;
-    const struct korb_method *const m = korb_class_find_method(korb_dispatch_class(c, cls), c->vm->mid_new, &def);
+    const struct korb_method *const m = korb_mcache_find(c->vm, korb_dispatch_class(c, cls), c->vm->mid_new, &def);
     return m == NULL || m->kind == KORB_METHOD_UNDEF;
 }
 
@@ -15815,7 +15815,7 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
             if (base == KORB_C_STRING || base == KORB_C_ARRAY || base == KORB_C_HASH || base == KORB_C_SET) {
                 uint32_t imid = vm->mid_initialize;
                 korb_value idef = KORB_NIL;
-                struct korb_method *uinit = korb_class_find_method(*recv_slot, imid, &idef);
+                struct korb_method *uinit = korb_mcache_find(vm, *recv_slot, imid, &idef);
                 /* a builtin CFUNC initialize (e.g. Array#initialize for send) is
                  * not a user override — only ISEQ bodies customize construction. */
                 if (uinit && uinit->kind != KORB_METHOD_ISEQ) uinit = NULL;
@@ -15919,7 +15919,7 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
         /* find initialize AFTER the alloc-GC, re-reading the class from the
          * rooted recv slot (the pre-alloc class pointer would be stale). */
         korb_value init_def = KORB_NIL;
-        struct korb_method *init = korb_class_find_method(*recv_slot, init_mid, &init_def);
+        struct korb_method *init = korb_mcache_find(vm, *recv_slot, init_mid, &init_def);
         if (init) {
             korb_value *base = slots - argc;
             base[-1] = obj;                    /* stage obj as self at the frame's bottom header */
