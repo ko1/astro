@@ -804,6 +804,9 @@ typedef struct KorbClass {
     uint8_t  alloc_plain;            /* Class#allocate: 0=unknown, 1=a generic object (Object-based user class), 2=special */
     uint32_t new_kind_serial;        /* method_serial the new_kind above was classified at: a later `def self.new`
                                       * (or an rspec stub) turns a plain class into a special one */
+    uint8_t  sp_undef_known, sp_undef_ans;   /* korb_method_undefed_p's answer for new / send / __send__ / public_send
+                                      * (bits 0..3), valid while sp_undef_serial == the vm's method_serial */
+    uint32_t sp_undef_serial;
     uint8_t  send_user;              /* 0x80 valid | bit 0/1/2: the chain defines its own send / __send__ / public_send */
     uint8_t  ivar_hint;              /* an instance got ivars: korb_obj_new gives the next ones their first values array */
     uint8_t  bi_base;                /* korb_builtin_base_class's answer + 1 (0 = not asked since boot): the superclass chain is fixed */

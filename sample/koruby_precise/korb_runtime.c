@@ -6774,12 +6774,33 @@ korb_class_find_method(korb_value klass, uint32_t mid, korb_value *out_def)
  * reports a tombstone as "missing", which is right for the table-driven names —
  * but send / __send__ / public_send / new are dispatched without a table entry,
  * so only this can hide them. */
+static bool korb_method_undefed_uc(struct korb_vm *vm, korb_value klass, uint32_t mid);
 static bool
 korb_method_undefed_p(struct korb_vm *vm, korb_value klass, uint32_t mid)
 {
     /* only a name some undef ever named can be hidden: the walk below visits every ancestor when
      * nothing is undefined (railsbench: ~280k walks per iteration from the send / new dispatch) */
     if (LIKELY(mid >= vm->mid_undefed_cap || !vm->mid_undefed[mid])) return false;
+    if (LIKELY(KORB_CLASS_P(klass))) {
+        /* the names that get past the fast-no are the dispatch special cases only (railsbench: new 147k,
+         * send 90k, public_send 25k per iteration, acct57), so the class keeps those answers itself: the
+         * (klass, mid) ucache line was cold on every probe */
+        const int b = mid == vm->mid_new ? 0 : mid == vm->mid_send ? 1 : mid == vm->mid___send__ ? 2 : mid == vm->mid_public_send ? 3 : -1;
+        if (b >= 0) {
+            KorbClass *const k = VAL2CLASS(klass);
+            if (k->sp_undef_serial != vm->method_serial) { k->sp_undef_known = 0; k->sp_undef_ans = 0; k->sp_undef_serial = vm->method_serial; }
+            else if (k->sp_undef_known & (1u << b)) return (k->sp_undef_ans >> b) & 1u;
+            const bool ans = korb_method_undefed_uc(vm, klass, mid);
+            k->sp_undef_known |= (uint8_t)(1u << b);
+            if (ans) k->sp_undef_ans |= (uint8_t)(1u << b);
+            return ans;
+        }
+    }
+    return korb_method_undefed_uc(vm, klass, mid);
+}
+static bool
+korb_method_undefed_uc(struct korb_vm *vm, korb_value klass, uint32_t mid)
+{
     struct korb_ucache_ent *const e =
         &vm->ucache[(((uint32_t)((uintptr_t)klass >> 4)) ^ (mid * 2654435761u)) & (sizeof vm->ucache / sizeof vm->ucache[0] - 1)];
     if (LIKELY(e->serial == vm->method_serial && e->klass == klass && e->mid == mid)) return e->ans;
