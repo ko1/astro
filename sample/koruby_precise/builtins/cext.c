@@ -41,8 +41,9 @@ struct korb_cext_alloc { uint32_t class_serial; rb_alloc_func_kcx fn; };
 struct korb_cext_vm {
     struct korb_cext_block *blocks;
     korb_value *free_list;                /* free cells, chained through the cell word */
-    /* object → cell (open addressing, rebuilt after every collection) */
-    korb_value **map; uint32_t map_capa, map_n;
+    /* object → cell (open addressing, rebuilt after every collection).  The value sits beside the cell: a probe
+     * then reads one line, not the cell behind it (railsbench: kcx_map_get 28 M cycles / iteration, acct53) */
+    struct kcx_map_ent { korb_value v; korb_value *cell; } *map; uint32_t map_capa, map_n;
     KVALUE **reg; uint32_t reg_n, reg_capa;           /* rb_gc_register_address */
     struct korb_cext_method *methods; uint32_t method_n;
     struct korb_cext_alloc *allocs; uint32_t alloc_n, alloc_capa;
@@ -151,24 +152,24 @@ kcx_map_put(struct korb_cext_vm *x, korb_value *cell)
 {
     if ((x->map_n + 1) * 2 > x->map_capa) {
         const uint32_t oc = x->map_capa, nc = oc ? oc * 2 : 1024;
-        korb_value **const om = x->map;
+        struct kcx_map_ent *const om = x->map;
         x->map = calloc(nc, sizeof *x->map);
         if (!x->map) { fprintf(stderr, "koruby: oom (cext map)\n"); abort(); }
         x->map_capa = nc; x->map_n = 0;
-        for (uint32_t i = 0; i < oc; i++) if (om[i]) kcx_map_put(x, om[i]);
+        for (uint32_t i = 0; i < oc; i++) if (om[i].cell) kcx_map_put(x, om[i].cell);
         free(om);
     }
     uint32_t i = kcx_hash(*cell) & (x->map_capa - 1);
-    while (x->map[i]) i = (i + 1) & (x->map_capa - 1);
-    x->map[i] = cell; x->map_n++;
+    while (x->map[i].cell) i = (i + 1) & (x->map_capa - 1);
+    x->map[i].v = *cell; x->map[i].cell = cell; x->map_n++;
 }
 
 static korb_value *
 kcx_map_get(const struct korb_cext_vm *x, korb_value v)
 {
     if (x->map_capa == 0) return NULL;
-    for (uint32_t i = kcx_hash(v) & (x->map_capa - 1); x->map[i]; i = (i + 1) & (x->map_capa - 1))
-        if (*x->map[i] == v) return x->map[i];
+    for (uint32_t i = kcx_hash(v) & (x->map_capa - 1); x->map[i].cell; i = (i + 1) & (x->map_capa - 1))
+        if (x->map[i].v == v) return x->map[i].cell;
     return NULL;
 }
 
