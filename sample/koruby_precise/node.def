@@ -3094,19 +3094,19 @@ node_send_safe(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t fl
 // receiver call with splat: recv.m(*arr).  Staged [recv | args_array] at
 // slots[-2..-1]; re-lay out [recv | arg0..argN) at slots[0..N] and dispatch.
 NODE_DEF
-node_send_splat(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, int32_t self_off, korb_ref recv@child, korb_ref args@child)
+node_send_splat(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, int32_t self_off, korb_ref recv@child, korb_ref args@child, struct korb_inlcache *ic@ref)
 {
-    const uint32_t line = korb_flink_line(flink);
-    korb_flink_stage(c, flink, slots);   /* no header cells here: hand the link to the dispatch */
     (void)n; (void)recv; (void)args;
-    korb_value rv = slots[-2];
-    korb_value arr = slots[-1];
-    uint32_t N = VAL2ARY(arr)->len;
-    slots[0] = rv;
-    for (uint32_t i = 0; i < N; i++) slots[1 + i] = korb_ary_ptr(VAL2ARY(arr))[i];
-    if (N != 0) korb_splat_kwmark(&slots[1 + N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
-    return korb_send_vis(c, slots + N + 1, mid, line, N,
-                         self_off == INT32_MIN ? KORB_UNDEF : slots[self_off]);
+    const korb_value rv = slots[-2];
+    const korb_value arr = slots[-1];
+    const uint32_t N = VAL2ARY(arr)->len;
+    /* the callee's bottom header below the receiver, as node_call_splat lays it (parse.c bakes the link's
+     * distance from slots[1]): the site's cache then applies — korb_send_vis looked the method up on every
+     * call (railsbench: 19k `recv.m(*a)` an iteration) */
+    slots[0] = 0; slots[1] = flink; slots[2] = 0; slots[3] = rv;
+    for (uint32_t i = 0; i < N; i++) slots[4 + i] = korb_ary_ptr(VAL2ARY(arr))[i];
+    if (N != 0) korb_splat_kwmark(&slots[4 + N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
+    return korb_send_cached(c, slots + 4 + N, mid, flink, N, ic, self_off == INT32_MIN ? KORB_UNDEF : slots[self_off], NULL);
 }
 
 // `recv[*idx] = v` — like node_send_splat, but an element assignment evaluates
@@ -3136,19 +3136,18 @@ node_send_splat_aset(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint6
 // (tagged |1u) is the caller frame base.  @noinline for the same reason as
 // node_call_splat_blk (per-process block NODE pointer).
 NODE_DEF @noinline
-node_send_splat_blk(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, int32_t self_off, NODE *block, int32_t def_env_off, korb_ref recv@child, korb_ref args@child)
+node_send_splat_blk(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, int32_t self_off, NODE *block, int32_t def_env_off, korb_ref recv@child, korb_ref args@child, struct korb_inlcache *ic@ref)
 {
     const uint32_t line = korb_flink_line(flink);
-    korb_flink_stage(c, flink, slots);   /* no header cells here: hand the link to the dispatch */
     (void)n; (void)recv; (void)args; (void)block_dispatcher;
     const korb_value rv = slots[-2];
     const korb_value arr = slots[-1];
     const uint32_t N = VAL2ARY(arr)->len;
-    slots[0] = rv;
-    for (uint32_t i = 0; i < N; i++) slots[1 + i] = korb_ary_ptr(VAL2ARY(arr))[i];
-    if (N != 0) korb_splat_kwmark(&slots[1 + N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
-    return korb_send_blk(c, slots + N + 1, mid, line, N, block,
-                         (korb_value *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off], 0, slots[self_off]);
+    slots[0] = 0; slots[1] = flink; slots[2] = 0; slots[3] = rv;   /* the callee's header, as node_send_splat */
+    for (uint32_t i = 0; i < N; i++) slots[4 + i] = korb_ary_ptr(VAL2ARY(arr))[i];
+    if (N != 0) korb_splat_kwmark(&slots[4 + N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
+    return korb_send_blk_ic(c, slots + 4 + N, mid, line, N, block,
+                            (korb_value *)((uintptr_t)&slots[def_env_off] | 1u), &slots[self_off], flink, slots[self_off], ic);
 }
 
 // `recv.m(*arr, &proc)` — receiver call with splat AND a forwarded runtime Proc.
@@ -3157,24 +3156,28 @@ node_send_splat_blk(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64
 // a Proc, then dispatch with KORB_BLK_FWD (korb_block_yield re-reads proc->env
 // per yield, so a moved escaped env is never stale).
 NODE_DEF
-node_send_splat_blkproc(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, int32_t self_off, int32_t proc_off, korb_ref recv@child, korb_ref args@child)
+node_send_splat_blkproc(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, int32_t self_off, int32_t proc_off, korb_ref recv@child, korb_ref args@child, struct korb_inlcache *ic@ref)
 {
     const uint32_t line = korb_flink_line(flink);
     (void)n; (void)recv; (void)args;
     RESULT pr = korb_blockarg_to_proc(c, slots, &slots[proc_off], line);   /* &obj → obj.to_proc */
     if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
-    korb_flink_stage(c, flink, slots);   /* no header cells here: hand the link to the dispatch (after #to_proc, which is Ruby) */
     const korb_value pv = slots[proc_off];
     const korb_value rv = slots[-2];
     const korb_value arr = slots[-1];
     const uint32_t N = VAL2ARY(arr)->len;
-    slots[0] = rv;
-    for (uint32_t i = 0; i < N; i++) slots[1 + i] = korb_ary_ptr(VAL2ARY(arr))[i];
-    if (N != 0) korb_splat_kwmark(&slots[1 + N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
-    if (pv == KORB_NIL) return korb_send_vis(c, slots + N + 1, mid, line, N, slots[self_off]);   /* &nil → no block */
+    /* the callee's header, as node_send_splat: through the site's cache — `m(*args, &block)` forwarding
+     * looked the method up on every call (railsbench: 85k an iteration, acct60) */
+    slots[0] = 0; slots[1] = flink; slots[2] = 0; slots[3] = rv;
+    for (uint32_t i = 0; i < N; i++) slots[4 + i] = korb_ary_ptr(VAL2ARY(arr))[i];
+    if (N != 0) korb_splat_kwmark(&slots[4 + N - 1]);   /* a splatted ruby2_keywords Hash is keywords again */
+    if (pv == KORB_NIL) {   /* &nil → no block; the link still has to reach this frame (as node_send_blkproc) */
+        korb_flink_stage(c, flink, &slots[1]);
+        return korb_send_vis(c, slots + 4 + N, mid, line, N, slots[self_off]);
+    }
     NODE *iseq = VAL2PROC(pv)->iseq;
     if (iseq == NULL) iseq = KORB_BLK_CPROC;             /* Symbol/Method#to_proc: forward as a C-proc block */
-    return korb_send_blk(c, slots + N + 1, mid, line, N, iseq, KORB_BLK_FWD, &slots[proc_off], 0, slots[self_off]);   /* link staged above */
+    return korb_send_blk_ic(c, slots + 4 + N, mid, line, N, iseq, KORB_BLK_FWD, &slots[proc_off], flink, slots[self_off], ic);
 }
 
 // `recv[idx]` — type-fast-path for Array + fixnum index (the hot case); any
@@ -3583,37 +3586,36 @@ node_nesting(CTX *c, NODE *n, korb_value *slots, const char *name_syms, uint32_t
 // implicit-self call with a literal block, any fixed arity.  argv@children stages
 // the args (no recv).  Replaces call_blk0..1.
 NODE_DEF @framehdr
-node_call_blk(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off, NODE **argv@children)
+node_call_blk(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, struct korb_callcache *cc@ref, NODE *block, int32_t def_env_off, NODE **argv@children, struct korb_inlcache *ic@ref)
 {
     const uint32_t line = korb_flink_line(flink);   /* cold paths only: the hot path never needs it */
     (void)n; (void)block_dispatcher;
     /* self staged as receiver (argv[0]) → base[-1]; it is also the block's captured
      * self.  def_env carries the raw PREV: tag the live slots base odd (eget path). */
     korb_value *const self_cell = &slots[-(korb_sword_t)argv_cnt];
-    return korb_call_blk(c, slots, mid, line, cc, argv_cnt - 1, *self_cell, block,
-                         (korb_value *)((uintptr_t)&slots[def_env_off] | 1u), self_cell);
+    return korb_call_blk_ic(c, slots, mid, line, cc, argv_cnt - 1, *self_cell, block,
+                            (korb_value *)((uintptr_t)&slots[def_env_off] | 1u), self_cell, ic);
 }
 
 // `m(args, &proc)` (implicit self) — forward a runtime Proc as the block.  Like
 // node_send_blkproc but for an implicit-self call (no staged receiver).
 NODE_DEF @framehdr
-node_call_blkproc(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, struct korb_callcache *cc@ref, int32_t proc_off, NODE **argv@children)
+node_call_blkproc(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, struct korb_callcache *cc@ref, int32_t proc_off, NODE **argv@children, struct korb_inlcache *ic@ref)
 {
     const uint32_t line = korb_flink_line(flink);   /* cold paths only: the hot path never needs it */
     (void)n;
     RESULT pr = korb_blockarg_to_proc(c, slots, &slots[proc_off], line);   /* &obj → obj.to_proc (slots[0..] is free scratch) */
     if (UNLIKELY(pr.state != KORB_NORMAL)) return pr;
     const korb_value pv = slots[proc_off];
-    NODE *iseq = NULL;
-    if (pv != KORB_NIL) {                                /* coercion guaranteed a Proc (or nil) */
-        iseq = VAL2PROC(pv)->iseq;
-        if (iseq == NULL) iseq = KORB_BLK_CPROC;         /* Symbol/Method#to_proc: forward as a C-proc block */
-    }
     /* an empty `**h` is no argument (CRuby 3.0), also next to `&blk` */
     const bool kw0 = korb_empty_kwsplat_p(slots[-1]) && argv_cnt > 1;
     /* self staged as receiver (argv[0]) → base[-1]. */
-    return korb_call_blk(c, kw0 ? slots - 1 : slots, mid, line, cc, argv_cnt - 1 - kw0, slots[-(korb_sword_t)argv_cnt], iseq,
-                         iseq ? KORB_BLK_FWD : NULL, &slots[proc_off]);
+    if (pv == KORB_NIL)                                  /* &nil → no block */
+        return korb_call_blk(c, kw0 ? slots - 1 : slots, mid, line, cc, argv_cnt - 1 - kw0, slots[-(korb_sword_t)argv_cnt], NULL, NULL, &slots[proc_off]);
+    NODE *iseq = VAL2PROC(pv)->iseq;                     /* coercion guaranteed a Proc */
+    if (iseq == NULL) iseq = KORB_BLK_CPROC;             /* Symbol/Method#to_proc: forward as a C-proc block */
+    return korb_call_blk_ic(c, kw0 ? slots - 1 : slots, mid, line, cc, argv_cnt - 1 - kw0, slots[-(korb_sword_t)argv_cnt], iseq,
+                            KORB_BLK_FWD, &slots[proc_off], ic);
 }
 
 // `def m(&blk)` prologue: materialize the passed block into the &blk local as a

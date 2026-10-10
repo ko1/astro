@@ -16754,6 +16754,45 @@ korb_send_blk_ic_x(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
     return korb_send_blk_x(c, slots, mid, line, argc, block, def_env, captured_self, flink, caller_self, own);
 }
 
+/* `m(args) { }` / `m(args, &blk)` on a user instance through the site's cache: what korb_send_blk_ic does for a
+ * receiver send, minus the visibility test (an implicit call may reach a private method).  korb_call_blk looked the
+ * method up on every call (railsbench: 12% of the mcache probes an iteration, acct53). */
+RESULT
+korb_call_blk_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc, uint32_t argc,
+                 korb_value self, NODE *block, korb_value *def_env, korb_value *captured_self, struct korb_inlcache *ic)
+{
+    struct korb_vm *const vm = c->vm;
+    if (LIKELY(KORB_OBJECT_P(self) && !vm->refinements_active)) {
+        const korb_value klass = UNLIKELY(((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS)
+                               ? korb_dispatch_class(c, self) : VAL2OBJ(self)->klass;
+        if (LIKELY(klass != KORB_NIL)) {
+            struct korb_method *m;
+            korb_value def_class;
+            if (LIKELY(ic->kind == KORB_IC_INSTANCE && ic->serial == vm->method_serial && ic->klass == klass)) {
+                m = ic->m; def_class = ic->def_class;
+            } else {
+                def_class = KORB_NIL;
+                m = korb_mcache_find(vm, klass, mid, &def_class);
+                korb_ic_fill(vm, ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, UINT32_MAX);   /* a miss is cached too */
+            }
+            if (m != NULL && (m->kind == KORB_METHOD_ISEQ || (m->kind == KORB_METHOD_CFUNC && m->uses_block))) {
+                RESULT r = m->kind != KORB_METHOD_ISEQ
+                    ? korb_blk_cfunc_call(c, slots, m, mid, line, argc, def_class, block, def_env, captured_self)
+                    : m->is_simple
+                    ? korb_invoke_simple(c, slots, m, argc, line, mid, self, def_class)
+                    : (m->simple_blk && argc == (uint32_t)m->params_cnt)
+                    ? korb_invoke_blk(c, slots, m, argc, line, mid, block, def_env, KORB_CSELF_VAL(captured_self))
+                    : korb_invoke_method(c, slots, m, argc, line, mid, self, def_class, block, def_env, KORB_CSELF_VAL(captured_self));
+                if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) r.state = KORB_NORMAL;
+                if (UNLIKELY(r.state == KORB_BREAK) && korb_break_orphan_p(c, def_env, captured_self, korb_link_base(c, slots - (korb_sword_t)argc - 3)))
+                    return korb_raise_break_lje(c, slots, r.value);
+                return r;
+            }
+        }
+    }
+    return korb_call_blk(c, slots, mid, line, cc, argc, self, block, def_env, captured_self);
+}
+
 /* A type-fast-path node's deopt (node_aref / node_aset) on a plain String / Array / Hash:
  * call `mid` through the node's own inline cache when it resolves to a public C method.
  * Those nodes' slot windows have no room for a Ruby callee's frame header, so anything

@@ -3021,7 +3021,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                         WITH_CHAIN(tc, 2, (recv = RECV_NODE(),
                                            arr  = build_array(tc, cn->arguments->arguments.nodes, argc, (uint32_t)argc)));
                     }
-                    NODE *_cs = KP_LINK(tc, node_send_splat_blkproc, mid, kp_flink_at(tc, line, 2), bp_self_off, proc_off, recv, arr);
+                    NODE *_cs = KP_LINK(tc, node_send_splat_blkproc, mid, kp_flink_at(tc, line, 3), bp_self_off, proc_off, recv, arr);
                     bake_add(tc, &_cs->u.node_send_splat_blkproc.self_off);
                     bake_add(tc, &_cs->u.node_send_splat_blkproc.proc_off);
                     return SAFE_WRAP(pre ? ALLOC_node_seq(pre, _cs) : _cs);
@@ -3067,7 +3067,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 NODE *recv, *arr;
                 WITH_CHAIN(tc, 2, (recv = RECV_NODE(),
                                    arr  = build_call_args(tc, cn->arguments->arguments.nodes, argc)));
-                NODE *_cs = KP_LINK(tc, node_send_splat_blk, mid, kp_flink_at(tc, line, 2), self_off, entry, def_env_off, recv, arr);
+                NODE *_cs = KP_LINK(tc, node_send_splat_blk, mid, kp_flink_at(tc, line, 3), self_off, entry, def_env_off, recv, arr);
                 bake_add(tc, &_cs->u.node_send_splat_blk.self_off);
                 bake_add(tc, &_cs->u.node_send_splat_blk.def_env_off);
                 return SAFE_WRAP(_cs);
@@ -3109,7 +3109,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                            arr  = (argc == 1)
                                ? kp_fwd_args(tc, fdep, fslot)
                                : build_array_with_fwd(tc, cn->arguments->arguments.nodes, argc - 1, fdep, fslot)));
-        NODE *_cs = KP_LINK(tc, node_send_splat_blkproc, mid, kp_flink_at(tc, line, 2), fwd_self_off, proc_off, recv, arr);
+        NODE *_cs = KP_LINK(tc, node_send_splat_blkproc, mid, kp_flink_at(tc, line, 3), fwd_self_off, proc_off, recv, arr);
         bake_add(tc, &_cs->u.node_send_splat_blkproc.self_off);
         bake_add(tc, &_cs->u.node_send_splat_blkproc.proc_off);
         NODE *_out = blk_pre ? ALLOC_node_seq(blk_pre, _cs) : _cs;
@@ -3134,7 +3134,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
             if (mid == tc->c->vm->mid_aset) {
                 _sp = KP_LINK(tc, node_send_splat_aset, mid, kp_flink_at(tc, line, 2), recv, arr);
             } else {
-                _sp = KP_LINK(tc, node_send_splat, mid, kp_flink_at(tc, line, 2), splat_self_off, recv, arr);
+                _sp = KP_LINK(tc, node_send_splat, mid, kp_flink_at(tc, line, 3), splat_self_off, recv, arr);
                 bake_add(tc, &_sp->u.node_send_splat.self_off);
             }
             if (sn) return ALLOC_node_seq(sn_set, ALLOC_node_nil_guard(bake_lget(tc, (uint32_t)sn_tmp), _sp));
@@ -4043,7 +4043,7 @@ index_opassign_splat(struct kp_ctx *tc, const pm_index_operator_write_node_t *iw
         { const int32_t _s = tc->chain; tc->chain = _s + 2;
           g_recv = bake_lget(tc, t0); g_arr = bake_lget(tc, ta);
           tc->chain = _s; }
-        get = KP_LINK(tc, node_send_splat, aref, kp_flink_at(tc, line, 2), INT32_MIN, g_recv, g_arr);
+        get = KP_LINK(tc, node_send_splat, aref, kp_flink_at(tc, line, 3), INT32_MIN, g_recv, g_arr);
         val = transduce(tc, value);
         newval = logic ? (logic == 1 ? ALLOC_node_or(get, val) : ALLOC_node_and(get, val))
                : (op != KP_BINOP_NONE) ? alloc_binop(tc, op, get, val, line)
@@ -4058,7 +4058,7 @@ index_opassign_splat(struct kp_ctx *tc, const pm_index_operator_write_node_t *iw
       WITH_CHAIN(tc, kind_node_ary_push.slot_count, (acc = bake_lget(tc, ta), elem = bake_lget(tc, tn)));
       s_arr = ALLOC_node_ary_push(acc, elem);            /* [indices..., value] */
       tc->chain = _s; }
-    NODE *const store = KP_LINK(tc, node_send_splat, aset, kp_flink_at(tc, line, 2), INT32_MIN, s_recv, s_arr);
+    NODE *const store = KP_LINK(tc, node_send_splat, aset, kp_flink_at(tc, line, 3), INT32_MIN, s_recv, s_arr);
     if (logic) {
         /* ||= assigns only when the read was falsy, &&= only when it was truthy —
          * re-test the computed value against the original read so a no-op stays
@@ -4067,7 +4067,7 @@ index_opassign_splat(struct kp_ctx *tc, const pm_index_operator_write_node_t *iw
         { const int32_t _s = tc->chain; tc->chain = _s + 2;
           NODE *g2_recv = bake_lget(tc, t0), *g2_arr = bake_lget(tc, ta);
           tc->chain = _s;
-          guard = KP_LINK(tc, node_send_splat, aref, kp_flink_at(tc, line, 2), INT32_MIN, g2_recv, g2_arr); }
+          guard = KP_LINK(tc, node_send_splat, aref, kp_flink_at(tc, line, 3), INT32_MIN, g2_recv, g2_arr); }
         seq = ALLOC_node_seq(seq, (logic == 1) ? ALLOC_node_or(guard, store)
                                                : ALLOC_node_and(guard, store));
         return ALLOC_node_seq(seq, bake_lget(tc, tn));

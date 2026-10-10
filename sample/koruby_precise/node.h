@@ -482,6 +482,8 @@ RESULT korb_send_blk_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, 
 RESULT korb_send_blk_fwd(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc, NODE *block,
                          korb_value *def_env, korb_value *captured_self, korb_value flink, korb_value caller_self,
                          struct korb_inlcache *ic);   /* node_send_blkfwd: the method's own block passed on */
+RESULT korb_call_blk_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, struct korb_callcache *cc, uint32_t argc,
+                        korb_value self, NODE *block, korb_value *def_env, korb_value *captured_self, struct korb_inlcache *ic);   /* node_call_blk / _blkproc */
 RESULT korb_send_cfunc_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc, const struct korb_method *m);   /* EXPERIMENT acct46 */
 RESULT korb_send_simple_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc, const struct korb_inlcache *ic);
 RESULT korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
