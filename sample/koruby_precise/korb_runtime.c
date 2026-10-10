@@ -7083,17 +7083,22 @@ korb_entry_call(CTX *c, NODE *body, korb_value *slots, const struct korb_inlcach
     const node_dispatcher_func_t d = body->head.dispatcher;
     const void *const ret = __builtin_return_address(0);
     c->vm->dc_calls++;
-    if (ic->cs_ret == NULL && !ic->shared && astro_ld_patch_call(ret, (uintptr_t)d, (uintptr_t)korb_entry_call)) {
+    /* bind to anything but the weave trampoline: a woven SD, or the interpreter's dispatcher of a body that is not
+     * baked (cold-cut) — a host function reached through an arena stub; railsbench: 570k such calls per iteration */
+    if (ic->cs_ret == NULL && !ic->shared && d != korb_hot_tramp() && astro_ld_patch_call(ret, (uintptr_t)d, (uintptr_t)korb_entry_call)) {
         ((struct korb_inlcache *)ic)->cs_ret = ret;   /* the cache lives in the NODE: writable, const only on this path */
         c->vm->dc_patches++;
-    }
+    } else if (ic->cs_ret == NULL) c->vm->dc_unbound++;   /* still on the trampoline, shared, out of stubs, or not a call site */
     return (*d)(c, body, slots);
 }
+/* A refill at a bound site: unbind it, and never bind it again (KORB_DC_NEVER) — a polymorphic site refills on
+ * every class change, and each rebind is a code write (railsbench: 34k rebinds per iteration before this). */
+#define KORB_DC_NEVER ((const void *)1)
 void
 korb_entry_call_reset(struct korb_inlcache *ic)
 {
-    astro_ld_call_reset(ic->cs_ret, (uintptr_t)korb_entry_call);
-    ic->cs_ret = NULL;
+    if (ic->cs_ret != KORB_DC_NEVER) astro_ld_call_reset(ic->cs_ret, (uintptr_t)korb_entry_call);
+    ic->cs_ret = KORB_DC_NEVER;
 }
 void
 korb_cc_check_fail(const struct korb_inlcache *ic, uint8_t kind)

@@ -1270,6 +1270,7 @@ korb_invoke_simple(CTX *c, korb_value *slots, struct korb_method *m, uint32_t ar
 /* EXPERIMENT acct48 (korb_runtime.c): the binding stub an instance calls, and the undo when its cache is refilled. */
 RESULT korb_entry_call(CTX *c, NODE *body, korb_value *slots, const struct korb_inlcache *ic);
 void korb_entry_call_reset(struct korb_inlcache *ic);
+node_dispatcher_func_t korb_hot_tramp(void);   /* main.c: the weave trampoline a body may still be on */
 
 /* Cache-driven simple invoke.  The frame setup now lives in the callee's
  * node_simple_entry SD (where params_cnt / locals_cnt are constants), so all
@@ -1438,7 +1439,9 @@ korb_ic_fill(const struct korb_vm *vm, struct korb_inlcache *ic, uint64_t serial
              korb_value def_class, uint8_t kind, uint32_t argc)
 {
     if (UNLIKELY(ic->shared)) { korb_cc_check_fail(ic, kind); return; }
-    if (UNLIKELY(ic->cs_ret != NULL)) korb_entry_call_reset(ic);   /* EXPERIMENT acct48: the site's direct call followed the old contents */
+    /* EXPERIMENT acct48: a bound site keeps its direct call when the refill lands on the same method (a serial bump:
+     * railsbench refills every site about once per 250 requests); another method unbinds it for good */
+    if (UNLIKELY(ic->cs_ret != NULL) && (ic->m != m || m == NULL || ic->body != m->simple_entry)) korb_entry_call_reset(ic);
     korb_ic_fill_raw(vm, ic, serial, klass, m, def_class, kind, argc);
 }
 

@@ -398,7 +398,10 @@ astro_ld_patch_call(const void *ret, uintptr_t target, uintptr_t expect)
     char *w; int32_t cur;
     if (!astro_ld_call_site(ret, &w, &cur)) return false;
     if ((uintptr_t)ret + (int64_t)cur != astro_ld_host_reach(expect, (uintptr_t)ret)) return false;   // not our call any more
-    if ((char *)target < astro_ld_arena.x || (char *)target >= astro_ld_arena.x + astro_ld_arena.used) return false;   // not woven code
+    if ((char *)target < astro_ld_arena.x || (char *)target >= astro_ld_arena.x + astro_ld_arena.used) {
+        target = astro_ld_host_reach(target, (uintptr_t)ret);   // a host function (an unbaked body's interpreter dispatcher)
+        if (!target) return false;
+    }
     const int32_t rel = (int32_t)(target - (uintptr_t)ret);
     memcpy(w, &rel, 4);
     return true;
