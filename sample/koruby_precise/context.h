@@ -1568,6 +1568,10 @@ struct korb_vm {
     uint32_t mid_uminus;           /* "-@" — node_neg deopt target */
     korb_method_fn sdi_fn[KORB_SDI_N][KORB_SDI_FN_MAX];   /* the builtins each AOT inline send stands for (korb_sdi_init) */
     uint32_t sdi_mid[KORB_SDI_N];                          /* the name each AOT inline send stands for */
+    /* korb_sdi_klass's branch-free class table (korb_sdi_init): [0..63] an immediate by (v & 63), [64..127] a heap
+     * object by (flags & 0x3F): the builtin's class, or nil (a plain instance never reads it).  GC roots. */
+    korb_value sdi_cls[128];
+    KorbObject sdi_imm_obj;        /* what korb_sdi_klass dereferences for an immediate (flags 0, klass nil) */
     /* set when Array#[] / Array#[]= is redefined: node_aref/node_aset then deopt
      * to a real send so the redefinition is honored (CRuby compat). */
     bool aref_redefined;
@@ -1995,6 +1999,8 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->top_self);           \
     if ((c)->vm->top_sclass != 0)                                            \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->top_sclass);         \
+    for (unsigned _si = 0; _si < 128; _si++)                                 \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->sdi_cls[_si]);          \
     /* constants (class values) + their defining-module owners are roots too */ \
     for (uint32_t _ci = 0; _ci < (c)->vm->const_cnt; _ci++) {                \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &(c)->vm->const_vals[_ci]);     \

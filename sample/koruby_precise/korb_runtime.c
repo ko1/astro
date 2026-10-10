@@ -17123,6 +17123,28 @@ korb_sdi_init(CTX *c)
         const struct korb_method *const m = korb_class_find_method(korb_builtin_class_obj(vm, korb_s2s_cls[i]), korb_intern_lit(vm, "to_s", 4), &d);
         vm->s2s_fn[i] = (m != NULL && m->kind == KORB_METHOD_CFUNC) ? m->rfn : NULL;
     }
+    /* korb_sdi_klass's table: the type cascade's answers as data (branch-free at the site) */
+    for (unsigned i = 0; i < 64; i++) {            /* an immediate by (v & 63): Symbol stays none, as before */
+        korb_value k = KORB_NIL;
+        if (i & 1u) k = korb_bi_class(vm, KORB_C_INTEGER);
+        else if ((i & 3u) == 2u) k = korb_bi_class(vm, KORB_C_FLOAT);
+        else if (i == (KORB_NIL & 63u)) k = korb_bi_class(vm, KORB_C_NIL);
+        else if (i == (KORB_TRUE & 63u)) k = korb_bi_class(vm, KORB_C_TRUE);
+        else if (i == (KORB_FALSE & 63u)) k = korb_bi_class(vm, KORB_C_FALSE);
+        vm->sdi_cls[i] = k;
+    }
+    for (unsigned f = 0; f < 64; f++) {            /* a heap object by (flags & (TYPE_MASK | HAS_KLASS)) */
+        korb_value k = KORB_NIL;
+        if (!(f & KORB_FL_HAS_KLASS)) switch (f & KORB_OBJ_TYPE_MASK) {
+            case KORB_OBJ_STRING: k = korb_bi_class(vm, KORB_C_STRING); break;
+            case KORB_OBJ_ARRAY:  k = korb_bi_class(vm, KORB_C_ARRAY); break;
+            case KORB_OBJ_HASH:   k = korb_bi_class(vm, KORB_C_HASH); break;
+            case KORB_OBJ_REGEXP: k = korb_bi_class(vm, KORB_C_REGEXP); break;
+            default: break;                        /* a plain instance never reads the table */
+        }
+        vm->sdi_cls[64 + f] = k;
+    }
+    memset(&vm->sdi_imm_obj, 0, sizeof vm->sdi_imm_obj);   /* flags 0: what an immediate dereferences */
     vm->method_serial++;   /* a class mask answered during the prelude saw the empty table */
 }
 

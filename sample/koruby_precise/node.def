@@ -2755,23 +2755,10 @@ node_send(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, 
  * of the builtins the name stands for (vm->sdi_fn) for the receiver's class, so a
  * redefinition, subclass or singleton is caught by the cache itself; anything else is the
  * plain send.  The interpreter never calls these. */
-static __attribute__((noinline)) korb_value
-korb_sdi_klass_rest(const struct korb_vm *vm, const korb_value r)   /* korb_sdi_klass past its inline part */
-{
-    if (AROH_IS_GC_OBJECT(r)) {
-        const uint16_t f = ((const AroObjectHeader *)(uintptr_t)r)->flags;
-        if (f & KORB_FL_HAS_KLASS) return KORB_NIL;
-        return (f & KORB_OBJ_TYPE_MASK) == KORB_OBJ_REGEXP ? korb_bi_class(vm, KORB_C_REGEXP) : KORB_NIL;
-    }
-    if (FIXNUM_P(r)) return korb_bi_class(vm, KORB_C_INTEGER);
-    if (FLONUM_P(r)) return korb_bi_class(vm, KORB_C_FLOAT);
-    if (r == KORB_NIL) return korb_bi_class(vm, KORB_C_NIL);
-    if (r == KORB_TRUE) return korb_bi_class(vm, KORB_C_TRUE);
-    if (r == KORB_FALSE) return korb_bi_class(vm, KORB_C_FALSE);
-    return KORB_NIL;
-}
-/* the class korb_send_cached keys the cache on, or nil.  The usual heap receivers inline (a plain
- * instance, String / Array / Hash); the rest out of line — it had been outlined whole, a call per send */
+/* the class korb_send_cached keys the cache on, or nil.  Branch-free (vm->sdi_cls, korb_sdi_init): an
+ * immediate by its low 6 bits, a heap object by its header flags.  The type cascade it replaces put every
+ * non-instance receiver through 3-8 taken branches at the site's own PC, and a wide program (railsbench:
+ * thousands of sites a request) overflows the BTB with them. */
 static inline __attribute__((always_inline)) korb_value
 korb_sdi_klass(const struct korb_vm *vm, const korb_value r)
 {
@@ -2781,16 +2768,16 @@ korb_sdi_klass(const struct korb_vm *vm, const korb_value r)
         return VAL2OBJ(r)->klass;
     return korb_sdi_klass_slow(vm, r);
 #endif
-    if (LIKELY(AROH_IS_GC_OBJECT(r))) {
-        const uint16_t f = ((const AroObjectHeader *)(uintptr_t)r)->flags & (KORB_OBJ_TYPE_MASK | KORB_FL_HAS_KLASS);
-        if (LIKELY(f == KORB_OBJ_OBJECT)) return VAL2OBJ(r)->klass;   /* nil for main */
-        if (f == KORB_OBJ_STRING) return korb_bi_class(vm, KORB_C_STRING);
-        if (f == KORB_OBJ_ARRAY) return korb_bi_class(vm, KORB_C_ARRAY);
-        if (f == KORB_OBJ_HASH) return korb_bi_class(vm, KORB_C_HASH);
-    } else if (r == KORB_NIL) {
-        return korb_bi_class(vm, KORB_C_NIL);   /* nil.nil? / nil.to_s are frequent */
-    }
-    return korb_sdi_klass_rest(vm, r);
+    if (LIKELY(AROH_IS_GC_OBJECT(r)) &&
+        LIKELY((((const AroObjectHeader *)(uintptr_t)r)->flags & (KORB_OBJ_TYPE_MASK | KORB_FL_HAS_KLASS)) == KORB_OBJ_OBJECT))
+        return VAL2OBJ(r)->klass;   /* a plain instance (nil for main): the fall-through */
+    /* anything else: one table read (vm->sdi_cls, korb_sdi_init).  A select written as ?: or as bit masks came back
+     * from gcc as a cold block and two taken jumps per immediate receiver (acct62 v1 / v3), so the table is read
+     * here, on the out-of-line side, and only the plain instance is inline. */
+    const bool gc = AROH_IS_GC_OBJECT(r);
+    const AroObjectHeader *const h = gc ? (const AroObjectHeader *)(uintptr_t)r : &vm->sdi_imm_obj.head;
+    const unsigned f = (unsigned)h->flags & (KORB_OBJ_TYPE_MASK | KORB_FL_HAS_KLASS);
+    return vm->sdi_cls[gc ? 64u + f : (unsigned)(r & 63u)];
 }
 /* NFN = how many builtins the name stands for (a constant: the compares fold away) */
 static inline __attribute__((always_inline)) bool
