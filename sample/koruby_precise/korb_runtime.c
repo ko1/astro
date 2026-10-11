@@ -8612,7 +8612,8 @@ korb_super(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc
         KORB_OBJECT_P(self) && !(((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS) &&
         sc->serial == vm->method_serial && sc->klass == VAL2OBJ(self)->klass &&
         sc->cur == (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)7u) && sc->m != NULL &&
-        sc->m->kind == KORB_METHOD_ISEQ && sc->m->is_simple && LIKELY(!vm->refinements_active)) {
+        sc->m->kind == KORB_METHOD_ISEQ && LIKELY(!vm->refinements_active) &&
+        (sc->m->is_simple || ((sc->m->simple_entry != NULL || sc->m->opt_entries != NULL) && (block == NULL || !sc->m->uses_block)))) {
         struct korb_method *const m = sc->m;
         for (uint32_t j = 0; j < argc; j++) slots[4 + j] = slots[-(korb_sword_t)argc + j];
         slots[0] = 0;
@@ -8620,13 +8621,19 @@ korb_super(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc
         slots[2] = 0;
         slots[3] = self;
         korb_value *const cur = slots + 4 + argc;
-        if (m->simple_entry != NULL && argc == (uint32_t)m->params_cnt) {   /* the method's own entry SD (constants folded), as a cached send */
+        /* the method's own entry SD (constants folded), as a cached send: its simple entry, or the optionals' entry
+         * for this argc; a block-using method only when no block rides along (the entry zeroes the block cells) */
+        NODE *const e = (m->simple_entry != NULL && argc == (uint32_t)m->params_cnt) ? m->simple_entry
+                      : (m->opt_entries != NULL && argc >= m->req_cnt && argc <= (uint32_t)m->params_cnt) ? m->opt_entries[argc - m->req_cnt]
+                      : NULL;
+        if (e != NULL) {
             korb_id_set(cur - argc, (korb_value)((uintptr_t)m | KORB_FID_METHOD));
-            const RESULT r = (*m->simple_entry->head.dispatcher)(c, m->simple_entry, cur);
+            const RESULT r = (*e->head.dispatcher)(c, e, cur);
             if (LIKELY(r.state == KORB_NORMAL)) return r;
             return korb_call_ret_cold(c, r, slots[1], mid, korb_id_get(cur - argc));
         }
-        return korb_invoke_simple(c, cur, m, argc, line, mid, self, sc->def_class);
+        if (m->is_simple) return korb_invoke_simple(c, cur, m, argc, line, mid, self, sc->def_class);
+        return korb_invoke_method(c, cur, m, argc, line, mid, self, sc->def_class, block, def_env, captured_self);
     }
     return korb_super_slow(c, slots, mid, line, argc, entry_cell, self, block, def_env, captured_self, frame_base, sc);
 }
