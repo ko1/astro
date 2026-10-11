@@ -6499,12 +6499,37 @@ korb_relocate_object_methods(CTX *c, korb_value *slots)
  * mb66 o1; a fixed-arity call is 88).  Build, per accepted argc below params_cnt, the node_simple_entry such a call
  * can take from the site's cache: it sets each missing default in order (a default may read earlier params) and then
  * runs the body.  argc == params_cnt gets one too (no default to set: what a simple method's parser-built entry is).  Registered like attr_reader's synthetic entry so the AOT store bakes it. */
+static uint32_t korb_optent_slot(const struct korb_vm *vm, const struct Node *body) {
+    uint32_t i = (uint32_t)(((uintptr_t)body * 0x9E3779B97F4A7C15ull) >> 40) & (vm->optent_cap - 1);
+    while (vm->optent_tab[i].body != NULL && vm->optent_tab[i].body != body) i = (i + 1) & (vm->optent_cap - 1);
+    return i;
+}
+void
+korb_optent_put(struct korb_vm *vm, const struct Node *body, struct Node **es)
+{
+    if (vm->optent_n * 2 >= vm->optent_cap) {
+        const uint32_t oc = vm->optent_cap, nc = oc ? oc * 2 : 256;
+        struct korb_optent *const old = vm->optent_tab;
+        vm->optent_tab = calloc(nc, sizeof *old); vm->optent_cap = nc;
+        if (vm->optent_tab == NULL) abort();
+        for (uint32_t i = 0; i < oc; i++) if (old[i].body) vm->optent_tab[korb_optent_slot(vm, old[i].body)] = old[i];
+        free(old);
+    }
+    const uint32_t i = korb_optent_slot(vm, body);
+    if (vm->optent_tab[i].body == NULL) vm->optent_n++;
+    vm->optent_tab[i].body = body; vm->optent_tab[i].es = es;
+}
 static struct Node **
-korb_opt_entries_build(const struct korb_method *m, uint32_t uses_block)
+korb_opt_entries_build(CTX *c, const struct korb_method *m, uint32_t uses_block)
 {
     struct Node **const dflts = m->opt_defaults;
     const uint32_t req = m->req_cnt, np = (uint32_t)m->params_cnt;
     if (dflts == NULL || m->kw_info != NULL || m->rest_slot >= 0 || m->post_cnt != 0 || m->no_block || req >= np) return NULL;
+    if (c->vm->optent_cap != 0) {   /* the parser's own nodes: they are what runs, so the run's profile (cold-cut) bakes them */
+        const struct korb_optent *const oe = &c->vm->optent_tab[korb_optent_slot(c->vm, m->body)];
+        if (oe->body == m->body) { c->vm->optent_hits++; return oe->es; }
+    }
+    c->vm->optent_builds++;
     struct Node **const es = calloc(np - req + 1, sizeof *es);   /* argc = req .. np (np: all given, no default to set) */
     if (es == NULL) return NULL;
     for (uint32_t a = req; a <= np; a++) {
@@ -6559,7 +6584,7 @@ korb_class_def_method(CTX *c, korb_value klass, uint32_t mid, NODE *body, NODE *
     /* parser-built node_simple_entry (also for uses_block: fixed arity, block-less sites only).
      * `&nil` opts out: the streamlined path never sees the block it must refuse. */
     m->simple_entry = m->no_block ? NULL : entry;
-    m->opt_entries = korb_opt_entries_build(m, uses_block);
+    m->opt_entries = korb_opt_entries_build(c, m, uses_block);
     /* Auto-attr: a method whose body is exactly `@ivar` (no params, no block)
      * is an attr_reader — dispatch returns the ivar directly, skipping a frame.
      * A multi-statement body roots at node_seq, so only the bare single-read
@@ -10981,7 +11006,7 @@ korb_method_define(CTX *c, uint32_t mid, NODE *body, NODE *entry,
     m->simple_blk = (kw_info == NULL && rest_slot < 0 && post_cnt == 0 && req_cnt == params_cnt &&
                      uses_block == KORB_DEFF_USES_BLOCK && !m->no_block);
     m->simple_entry = m->no_block ? NULL : entry;   /* parser-built node_simple_entry (uses_block も可; `&nil` は除外) */
-    m->opt_entries = korb_opt_entries_build(m, uses_block);
+    m->opt_entries = korb_opt_entries_build(c, m, uses_block);
     /* a user top-level def is a private Object method (korb_toplevel_def); the prelude's stay hidden */
     m->visibility = priv ? 1 : 0;
     c->vm->method_serial++;   /* invalidate call caches */

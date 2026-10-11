@@ -1176,6 +1176,7 @@ RESULT korb_entry_ret_cold(CTX *c, korb_value *base, uint32_t locals_cnt, RESULT
 RESULT korb_call_ret_cold(CTX *c, RESULT r, korb_value flink, uint32_t mid, korb_value fid);
 /* main.c: a node synthesized at runtime (attr_reader entry) — bind to a baked SD / instantiate like a parsed body. */
 void   korb_synth_node_ready(NODE *n);
+void   korb_optent_put(struct korb_vm *vm, const struct Node *body, struct Node **es);   /* parse.c: the per-argc entries it built */
 void   korb_bt_unwind(CTX *c, KorbException *e, uint32_t line, uint32_t mid, const struct korb_method *m);
 void   korb_bt_note_ptr(struct korb_vm *vm, const void *p);   /* a frame-top marker target (cold: definition time) */
 const char *korb_bt_cur_file(const struct korb_vm *vm);

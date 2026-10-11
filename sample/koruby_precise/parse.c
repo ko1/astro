@@ -3654,12 +3654,16 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     /* The per-argc entries of a method with optionals (korb_opt_entries_build) are built when the def runs, which an
      * --aot-compile bake never does: register the same shapes here so the store has their SDs (same hash). */
     if (kw_info == NULL && rest_slot < 0 && post_cnt == 0 && opt_defaults != NULL && req_cnt < params_cnt && !korb_pi_no_block(pinfo)) {
+        struct Node **const es = calloc(params_cnt - req_cnt + 1, sizeof *es);
+        if (es == NULL) abort();
         for (uint32_t a = req_cnt; a <= params_cnt; a++) {
             NODE *b = body;
             for (uint32_t pi = params_cnt; pi-- > a; )
                 b = ALLOC_node_seq(ALLOC_node_lset((int32_t)pi - (int32_t)frame_size, opt_defaults[pi - req_cnt]), b);
-            code_repo_add("opt_entry", ALLOC_node_simple_entry(b, a, frame_size, (uses_block & KORB_DEFF_USES_BACKREF) ? 1u : 0u), true);
+            es[a - req_cnt] = ALLOC_node_simple_entry(b, a, frame_size, (uses_block & KORB_DEFF_USES_BACKREF) ? 1u : 0u);
+            code_repo_add("opt_entry", es[a - req_cnt], true);
         }
+        korb_optent_put(tc->c->vm, body, es);   /* the def reuses these nodes (korb_opt_entries_build) */
     }
     return def;
 }

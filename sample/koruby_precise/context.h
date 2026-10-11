@@ -1573,6 +1573,10 @@ struct korb_vm {
     /* korb_sdi_klass's branch-free class table (korb_sdi_init): [0..63] an immediate by (v & 63), [64..127] a heap
      * object by (flags & 0x3F): the builtin's class, or nil (a plain instance never reads it).  GC roots. */
     korb_value sdi_cls[128];
+    struct korb_optent { const struct Node *body; struct Node **es; } *optent_tab;   /* the parser's per-argc entries of a method with
+                                                                              * optionals, by body (korb_opt_entries_build reuses them) */
+    uint32_t optent_cap, optent_n;
+    uint32_t optent_hits, optent_builds;   /* KORUBY_CC_STATS: korb_opt_entries_build reused the parser's / built its own */
 #define KORB_SDI_CLS_OWN ((korb_value)1)   /* sdi_cls: a plain instance, its own klass (odd: never a class) */
     KorbObject sdi_imm_obj;        /* what korb_sdi_klass dereferences for an immediate (flags 0, klass nil) */
     /* set when Array#[] / Array#[]= is redefined: node_aref/node_aset then deopt
