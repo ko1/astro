@@ -17140,7 +17140,8 @@ korb_sdi_init(CTX *c)
             case KORB_OBJ_ARRAY:  k = korb_bi_class(vm, KORB_C_ARRAY); break;
             case KORB_OBJ_HASH:   k = korb_bi_class(vm, KORB_C_HASH); break;
             case KORB_OBJ_REGEXP: k = korb_bi_class(vm, KORB_C_REGEXP); break;
-            default: break;                        /* a plain instance never reads the table */
+            case KORB_OBJ_OBJECT: k = KORB_SDI_CLS_OWN; break;   /* a plain instance: its own klass */
+            default: break;
         }
         vm->sdi_cls[64 + f] = k;
     }

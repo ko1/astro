@@ -1571,6 +1571,7 @@ struct korb_vm {
     /* korb_sdi_klass's branch-free class table (korb_sdi_init): [0..63] an immediate by (v & 63), [64..127] a heap
      * object by (flags & 0x3F): the builtin's class, or nil (a plain instance never reads it).  GC roots. */
     korb_value sdi_cls[128];
+#define KORB_SDI_CLS_OWN ((korb_value)1)   /* sdi_cls: a plain instance, its own klass (odd: never a class) */
     KorbObject sdi_imm_obj;        /* what korb_sdi_klass dereferences for an immediate (flags 0, klass nil) */
     /* set when Array#[] / Array#[]= is redefined: node_aref/node_aset then deopt
      * to a real send so the redefinition is honored (CRuby compat). */

@@ -2768,16 +2768,19 @@ korb_sdi_klass(const struct korb_vm *vm, const korb_value r)
         return VAL2OBJ(r)->klass;
     return korb_sdi_klass_slow(vm, r);
 #endif
-    if (LIKELY(AROH_IS_GC_OBJECT(r)) &&
-        LIKELY((((const AroObjectHeader *)(uintptr_t)r)->flags & (KORB_OBJ_TYPE_MASK | KORB_FL_HAS_KLASS)) == KORB_OBJ_OBJECT))
-        return VAL2OBJ(r)->klass;   /* a plain instance (nil for main): the fall-through */
-    /* anything else: one table read (vm->sdi_cls, korb_sdi_init).  A select written as ?: or as bit masks came back
-     * from gcc as a cold block and two taken jumps per immediate receiver (acct62 v1 / v3), so the table is read
-     * here, on the out-of-line side, and only the plain instance is inline. */
-    const bool gc = AROH_IS_GC_OBJECT(r);
-    const AroObjectHeader *const h = gc ? (const AroObjectHeader *)(uintptr_t)r : &vm->sdi_imm_obj.head;
-    const unsigned f = (unsigned)h->flags & (KORB_OBJ_TYPE_MASK | KORB_FL_HAS_KLASS);
-    return vm->sdi_cls[gc ? 64u + f : (unsigned)(r & 63u)];
+    /* no branch for any receiver: the selects are cmov (gcc turned ?: and bit-mask selects back into a cold block
+     * and a jump there and back per site, acct62).  A plain instance reads its klass; the rest the table. */
+    const korb_value imm = (korb_value)(uintptr_t)&vm->sdi_imm_obj;
+    korb_value hp = r;
+    __asm__("test $7, %b1\n\tcmovnz %2, %0\n\ttest %1, %1\n\tcmovz %2, %0" : "+&r"(hp) : "r"(r), "r"(imm) : "cc");
+    const unsigned f = (unsigned)((const AroObjectHeader *)(uintptr_t)hp)->flags & (KORB_OBJ_TYPE_MASK | KORB_FL_HAS_KLASS);
+    uintptr_t ix = 64u + f;                                       /* a heap object by its flags */
+    const uintptr_t ii = (uintptr_t)(r & 63u);                    /* an immediate by its low bits */
+    __asm__("cmp %2, %3\n\tcmovne %1, %0" : "+&r"(ix) : "r"(ii), "r"(hp), "r"(r) : "cc");
+    korb_value k = vm->sdi_cls[ix];
+    const korb_value own = ((const KorbObject *)(uintptr_t)hp)->klass;   /* sdi_imm_obj's klass is nil */
+    __asm__("cmp %2, %0\n\tcmove %1, %0" : "+&r"(k) : "r"(own), "r"((korb_value)KORB_SDI_CLS_OWN) : "cc");
+    return k;
 }
 /* NFN = how many builtins the name stands for (a constant: the compares fold away) */
 static inline __attribute__((always_inline)) bool
@@ -2869,7 +2872,8 @@ EVAL_node_send_inl_##K(CTX *c, NODE *n, korb_value *slots, uint32_t mid, uint64_
         if (LIKELY(rr.state == KORB_NORMAL)) return rr; \
         return korb_call_ret_cold(c, rr, korb_flink_line(link), mid, (korb_value)((uintptr_t)m | KORB_FID_CFUNC)); \
     }
-#define KORB_SDI_BOOL(x) RESULT_OK((x) ? KORB_TRUE : KORB_FALSE)
+/* true / false without a branch (a ?: here became a jump to the false side and back at every site) */
+#define KORB_SDI_BOOL(x) RESULT_OK(KORB_FALSE + ((korb_value)(unsigned)!!(x) << 4))
 #define KORB_SDI_DEF(K, ARGC, BODY) KORB_SDI_DEFX(K, ARGC, KORB_SDI_KL_ANY, KORB_SDI_FN_MAX, BODY)
 
 KORB_SDI_DEFX(GETBYTE, 1, KORB_SDI_KL_STR, 1, {
