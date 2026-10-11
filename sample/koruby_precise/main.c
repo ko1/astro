@@ -408,6 +408,9 @@ koruby_extra_cflags(char *buf, size_t n)
               * vector load right after their scalar stores: store-forwarding
               * fails and the loop stalls (nested_loop 3x under pool mode). */
              " -fno-tree-slp-vectorize"
+             /* acct48 binds a stub call by its return address: cross-jumping merges two sites' identical
+              * call tails into one instruction, which then reaches the first site's callee for both */
+             " -fno-crossjumping"
              " -I" KORUBY_SRC_DIR
              " -I" ASTRO_RUNTIME_DIR
              " -I" ASTRO_PRISM_INC_DIR
@@ -2001,6 +2004,7 @@ main(int argc, char *argv[])
             }
             if (getenv("KORUBY_CC_STATS")) fprintf(stderr, "koruby_precise: optent: reused %u built %u table %u\n", c->vm->optent_hits, c->vm->optent_builds, c->vm->optent_n);
             if (getenv("KORUBY_CC_STATS")) fprintf(stderr, "koruby_precise: dc: stub calls %llu, sites bound %llu, unbound calls %llu, resets %llu\n", (unsigned long long)c->vm->dc_calls, (unsigned long long)c->vm->dc_patches, (unsigned long long)c->vm->dc_unbound, (unsigned long long)c->vm->dc_resets);   /* EXPERIMENT acct48 */
+            if (c->vm->dc_check) fprintf(stderr, "koruby_precise: DC-CHECK: %llu call instructions seen, %llu reached from two caches\n", (unsigned long long)c->vm->dc_chk_n, (unsigned long long)c->vm->dc_conflicts);
             if (getenv("KORUBY_CC_STATS")) fprintf(stderr, "koruby_precise: cc: share %d, fills %llu (from own %llu, from shared %llu), interns %llu, hits %llu, patches %llu (no location %llu), table %u, probes %llu\n", (int)c->vm->cc_share, (unsigned long long)c->vm->cc_fills, (unsigned long long)c->vm->cc_fill_own, (unsigned long long)c->vm->cc_fill_shared, (unsigned long long)c->vm->cc_interns, (unsigned long long)c->vm->cc_hits, (unsigned long long)c->vm->cc_patches, (unsigned long long)c->vm->cc_patch0, c->vm->cc_n, (unsigned long long)c->vm->cc_probes);   /* EXPERIMENT acct45 */
             const char *const pd = getenv("KORUBY_PROFILE_DUMP");   /* EXPERIMENT KORB_PROFILE */
             if (pd && pd[0]) korb_profile_dump(c->vm, ast, pd);

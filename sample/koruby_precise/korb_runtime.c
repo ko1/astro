@@ -7185,6 +7185,47 @@ korb_dc_slot(struct korb_vm *vm, const struct korb_inlcache *ic)
     while (vm->dc_tab[i].ic && vm->dc_tab[i].ic != ic) i = (i + 1) & (vm->dc_cap - 1);
     return &vm->dc_tab[i];   /* the entry, or the empty slot it would go in */
 }
+/* KORUBY_DC_CHECK=1: bind nothing; report a return address (one call instruction) seen with two different callees.
+ * Binding is by return address, so such an instruction would send one site's calls to another site's callee. */
+struct korb_dc_chk { const void *ret; const NODE *body; const struct korb_inlcache *ic; bool reported; };
+static void
+korb_dc_check(struct korb_vm *const vm, const void *const ret, const NODE *const body, const struct korb_inlcache *const ic)
+{
+    if (vm->dc_chk_n * 2 >= vm->dc_chk_cap) {
+        const uint32_t nc = vm->dc_chk_cap ? vm->dc_chk_cap * 2 : 1u << 12;
+        struct korb_dc_chk *const nt = calloc(nc, sizeof(*nt));
+        for (uint32_t i = 0; i < vm->dc_chk_cap; i++) {
+            if (!vm->dc_chk[i].ret) continue;
+            uint32_t j = (uint32_t)(((uintptr_t)vm->dc_chk[i].ret * 0x9E3779B97F4A7C15ull) >> 40) & (nc - 1);
+            while (nt[j].ret) j = (j + 1) & (nc - 1);
+            nt[j] = vm->dc_chk[i];
+        }
+        free(vm->dc_chk); vm->dc_chk = nt; vm->dc_chk_cap = nc;
+    }
+    uint32_t i = (uint32_t)(((uintptr_t)ret * 0x9E3779B97F4A7C15ull) >> 40) & (vm->dc_chk_cap - 1);
+    while (vm->dc_chk[i].ret && vm->dc_chk[i].ret != ret) i = (i + 1) & (vm->dc_chk_cap - 1);
+    struct korb_dc_chk *const e = &vm->dc_chk[i];
+    if (!e->ret) {
+        e->ret = ret; e->body = body; e->ic = ic; vm->dc_chk_n++;
+        if (vm->dc_check >= 2) {   /* KORUBY_DC_CHECK=2: every call instruction, where it is */
+            Dl_info di; const char *nb = "?";
+            for (uint32_t k = 0; k < code_repo_count(); k++) if (code_repo_body_at(k) == body && code_repo_name_at(k)) nb = code_repo_name_at(k);
+            fprintf(stderr, "koruby_precise: DC-CHECK: new call at %p (%s) for %s\n", ret, dladdr(ret, &di) && di.dli_fname ? di.dli_fname : "anon", nb);
+        }
+        return;
+    }
+    if (e->body == body || e->ic == ic) { e->body = body; return; }   /* one site refilled: a bound one is unbound by korb_dc_refill */
+    if (!e->reported) {
+        e->reported = true; vm->dc_conflicts++;
+        const char *na = "?", *nb = "?";
+        for (uint32_t k = 0; k < code_repo_count(); k++) {
+            if (code_repo_body_at(k) == e->body && code_repo_name_at(k)) na = code_repo_name_at(k);
+            if (code_repo_body_at(k) == body && code_repo_name_at(k)) nb = code_repo_name_at(k);
+        }
+        fprintf(stderr, "koruby_precise: DC-CHECK: call at %p reached from two caches, for %s and %s\n", ret, na, nb);
+    }
+    e->body = body; e->ic = ic;
+}
 __attribute__((noinline)) RESULT
 korb_entry_call(CTX *c, NODE *body, korb_value *slots, const struct korb_inlcache *ic)
 {
@@ -7192,6 +7233,7 @@ korb_entry_call(CTX *c, NODE *body, korb_value *slots, const struct korb_inlcach
     const void *const ret = __builtin_return_address(0);
     struct korb_vm *const vm = c->vm;
     vm->dc_calls++;
+    if (UNLIKELY(vm->dc_check)) { korb_dc_check(vm, ret, body, ic); return (*d)(c, body, slots); }
     if (!ic->poly && !ic->shared && d != korb_hot_tramp()) {
         struct korb_dc_ent *const e = korb_dc_slot(vm, ic);
         if (e->ic == NULL && astro_ld_patch_call(ret, (uintptr_t)d, (uintptr_t)korb_entry_call)) {
@@ -24076,6 +24118,7 @@ korb_ctx_new(void)
     korb_sdi_preinit(c->vm);
     { const char *const e = getenv("KORUBY_TYHINT"); c->vm->ty_observe = e && *e && strcmp(e, "0") != 0; }   /* EXPERIMENT KORB_TYHINT */
     { const char *const e = getenv("KORUBY_CC_SHARE"); c->vm->cc_share = (e && strcmp(e, "1") == 0); c->vm->cc_check = getenv("KORUBY_CC_CHECK") != NULL; }   /* EXPERIMENT acct45: off unless KORUBY_CC_SHARE=1 (on, no site binds acct48's direct call: +25 instructions a call) */
+    { const char *const e = getenv("KORUBY_DC_CHECK"); c->vm->dc_check = e && e[0] && strcmp(e, "0") != 0 ? (uint8_t)atoi(e) : 0; }   /* EXPERIMENT acct48 audit: see korb_dc_check */
     { const char *const e = getenv("KORUBY_SEND_INL"); c->vm->send_inl = !(e && strcmp(e, "0") == 0); }   /* EXPERIMENT acct46: default on */
                                /* calloc's NULL would match a Ruby method's rfn */
 #ifndef KORB_WASI
