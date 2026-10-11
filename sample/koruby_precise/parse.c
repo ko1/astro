@@ -1189,7 +1189,7 @@ kp_bpt_visit(const pm_node_t *node, void *data)
             if (ex && PM_NODE_TYPE_P(ex, PM_LOCAL_VARIABLE_READ_NODE) &&
                 ((const pm_local_variable_read_node_t *)ex)->name == st->name &&
                 ((const pm_local_variable_read_node_t *)ex)->depth == st->depth) {
-                if (st->depth != 0 || !kp_blkfwd_call_shape_p(cn)) { st->ok = false; return false; }
+                if (!kp_blkfwd_call_shape_p(cn)) { st->ok = false; return false; }   /* in a block too: node_*_blkfwd_outer */
                 if (cn->receiver) pm_visit_node(cn->receiver, kp_bpt_visit, data);   /* everything but the `&blk` */
                 if (cn->arguments) pm_visit_node((const pm_node_t *)cn->arguments, kp_bpt_visit, data);
                 return false;
@@ -1219,8 +1219,8 @@ kp_bpt_visit(const pm_node_t *node, void *data)
         return true;
     }
 }
-/* `def m(&blk)` whose blk only ever appears as the `&blk` of a call in the method's own body (not in a
- * block, no binding / eval): the method never needs the Proc — node_send_blkfwd / node_call_blkfwd pass
+/* `def m(&blk)` whose blk only ever appears as the `&blk` of a call (in the method's body or a block in it; no
+ * binding / eval): the method never needs the Proc — node_send_blkfwd / node_call_blkfwd pass
  * the received block on as is, which is CRuby's block param proxy.  railsbench made ~91 Procs (and as
  * many escaped envs) a request in node_blkparam for Rack's fetch_header, ActiveModel's _read_attribute,
  * MonitorMixin#synchronize … */
@@ -1231,6 +1231,26 @@ kp_blk_passthru(struct kp_ctx *tc, const pm_node_t *body, pm_constant_id_t name)
     struct kp_bpt st = { tc, name, 0, true };
     pm_visit_node(body, kp_bpt_visit, &st);
     return st.ok;
+}
+/* `&blk` at a call inside a block of a kp_blk_passthru method: the method frame and the env-link depth to it */
+static bool
+kp_blkfwd_outer_arg_p(struct kp_ctx *tc, const pm_block_argument_node_t *ba, uint32_t *depth, struct kp_frame **mf)
+{
+    if (!ba->expression || !PM_NODE_TYPE_P(ba->expression, PM_LOCAL_VARIABLE_READ_NODE)) return false;
+    const pm_local_variable_read_node_t *const r = (const pm_local_variable_read_node_t *)ba->expression;
+    if (r->depth == 0) return false;
+    struct kp_frame *const f = kp_frame_at(tc, r->depth);
+    if (f == NULL || f->method_mid == 0 || f->blk_fwd_name == 0 || f->blk_fwd_name != r->name) return false;
+    *depth = r->depth; *mf = f;
+    return true;
+}
+/* the block that forwards reaches the method's trio: escaping, it must reify it (as `yield` in a block does) */
+static void
+kp_blkfwd_outer_note(struct kp_ctx *tc, struct kp_frame *mf, uint32_t depth)
+{
+    mf->uses_block = true;
+    if (depth > tc->frame->max_ref_depth) tc->frame->max_ref_depth = depth;
+    if (depth > tc->frame->yield_depth)   tc->frame->yield_depth = depth;
 }
 /* `&blk` at a call: the passed-on block of a kp_blk_passthru method */
 static bool
@@ -2628,6 +2648,25 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
                 const int32_t off = tc->chain + (int32_t)cnt + KORB_FRAME_HDR;
                 return KP_LINK(tc, node_call_blkfwd, mid, kp_flink(tc, line), -3 - off, -2 - off, -1 - off, argv, cnt);
             }
+            uint32_t fd = 0; struct kp_frame *fmf = NULL;
+            if (kp_blkfwd_outer_arg_p(tc, ba, &fd, &fmf)) {   /* ... from inside a block: its trio via the env chain */
+                const uint32_t cnt = 1u + (uint32_t)argc;
+                NODE **argv = malloc(sizeof(NODE *) * cnt);
+                if (!argv) abort();
+                const int32_t saved = tc->chain;
+                tc->chain = saved + (int32_t)cnt + KORB_FRAME_HDR;   /* @framehdr cursor +HDR */
+                argv[0] = bake_self(tc);
+                for (size_t i = 0; i < argc; i++) argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
+                tc->chain = saved;
+                const int32_t off = tc->chain + (int32_t)cnt + KORB_FRAME_HDR;
+                const uint32_t ps = alloc_synth_local(tc);
+                NODE *call = KP_LINK(tc, node_call_blkfwd_outer, mid, kp_flink(tc, line), -2 - off, fd, -3, (int32_t)ps - off, argv, cnt);
+                bake_add(tc, &call->u.node_call_blkfwd_outer.prev_off);
+                bake_add(tc, &call->u.node_call_blkfwd_outer.proc_off);
+                add_bake_to(fmf, &call->u.node_call_blkfwd_outer.trio_base);
+                kp_blkfwd_outer_note(tc, fmf, fd);
+                return call;
+            }
             if (!ba->expression || !PM_NODE_TYPE_P(ba->expression, PM_SYMBOL_NODE)) {
                 const bool anon_blk = (ba->expression == NULL);
                 uint32_t anon_d = 0; int32_t anon_s = -1; NODE *anon_pre = NULL;
@@ -2982,6 +3021,26 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 const int32_t off = tc->chain + (int32_t)sc + KORB_FRAME_HDR;
                 NODE *call = KP_LINK(tc, node_send_blkfwd, mid, kp_flink(tc, line), -1 - off, -3 - off, -2 - off, -1 - off, argv, sc);
                 bake_add(tc, &call->u.node_send_blkfwd.self_off);
+                return call;
+            }
+            uint32_t fd = 0; struct kp_frame *fmf = NULL;
+            if (kp_blkfwd_outer_arg_p(tc, ba, &fd, &fmf) && safe_tmp < 0) {   /* ... from inside a block: its trio via the env chain */
+                const uint32_t sc = 1u + (uint32_t)argc;
+                NODE **argv = malloc(sizeof(NODE *) * sc);
+                if (!argv) abort();
+                const int32_t saved = tc->chain;
+                tc->chain = saved + (int32_t)sc + KORB_FRAME_HDR;   /* @framehdr cursor +HDR */
+                argv[0] = RECV_NODE();
+                for (size_t i = 0; i < argc; i++) argv[1 + i] = transduce(tc, cn->arguments->arguments.nodes[i]);
+                tc->chain = saved;
+                const int32_t off = tc->chain + (int32_t)sc + KORB_FRAME_HDR;
+                const uint32_t ps = alloc_synth_local(tc);
+                NODE *call = KP_LINK(tc, node_send_blkfwd_outer, mid, kp_flink(tc, line), -1 - off, -2 - off, fd, -3, (int32_t)ps - off, argv, sc);
+                bake_add(tc, &call->u.node_send_blkfwd_outer.self_off);
+                bake_add(tc, &call->u.node_send_blkfwd_outer.prev_off);      /* this block frame's EP (base[-2]) */
+                bake_add(tc, &call->u.node_send_blkfwd_outer.proc_off);
+                add_bake_to(fmf, &call->u.node_send_blkfwd_outer.trio_base);  /* += the method's frame_size */
+                kp_blkfwd_outer_note(tc, fmf, fd);
                 return call;
             }
             if (!ba->expression || !PM_NODE_TYPE_P(ba->expression, PM_SYMBOL_NODE)) {

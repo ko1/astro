@@ -3851,6 +3851,62 @@ node_call_blkfwd(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t 
     return korb_call_blk_fwd(c, cur, mid, line, cc, argv_cnt - 1 - kw0, self, iseq, denv, &slots[cself_off]);
 }
 
+// node_send_blkfwd from inside a block: the method's `&blk` (kp_blk_passthru) read `depth` env links out.  While
+// the method runs its trio is in its frame (korb_outer_trio); after it returned, the Proc the escape reified there
+// (cap_yield) goes on as a `&proc` rooted in proc_off; no block given -> none.  CRuby's getblockparamproxy at a level.
+NODE_DEF @framehdr
+node_send_blkfwd_outer(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, int32_t self_off, int32_t prev_off, uint32_t depth, int32_t trio_base, int32_t proc_off, NODE **argv@children, struct korb_inlcache *ic@ref)
+{
+    const uint32_t line = korb_flink_line(flink);
+    (void)n;
+    korb_value blk;
+    korb_value *const trio = korb_outer_trio(c, &slots[prev_off], depth, trio_base, &blk);
+    const bool kw0 = korb_empty_kwsplat_p(slots[-1]) && argv_cnt > 1;   /* an empty `**h` is no argument */
+    korb_value *const cur = kw0 ? slots - 1 : slots;
+    if (trio != NULL && (trio[0] & 1u)) {
+        NODE *const iseq = (NODE *)(uintptr_t)(trio[0] & ~(uintptr_t)1u);
+        korb_value *denv = (korb_value *)(uintptr_t)trio[1];   /* as node_send_blkfwd */
+        if (iseq == KORB_BLK_CPROC || (korb_value *)((uintptr_t)denv & ~(uintptr_t)1u) == KORB_BLK_FWD) denv = KORB_BLK_FWD;
+        return korb_send_blk_fwd(c, cur, mid, line, argv_cnt - 1 - kw0, iseq, denv, &trio[2], flink, slots[self_off], ic);
+    }
+    if (trio == NULL && KORB_PROC_P(blk)) {   /* the method returned, or runs on another thread: its `break` is orphaned */
+        VAL2PROC(blk)->brk_orphan = 1;
+        slots[proc_off] = blk;
+        NODE *iseq = VAL2PROC(blk)->iseq;
+        if (iseq == NULL) iseq = KORB_BLK_CPROC;
+        return korb_send_blk_ic(c, cur, mid, line, argv_cnt - 1 - kw0, iseq, KORB_BLK_FWD, &slots[proc_off], flink, slots[self_off], ic);
+    }
+    korb_flink_stage(c, flink, slots - (korb_sword_t)argv_cnt - 2);
+    return korb_send_vis(c, cur, mid, line, argv_cnt - 1 - kw0, slots[self_off]);
+}
+
+// node_call_blkfwd from inside a block (implicit self): as node_send_blkfwd_outer.
+NODE_DEF @framehdr
+node_call_blkfwd_outer(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, struct korb_callcache *cc@ref, int32_t prev_off, uint32_t depth, int32_t trio_base, int32_t proc_off, NODE **argv@children, struct korb_inlcache *ic@ref)
+{
+    const uint32_t line = korb_flink_line(flink);
+    (void)n;
+    korb_value blk;
+    korb_value *const trio = korb_outer_trio(c, &slots[prev_off], depth, trio_base, &blk);
+    const bool kw0 = korb_empty_kwsplat_p(slots[-1]) && argv_cnt > 1;
+    korb_value *const cur = kw0 ? slots - 1 : slots;
+    const korb_value self = slots[-(korb_sword_t)argv_cnt];
+    if (trio != NULL && (trio[0] & 1u)) {
+        NODE *const iseq = (NODE *)(uintptr_t)(trio[0] & ~(uintptr_t)1u);
+        korb_value *denv = (korb_value *)(uintptr_t)trio[1];
+        if (iseq == KORB_BLK_CPROC || (korb_value *)((uintptr_t)denv & ~(uintptr_t)1u) == KORB_BLK_FWD) denv = KORB_BLK_FWD;
+        return korb_call_blk_fwd(c, cur, mid, line, cc, argv_cnt - 1 - kw0, self, iseq, denv, &trio[2]);
+    }
+    slots[proc_off] = (trio == NULL && KORB_PROC_P(blk)) ? blk : KORB_NIL;
+    if (slots[proc_off] != KORB_NIL) {   /* as node_send_blkfwd_outer: an orphaned `break` */
+        VAL2PROC(blk)->brk_orphan = 1;
+        NODE *iseq = VAL2PROC(blk)->iseq;
+        if (iseq == NULL) iseq = KORB_BLK_CPROC;
+        return korb_call_blk_ic(c, cur, mid, line, cc, argv_cnt - 1 - kw0, self, iseq, KORB_BLK_FWD, &slots[proc_off], ic);
+    }
+    return korb_call_blk(c, cur, mid, line, cc, argv_cnt - 1 - kw0, self, NULL, NULL, &slots[proc_off]);
+}
+
 // yield to the current method's block.  `biseq_off` / `def_env_off` /
 // `cself_off` read the frame's reserved block cells (odd-tagged); korb_yield
 // masks and sets up the block frame (incl. its captured self).
