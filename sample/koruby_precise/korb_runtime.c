@@ -16458,6 +16458,13 @@ korb_send_cfunc_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, u
 __attribute__((noinline, no_stack_protector)) RESULT
 korb_send_simple_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc, const struct korb_inlcache *ic)
 {
+    const struct korb_method *const m = ic->m;
+    if (m->simple_entry != NULL && argc == (uint32_t)m->params_cnt) {   /* the method's own entry SD (constants folded), as an instance hit */
+        korb_id_set(slots - argc, (korb_value)((uintptr_t)m | KORB_FID_METHOD));
+        const RESULT r = (*m->simple_entry->head.dispatcher)(c, m->simple_entry, slots);
+        if (LIKELY(r.state == KORB_NORMAL)) return r;
+        return korb_call_ret_cold(c, r, flink, mid, korb_id_get(slots - argc));
+    }
     return korb_invoke_simple(c, slots, ic->m, argc, korb_flink_line(flink), mid, slots[-(korb_sword_t)argc - 1], ic->def_class);
 }
 __attribute__((no_stack_protector)) RESULT
@@ -16486,7 +16493,7 @@ korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint
     if (KORB_CLASS_P(recv) && LIKELY(ic->kind == KORB_IC_SMETHOD && ic->serial == c->vm->method_serial && ic->klass == recv)) {
         struct korb_method *const m = ic->m;
         if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple && m->visibility == 0 && !c->vm->refinements_active))
-            return korb_invoke_simple(c, slots, m, argc, korb_flink_line(flink), mid, recv, ic->def_class);
+            return korb_send_simple_hit(c, slots, mid, flink, argc, ic);
         if (m->kind == KORB_METHOD_ATTR_R && argc == 0 && m->visibility == 0 && !c->vm->refinements_active)   /* class << self; attr_reader */
             return RESULT_OK(korb_ivar_get(c, recv, ID2SYM(m->attr_ivar)));
         /* a class's public C method (Thread.current, Time.now, ...: railsbench 525k per iteration went through
