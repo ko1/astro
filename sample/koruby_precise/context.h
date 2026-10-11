@@ -1192,6 +1192,8 @@ struct korb_method {
                               * obj's singleton) from `TOPLEVEL_BINDING.eval("def self.m; binding; end")`
                               * (cref = Object, though the owner is main's singleton).  Forwarded next to owner. */
     struct Node **opt_defaults;  /* ISEQ: default-value exprs for optionals (len = params_cnt-req_cnt), NULL if none */
+    struct Node **opt_entries;   /* ISEQ with optionals only: [argc - req_cnt] = a node_simple_entry that sets the missing
+                                  * defaults, then runs the body (korb_opt_entries_build); NULL if none */
     void *kw_info;           /* ISEQ: struct korb_kw_info * (keyword params), NULL if none */
     void *param_info;        /* ISEQ: struct korb_param_info * (full param list for #parameters), NULL if none — cold-read only */
     void *locals_info;       /* ISEQ: struct korb_locals_info * (local names by slot), NULL if none — cold-read only */

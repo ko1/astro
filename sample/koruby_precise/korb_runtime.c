@@ -5777,7 +5777,7 @@ korb_class_method_slot(struct korb_vm *const vm, KorbClass *const k, uint32_t mi
     m->rfn = NULL; m->rbfn = NULL; m->bfn = NULL; m->is_simple = 0; m->dm_proc = KORB_NIL; m->sdi_k = 0;
     m->ruby2_kw = 0;                              /* a redefinition drops the ruby2_keywords flag */
     m->def_cref = KORB_NIL;                       /* … and the eval cref it was defined under */
-    m->simple_entry = NULL;                       /* 再定義でスロットを使い回すので必ず落とす */
+    m->simple_entry = NULL; m->opt_entries = NULL;   /* 再定義でスロットを使い回すので必ず落とす */
     m->super_owner = KORB_NIL;             /* a redefinition drops any inherited alias origin */
     m->label_src = NULL;
     m->sdef = 0;
@@ -6495,6 +6495,29 @@ korb_relocate_object_methods(CTX *c, korb_value *slots)
     vm->method_serial++;
 }
 
+/* `def m(a, b = 1)` called with 1 argument went through korb_send_cached -> korb_invoke_opt (342 instructions a call,
+ * mb66 o1; a fixed-arity call is 88).  Build, per accepted argc below params_cnt, the node_simple_entry such a call
+ * can take from the site's cache: it sets each missing default in order (a default may read earlier params) and then
+ * runs the body.  argc == params_cnt gets one too (no default to set: what a simple method's parser-built entry is).  Registered like attr_reader's synthetic entry so the AOT store bakes it. */
+static struct Node **
+korb_opt_entries_build(const struct korb_method *m, uint32_t uses_block)
+{
+    struct Node **const dflts = m->opt_defaults;
+    const uint32_t req = m->req_cnt, np = (uint32_t)m->params_cnt;
+    if (dflts == NULL || m->kw_info != NULL || m->rest_slot >= 0 || m->post_cnt != 0 || m->no_block || req >= np) return NULL;
+    struct Node **const es = calloc(np - req + 1, sizeof *es);   /* argc = req .. np (np: all given, no default to set) */
+    if (es == NULL) return NULL;
+    for (uint32_t a = req; a <= np; a++) {
+        NODE *b = m->body;
+        for (uint32_t pi = np; pi-- > a; )
+            b = ALLOC_node_seq(ALLOC_node_lset((int32_t)pi - (int32_t)m->locals_cnt, dflts[pi - req]), b);
+        NODE *const e = ALLOC_node_simple_entry(b, a, m->locals_cnt, (uses_block & KORB_DEFF_USES_BACKREF) ? 1u : 0u);
+        code_repo_add("opt_entry", e, true);
+        korb_synth_node_ready(e);
+        es[a - req] = e;
+    }
+    return es;
+}
 void
 korb_class_def_method(CTX *c, korb_value klass, uint32_t mid, NODE *body, NODE *entry,
                       uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
@@ -6536,6 +6559,7 @@ korb_class_def_method(CTX *c, korb_value klass, uint32_t mid, NODE *body, NODE *
     /* parser-built node_simple_entry (also for uses_block: fixed arity, block-less sites only).
      * `&nil` opts out: the streamlined path never sees the block it must refuse. */
     m->simple_entry = m->no_block ? NULL : entry;
+    m->opt_entries = korb_opt_entries_build(m, uses_block);
     /* Auto-attr: a method whose body is exactly `@ivar` (no params, no block)
      * is an attr_reader — dispatch returns the ivar directly, skipping a frame.
      * A multi-statement body roots at node_seq, so only the bare single-read
@@ -7153,12 +7177,19 @@ korb_entry_call(CTX *c, NODE *body, korb_value *slots, const struct korb_inlcach
 }
 /* The site's cache is about to be refilled with `m`: the same method (a serial bump) keeps the binding; another
  * unbinds it and marks the site polymorphic, so it never binds again (each rebind is a code write). */
+static bool
+korb_opt_entry_p(const struct korb_method *m, const NODE *body)
+{
+    if (m->opt_entries == NULL) return false;
+    for (uint32_t i = 0; i <= (uint32_t)m->params_cnt - m->req_cnt; i++) if (m->opt_entries[i] == body) return true;
+    return false;
+}
 void
 korb_dc_refill(struct korb_vm *vm, struct korb_inlcache *ic, const struct korb_method *m)
 {
     struct korb_dc_ent *const e = korb_dc_slot(vm, ic);
     if (e->ic == NULL) return;
-    if (m != NULL && ic->m == m && ic->body == m->simple_entry) return;
+    if (m != NULL && ic->m == m && ic->body != NULL && (ic->body == m->simple_entry || korb_opt_entry_p(m, ic->body))) return;
     astro_ld_call_reset(e->ret, (uintptr_t)korb_entry_call);
     e->ret = NULL; ic->poly = 1; vm->dc_resets++;   /* the entry stays (a tombstone keyed by ic): the site is refused above */
 }
@@ -10949,6 +10980,7 @@ korb_method_define(CTX *c, uint32_t mid, NODE *body, NODE *entry,
     m->simple_blk = (kw_info == NULL && rest_slot < 0 && post_cnt == 0 && req_cnt == params_cnt &&
                      uses_block == KORB_DEFF_USES_BLOCK && !m->no_block);
     m->simple_entry = m->no_block ? NULL : entry;   /* parser-built node_simple_entry (uses_block も可; `&nil` は除外) */
+    m->opt_entries = korb_opt_entries_build(m, uses_block);
     /* a user top-level def is a private Object method (korb_toplevel_def); the prelude's stay hidden */
     m->visibility = priv ? 1 : 0;
     c->vm->method_serial++;   /* invalidate call caches */
@@ -13231,7 +13263,7 @@ korb_call_impl(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
     if (LIKELY(m->is_simple)) {
         if (LIKELY(!vm->refinements_active))
             return korb_invoke_simple(c, slots, m, argc, line, mid, self, KORB_NIL);
-        m->is_simple = 0; m->simple_entry = NULL;                          /* see korb_dispatch_method */
+        m->is_simple = 0; m->simple_entry = NULL; m->opt_entries = NULL;                          /* see korb_dispatch_method */
     }
     return korb_invoke_method(c, slots, m, argc, line, mid, self, KORB_NIL,
                               block, def_env, KORB_CSELF_VAL(captured_self));
@@ -13320,7 +13352,7 @@ korb_refined_call(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32
     korb_value rdef = KORB_NIL;
     struct korb_method *const m = korb_refined_find(c, korb_dispatch_class(c, self), mid, &rdef);
     if (m == NULL || m->kind != KORB_METHOD_ISEQ) return false;
-    m->is_simple = 0; m->simple_entry = NULL;                       /* the callee needs its own refinement set */
+    m->is_simple = 0; m->simple_entry = NULL; m->opt_entries = NULL;                       /* the callee needs its own refinement set */
     *out = korb_invoke_method(c, slots, m, argc, line, mid, self, rdef, NULL, NULL, KORB_NIL);
     return true;
 }
@@ -13375,7 +13407,7 @@ korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
             if (LIKELY(m->kind == KORB_METHOD_ISEQ && m->is_simple)) {  /* hot path: inlines */
                 if (LIKELY(!vm->refinements_active))
                     return korb_invoke_simple(c, slots, m, argc, korb_flink_line(flink), mid, self, def_class);
-                m->is_simple = 0; m->simple_entry = NULL;                     /* see korb_dispatch_method */
+                m->is_simple = 0; m->simple_entry = NULL; m->opt_entries = NULL;                     /* see korb_dispatch_method */
             }
             if (m->kind == KORB_METHOD_CFUNC && !m->uses_block && site != NULL &&
                 LIKELY(m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {

@@ -1443,6 +1443,9 @@ korb_ic_fill_raw(const struct korb_vm *vm, struct korb_inlcache *ic, uint64_t se
     if (m == NULL || kind != KORB_IC_INSTANCE) return;
     if (m->simple_entry != NULL && argc == (uint32_t)m->params_cnt) {   /* ISEQ simple entry or attr_reader (its ivar node) */
         ic->body = m->simple_entry; ic->dispatch = m->simple_entry->head.dispatcher;
+    } else if (m->opt_entries != NULL && argc >= m->req_cnt && argc <= (uint32_t)m->params_cnt && !vm->refinements_active) {
+        NODE *const e = m->opt_entries[argc - m->req_cnt];   /* optionals left out: korb_opt_entries_build */
+        ic->body = e; ic->dispatch = e->head.dispatcher;
     }
 }
 
