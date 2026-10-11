@@ -8538,10 +8538,45 @@ korb_dm_call_check(CTX *const c, korb_value *const slots, const NODE *const iseq
     return RESULT_OK(KORB_NIL);
 }
 
-RESULT
+static __attribute__((noinline)) RESULT
+korb_super_slow(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                korb_value entry_cell, korb_value self, NODE *block, korb_value *def_env, korb_value captured_self,
+                const korb_value *frame_base, struct korb_supcache *const sc);
+/* `super` whose site cache answers for a plain instance with a simple method: the restage and korb_invoke_simple,
+ * without korb_super_slow's frame and its kind cascade (a hit paid ~260 instructions there, mb66 sp; YJIT 101 for
+ * the whole call).  Anything else takes korb_super_slow, which fills the cache. */
+__attribute__((no_stack_protector)) RESULT
 korb_super(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
            korb_value entry_cell, korb_value self, NODE *block, korb_value *def_env, korb_value captured_self,
            const korb_value *frame_base, struct korb_supcache *const sc)
+{
+    struct korb_vm *const vm = c->vm;
+    if (LIKELY(sc != NULL) && ((uintptr_t)entry_cell & 7u) == KORB_FID_METHOD && LIKELY(mid != vm->mid_dm_super) &&
+        KORB_OBJECT_P(self) && !(((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS) &&
+        sc->serial == vm->method_serial && sc->klass == VAL2OBJ(self)->klass &&
+        sc->cur == (const struct korb_method *)((uintptr_t)entry_cell & ~(uintptr_t)7u) && sc->m != NULL &&
+        sc->m->kind == KORB_METHOD_ISEQ && sc->m->is_simple && LIKELY(!vm->refinements_active)) {
+        struct korb_method *const m = sc->m;
+        for (uint32_t j = 0; j < argc; j++) slots[4 + j] = slots[-(korb_sword_t)argc + j];
+        slots[0] = 0;
+        slots[1] = korb_flink_from_base(c, frame_base, korb_flink_line_bits(line), &slots[1]);
+        slots[2] = 0;
+        slots[3] = self;
+        korb_value *const cur = slots + 4 + argc;
+        if (m->simple_entry != NULL && argc == (uint32_t)m->params_cnt) {   /* the method's own entry SD (constants folded), as a cached send */
+            korb_id_set(cur - argc, (korb_value)((uintptr_t)m | KORB_FID_METHOD));
+            const RESULT r = (*m->simple_entry->head.dispatcher)(c, m->simple_entry, cur);
+            if (LIKELY(r.state == KORB_NORMAL)) return r;
+            return korb_call_ret_cold(c, r, slots[1], mid, korb_id_get(cur - argc));
+        }
+        return korb_invoke_simple(c, cur, m, argc, line, mid, self, sc->def_class);
+    }
+    return korb_super_slow(c, slots, mid, line, argc, entry_cell, self, block, def_env, captured_self, frame_base, sc);
+}
+static __attribute__((noinline)) RESULT
+korb_super_slow(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
+                korb_value entry_cell, korb_value self, NODE *block, korb_value *def_env, korb_value captured_self,
+                const korb_value *frame_base, struct korb_supcache *const sc)
 {
     if (UNLIKELY(mid == c->vm->mid_dm_super)) {   /* `super` in a define_method body */
         if (UNLIKELY(c->dm_entry == NULL))
