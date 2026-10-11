@@ -24016,7 +24016,7 @@ korb_ctx_new(void)
     c->vm->sigfd = -1;                                  /* calloc's 0 is a real fd */
     korb_sdi_preinit(c->vm);
     { const char *const e = getenv("KORUBY_TYHINT"); c->vm->ty_observe = e && *e && strcmp(e, "0") != 0; }   /* EXPERIMENT KORB_TYHINT */
-    { const char *const e = getenv("KORUBY_CC_SHARE"); c->vm->cc_share = !(e && strcmp(e, "0") == 0); c->vm->cc_check = getenv("KORUBY_CC_CHECK") != NULL; }   /* EXPERIMENT acct45: default on */
+    { const char *const e = getenv("KORUBY_CC_SHARE"); c->vm->cc_share = (e && strcmp(e, "1") == 0); c->vm->cc_check = getenv("KORUBY_CC_CHECK") != NULL; }   /* EXPERIMENT acct45: off unless KORUBY_CC_SHARE=1 (on, no site binds acct48's direct call: +25 instructions a call) */
     { const char *const e = getenv("KORUBY_SEND_INL"); c->vm->send_inl = !(e && strcmp(e, "0") == 0); }   /* EXPERIMENT acct46: default on */
                                /* calloc's NULL would match a Ruby method's rfn */
 #ifndef KORB_WASI
