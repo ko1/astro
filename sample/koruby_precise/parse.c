@@ -1690,6 +1690,7 @@ static NODE *build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, ui
 static NODE *build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n,
                                   uint32_t depth, int32_t slot);
 static NODE *build_call_args(struct kp_ctx *tc, struct pm_node **elems, size_t n);
+static bool kp_blkarg_no_dup_p(const pm_node_t *e);
 static NODE *kp_make_binding_node(struct kp_ctx *tc, uint32_t line);
 static NODE *kp_make_binding_node_x(struct kp_ctx *tc, uint32_t line, uint32_t user_dispatch);
 extern const struct NodeKind kind_node_hash_merge;   /* hash literal ** splat chain */
@@ -2693,11 +2694,12 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
                     NODE *arr, *pre = pset;
                     if (blk_last) {   /* stash the built Array, then evaluate `&expr` */
                         const uint32_t ta = alloc_synth_local(tc);
-                        NODE *const sa = bake_lset(tc, ta, build_array(tc, args->arguments.nodes, argc, (uint32_t)argc));
+                        NODE *const sa = bake_lset(tc, ta, kp_blkarg_no_dup_p(ba->expression) ? build_call_args(tc, args->arguments.nodes, argc)
+                                                                                      : build_array(tc, args->arguments.nodes, argc, (uint32_t)argc));
                         pre = ALLOC_node_seq(sa, bake_lset(tc, pslot, transduce(tc, ba->expression)));
                         WITH_CHAIN(tc, 1, (arr = bake_lget(tc, ta)));
                     } else {
-                        WITH_CHAIN(tc, 1, (arr = build_array(tc, args->arguments.nodes, argc, (uint32_t)argc)));
+                        WITH_CHAIN(tc, 1, (arr = build_call_args(tc, args->arguments.nodes, argc)));
                     }
                     NODE *_cs = KP_LINK(tc, node_call_splat_blkproc, mid, kp_flink_at(tc, line, 2), self_off, proc_off, arr);
                     bake_add(tc, &_cs->u.node_call_splat_blkproc.self_off);
@@ -3073,12 +3075,13 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                     if (blk_last) {   /* stash receiver + built Array, then evaluate `&expr` */
                         const uint32_t tr = alloc_synth_local(tc), ta = alloc_synth_local(tc);
                         NODE *const sr = bake_lset(tc, tr, RECV_NODE());
-                        NODE *const sa = bake_lset(tc, ta, build_array(tc, cn->arguments->arguments.nodes, argc, (uint32_t)argc));
+                        NODE *const sa = bake_lset(tc, ta, kp_blkarg_no_dup_p(ba->expression) ? build_call_args(tc, cn->arguments->arguments.nodes, argc)
+                                                                                      : build_array(tc, cn->arguments->arguments.nodes, argc, (uint32_t)argc));
                         pre = ALLOC_node_seq(sr, ALLOC_node_seq(sa, bake_lset(tc, pslot, transduce(tc, ba->expression))));
                         WITH_CHAIN(tc, 2, (recv = bake_lget(tc, tr), arr = bake_lget(tc, ta)));
                     } else {
                         WITH_CHAIN(tc, 2, (recv = RECV_NODE(),
-                                           arr  = build_array(tc, cn->arguments->arguments.nodes, argc, (uint32_t)argc)));
+                                           arr  = build_call_args(tc, cn->arguments->arguments.nodes, argc)));
                     }
                     NODE *_cs = KP_LINK(tc, node_send_splat_blkproc, mid, kp_flink_at(tc, line, 3), bp_self_off, proc_off, recv, arr);
                     bake_add(tc, &_cs->u.node_send_splat_blkproc.self_off);
@@ -4378,10 +4381,25 @@ build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32
     return ALLOC_node_ary_concat(acc, fwd);
 }
 
+/* CRuby's setup_args_dup_rest_p: a `&expr` that can change nothing (a variable read, a constant, a literal) lets
+ * `m(*a, &expr)` pass the Array itself; anything else gets a copy (splatarray true) */
+static bool
+kp_blkarg_no_dup_p(const pm_node_t *e)
+{
+    if (e == NULL) return true;
+    switch (PM_NODE_TYPE(e)) {
+      case PM_LOCAL_VARIABLE_READ_NODE: case PM_INSTANCE_VARIABLE_READ_NODE: case PM_CLASS_VARIABLE_READ_NODE:
+      case PM_CONSTANT_READ_NODE: case PM_NIL_NODE: case PM_TRUE_NODE: case PM_FALSE_NODE: case PM_SYMBOL_NODE:
+      case PM_STRING_NODE: case PM_INTEGER_NODE: case PM_FLOAT_NODE:
+        return true;
+      default:
+        return false;
+    }
+}
 /* Call-site argument Array.  A lone `*x` becomes node_splat_view (no copy when
  * x already is an Array — the spreader reads it immediately); anything else is
- * build_array's push/concat chain.  Not for the &proc variants: they run
- * #to_proc (user code) before reading the array. */
+ * build_array's push/concat chain.  The &proc variants too: CRuby passes the Array itself there as well
+ * (splatarray false), so a #to_proc that mutates it is seen by the call; their nodes read it after #to_proc. */
 static NODE *
 build_call_args(struct kp_ctx *tc, struct pm_node **elems, size_t n)
 {
@@ -6718,7 +6736,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             int32_t soff = -1 - tc->chain - 1, dco = -4 - tc->chain - 1;
             int32_t poff = (int32_t)pslot - tc->chain - 1;
             NODE *arr;
-            WITH_CHAIN(tc, 1, (arr = build_array(tc, args ? args->arguments.nodes : NULL, argc, (uint32_t)argc)));
+            WITH_CHAIN(tc, 1, (arr = build_call_args(tc, args ? args->arguments.nodes : NULL, argc)));
             NODE *_s = ALLOC_node_super_blkproc(m_mid, line, soff, dco, poff, arr);
             bake_add(tc, &_s->u.node_super_blkproc.self_off);
             bake_add(tc, &_s->u.node_super_blkproc.dc_off);
