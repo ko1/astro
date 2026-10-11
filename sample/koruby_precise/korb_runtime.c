@@ -7706,6 +7706,31 @@ korb_invoke_kw_simple_body(CTX *c, korb_value *slots, struct korb_method *m, uin
             goto run_body;
         }
     }
+    /* the keywords given are the declared ones in declared order with gaps, each gap has a default (`k(a: x)` of
+     * `def k(a:, b: 1)`): one merge pass binds them, the defaults after (no scans, no missing / unknown checks) */
+    if (kw_argc < kw->count && kw->count <= 64) {
+        uint32_t p = 0; uint64_t gaps = 0; bool ok = true;
+        for (uint32_t j = 0; j < kw->count; j++) {
+            if (p < kw_argc && kw_syms[p] == kw->entries[j].mid) base[kw->entries[j].slot] = kwbuf[p++];
+            else if (kw->entries[j].deflt != NULL) gaps |= 1ull << j;
+            else { ok = false; break; }
+        }
+        if (LIKELY(ok && p == kw_argc)) {
+            for (uint32_t pi = pos_argc; pi < (uint32_t)m->params_cnt; pi++) {   /* optional positional defaults */
+                const RESULT dr = korb_eval_param_default(c, m->opt_defaults[pi - m->req_cnt], base + locals_cnt);
+                if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+                base[pi] = dr.value;
+            }
+            for (uint32_t j = 0; j < kw->count; j++) {
+                if (!(gaps & (1ull << j))) continue;
+                const RESULT dr = korb_eval_param_default(c, kw->entries[j].deflt, base + locals_cnt);
+                if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+                base[kw->entries[j].slot] = dr.value;
+            }
+            goto run_body;
+        }
+        /* not that shape: the slots it wrote are rebound below (pure copies) or the call raises */
+    }
     /* bind present keywords now (pure copies, no GC) → kwbuf dead afterwards */
     uint64_t present = 0;
     for (uint32_t j = 0; j < kw->count; j++) {
