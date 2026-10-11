@@ -1288,11 +1288,38 @@ static RESULT korb_sym_name_str(CTX *c, korb_value *slots, korb_value sym) {
     if (LIKELY(r.state == KORB_NORMAL)) KORB_STR_ENC_SET(r.value, c->vm->sym_encs[id]);
     return r;
 }
+static bool korb_ascii_bytes_p(const char *const restrict p, const uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) if ((unsigned char)p[i] >= 0x80) return false;
+    return true;
+}
+/* Symbol#start_with? / end_with? without the name String (railsbench: 95k an iteration): when the name and every
+ * argument are ASCII-only Strings in ASCII-compatible encodings, no encoding error or char boundary can differ from
+ * the String method's, so bytes decide.  Anything else (Regexp, #to_str, non-ASCII) takes the String method. */
+static int korb_sym_affix_fast(CTX *c, const korb_value sym, const korb_slice a, const bool at_end) {
+    const uint32_t id = SYM2ID(sym);
+    const char *const nm = korb_sym_name(c->vm, id); const uint32_t nl = c->vm->sym_lens[id];
+    if (!korb_enc_ascii_compat_idx(c->vm, c->vm->sym_encs[id]) || !korb_ascii_bytes_p(nm, nl)) return -1;
+    for (uint32_t i = 0; i < KORB_SLICE_LEN(a); i++) {
+        const korb_value pv = KORB_SLICE_GET(a, i);
+        if (!KORB_STRING_P(pv) || !korb_enc_ascii_compat_idx(c->vm, KORB_STR_ENC(pv))) return -1;
+        const KorbString *const p = VAL2STR(pv);
+        if (!korb_ascii_bytes_p(korb_str_ptr(p), p->len)) return -1;
+    }
+    for (uint32_t i = 0; i < KORB_SLICE_LEN(a); i++) {
+        const KorbString *const p = VAL2STR(KORB_SLICE_GET(a, i));
+        if (p->len <= nl && memcmp(nm + (at_end ? nl - p->len : 0), korb_str_ptr(p), p->len) == 0) return 1;
+    }
+    return 0;
+}
 static RESULT korb_m_sym_start_with(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    const int f = korb_sym_affix_fast(c, KORB_REF_GET(self), a, false);
+    if (f >= 0) return RESULT_OK(f ? KORB_TRUE : KORB_FALSE);
     slots[0] = UNWRAP(korb_sym_name_str(c, slots, KORB_REF_GET(self)));
     return korb_m_str_start_with(c, slots + 1, KORB_REF_AT(&slots[0]), a);
 }
 static RESULT korb_m_sym_end_with(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    const int f = korb_sym_affix_fast(c, KORB_REF_GET(self), a, true);
+    if (f >= 0) return RESULT_OK(f ? KORB_TRUE : KORB_FALSE);
     slots[0] = UNWRAP(korb_sym_name_str(c, slots, KORB_REF_GET(self)));
     return korb_m_str_end_with(c, slots + 1, KORB_REF_AT(&slots[0]), a);
 }
