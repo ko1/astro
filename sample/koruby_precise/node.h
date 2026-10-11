@@ -1433,6 +1433,7 @@ korb_ic_fill_raw(const struct korb_vm *vm, struct korb_inlcache *ic, uint64_t se
     ic->serial = serial; ic->klass = klass; ic->m = m; ic->def_class = def_class; ic->kind = kind;
     ic->body = NULL; ic->dispatch = NULL;
     ic->cfunc_ok = 0;   /* EXPERIMENT acct46: what the SD may call itself (the tag test / class compare selects it) */
+    ic->smid = (kind == KORB_IC_INSTANCE && m != NULL && m->sdi_k) ? (KORB_SDI_MARK | m->sdi_k) : 0;   /* the AOT inline send's one-word hit test (KORB_SDI_HIT) */
     if (m != NULL && m->kind == KORB_METHOD_CFUNC && (m->params_cnt < 0 || (uint32_t)m->params_cnt == argc)) {
         if (kind == KORB_IC_INSTANCE) ic->cfunc_ok = korb_bi_tag_code(vm, klass);
         else if (kind == KORB_IC_SMETHOD && !m->uses_block && m->visibility == 0) ic->cfunc_ok = 0xFF;

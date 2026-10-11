@@ -7210,7 +7210,8 @@ korb_ic_fill_site(CTX *c, struct korb_inlcache *site_ic, struct korb_inlcache *i
         fprintf(stderr, "CC-CHECK: fill_site with a shared site_ic=%p (shared %u) ic=%p (shared %u) kind %u mid %u argc %u\n", (void *)site_ic, site_ic ? site_ic->shared : 9, (void *)ic, ic ? ic->shared : 9, kind, mid, argc);
         void *bt[24]; const int nb = backtrace(bt, 24); backtrace_symbols_fd(bt, nb, 2);
     }
-    korb_ic_fill(c->vm, own, serial, klass, m, def_class, kind, argc); own->smid = smid;
+    korb_ic_fill(c->vm, own, serial, klass, m, def_class, kind, argc);
+    if (kind == KORB_IC_SEND || smid != 0) own->smid = smid;   /* else keep korb_ic_fill_raw's SDI mark */
     c->vm->cc_fills++;
     if (site_ic == NULL || !c->vm->cc_share || serial == 0 || site_ic->poly) return own;   /* serial 0: a refined site; poly: keeps its own */
     if (ic == site_ic) c->vm->cc_fill_own++; else c->vm->cc_fill_shared++;   /* what the caller's immediate pointed at */

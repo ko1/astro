@@ -2790,9 +2790,9 @@ korb_sdi_fn_p(const struct korb_vm *vm, unsigned k, unsigned nfn, korb_method_fn
     return f == t[0] || (nfn > 1 && f == t[1]) || (nfn > 2 && f == t[2]) || (nfn > 3 && f == t[3]);
 }
 /* the cached entry is k's builtin (its mark, set by korb_sdi_init and cleared by any redefinition) */
+/* one branch: klass, serial and the SDI mark korb_ic_fill_raw left (MARK | sdi_k: an instance cache of k's builtin) */
 #define KORB_SDI_HIT(c, ic, kl, k, nfn) \
-    ((ic)->klass == (kl) && (ic)->serial == (c)->vm->method_serial && (ic)->kind == KORB_IC_INSTANCE && \
-     (ic)->m != NULL && (ic)->m->sdi_k == (k))
+    ((((ic)->klass ^ (kl)) | ((ic)->serial ^ (c)->vm->method_serial) | (uint64_t)((ic)->smid ^ (KORB_SDI_MARK | (k)))) == 0)
 /* receiver class for a name that only a String builtin stands for: no general dispatch */
 #define KORB_SDI_KL_STR(c, r) \
     ((KORB_STRING_P(r) && KORB_PLAIN_BUILTIN(r)) ? korb_bi_class((c)->vm, KORB_C_STRING) : KORB_NIL)
