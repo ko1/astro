@@ -7349,9 +7349,11 @@ korb_refined_find(CTX *c, korb_value klass, uint32_t mid, korb_value *out_def)
 /* A parameter default runs in METHOD scope, so a `def` written inside it lands
  * on the method's class — an enclosing instance_eval's definee must not reach it
  * (the body's own clearing happens later, after every default is evaluated). */
+extern const struct NodeKind kind_node_lit;   /* node_alloc.c */
 static inline RESULT
 korb_eval_param_default(CTX *c, NODE *dflt, korb_value *restrict cursor)
 {
+    if (dflt->head.kind == &kind_node_lit) return RESULT_OK(dflt->u.node_lit.v);   /* `b: 1` / `c = nil`: no dispatch (an unbaked default ran in the interpreter) */
     if (LIKELY(c->def_definee == KORB_NIL && c->cvar_cref == KORB_NIL))
         return (*dflt->head.dispatcher)(c, dflt, cursor);
     korb_cref_push(c);   /* the default runs Ruby: the pair cannot ride in C locals */
