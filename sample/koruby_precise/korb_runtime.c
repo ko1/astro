@@ -12776,6 +12776,9 @@ static RESULT korb_cproc_yield(CTX *c, korb_value *restrict slots, korb_value pr
 /* Invoke a resolved method `m` on the staged receiver (send layout: recv at
  * slots[-argc-1], args at slots[-argc..]).  Handles every method kind, so all
  * receiver dispatch funnels through one place. */
+static bool korb_dm_simple_p(NODE *iseq, uint32_t argc);   /* fwd */
+static RESULT korb_dm_yield_simple(CTX *c, korb_value *slots, NODE *block, korb_value prev,
+                                   const korb_value *argv, uint32_t argc, korb_value *self_cell);   /* fwd */
 static RESULT korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_env,
                                     const korb_value *argv, uint32_t argc, korb_value *captured_self,
                                     NODE *bp_blk, korb_value *bp_denv, korb_value *bp_self, uint32_t is_lam);   /* fwd */
@@ -12871,7 +12874,9 @@ korb_dispatch_method(CTX *c, korb_value *slots, struct korb_method *m, uint32_t 
         const bool dm_refine = UNLIKELY(c->vm->refinements_active) && p->refine_set != KORB_NIL &&
                                p->refine_set != c->refinements;
         if (dm_refine) { korb_refine_push(c); c->refinements = p->refine_set; }
-        RESULT r = korb_block_yield_full(c, slots, p->iseq, (korb_value *)(uintptr_t)p->env,
+        RESULT r = (block == NULL && !dm_refine && korb_dm_simple_p(p->iseq, argc))
+                 ? korb_dm_yield_simple(c, slots, p->iseq, p->env, &slots[-(korb_sword_t)argc], argc, recv_slot)
+                 : korb_block_yield_full(c, slots, p->iseq, (korb_value *)(uintptr_t)p->env,
                                          &slots[-(korb_sword_t)argc], argc, recv_slot,
                                          block, def_env, captured_self, 2);   /* captured_self = receiver slot; 2 = method-shaped binding */
         if (dm_refine) korb_refine_pop(c);
@@ -14040,6 +14045,51 @@ korb_block_yield(CTX *c, korb_value *slots, NODE *block, korb_value *def_env,
     else if (UNLIKELY(r.state != KORB_NORMAL)) r = korb_block_leave_cold(c, r, block, bf + 1, is_lambda);
     if (UNLIKELY(korb_frame_escaped(bf + 1)))
         r = korb_close_ret(c, bf + 1 + blocals, bf + 1, r);
+    return korb_block_preempt(c, slots, r);
+}
+
+/* A define_method'd body of required positionals only, called with exactly that many and no block: korb_block_yield's
+ * binding with method semantics (a `return` / `break` ends here, nothing auto-splats).  korb_block_yield_full took
+ * 23% of such a call (it reads the kw / destructure / rest / opt shapes and the kwargs mark of every call: 632
+ * instructions a call against CRuby's 312, mb66 d1).  The shape test is the one korb_block_yield caches. */
+static bool
+korb_dm_simple_p(NODE *iseq, uint32_t argc)
+{
+    if (iseq == NULL || iseq == KORB_BLK_CPROC || iseq->head.kind != &kind_node_entry) return false;
+    if (!iseq->head.flags.yield_simple) {
+        if (korb_entry_symproc(iseq) || korb_entry_kw_info(iseq) || korb_entry_destructure_spec(iseq) ||
+            korb_entry_destructure_n(iseq) || korb_entry_rest_slot(iseq) != -1 || korb_entry_opt_defaults(iseq))
+            return false;
+        iseq->head.flags.yield_simple = true;
+    }
+    const struct korb_param_info *const pi = (const struct korb_param_info *)korb_entry_param_info(iseq);
+    return argc == iseq->u.node_entry.params_cnt && (pi == NULL || !pi->r2k);   /* ruby2_keywords: the full path flags the Hash */
+}
+static __attribute__((noinline, no_stack_protector)) RESULT
+korb_dm_yield_simple(CTX *c, korb_value *slots, NODE *block, korb_value prev,
+                     const korb_value *argv, uint32_t argc, korb_value *self_cell)
+{
+    if (argc != 0) korb_kwargs_unmark(argv[argc - 1]);    /* a positional Hash: the call-site kwargs mark stops here */
+    const uint32_t blocals = korb_entry_locals_cnt(block);
+    korb_value *const bf = slots + 3;                     /* block frame: base B = bf+1 (as korb_block_yield) */
+    char cstack_probe;
+    korb_value *const resv = bf + 1 + blocals + KORB_FRAME_SLACK;
+    if (UNLIKELY(resv > c->slots_limit || &cstack_probe < c->cstack_limit))
+        return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
+    if (UNLIKELY(resv > c->slots_high_water)) c->slots_high_water = resv;
+    bf[-3] = (korb_value)(uintptr_t)block + KORB_FID_BLOCK;
+    bf[-2] = korb_block_flink(c, block, prev, bf - 2, c->carry_base);
+    bf[-1] = prev;
+    bf[0]  = 0;
+    for (uint32_t i = 0; i < argc; i++) bf[1 + i] = argv[i];
+    if (blocals > argc) korb_block_nil_locals(&bf[1 + argc], blocals - argc);
+    bf[0] = *self_cell;                                   /* self = the receiver */
+    RESULT r;
+    do { r = (*block->head.dispatcher)(c, block, bf + 1 + blocals); }
+    while (UNLIKELY(r.state == KORB_REDO));
+    if (r.state == KORB_NEXT) r.state = KORB_NORMAL;
+    else if (UNLIKELY(r.state != KORB_NORMAL)) r = korb_block_leave_cold(c, r, block, bf + 1, true);
+    if (UNLIKELY(korb_frame_escaped(bf + 1))) r = korb_close_ret(c, bf + 1 + blocals, bf + 1, r);
     return korb_block_preempt(c, slots, r);
 }
 
@@ -16226,6 +16276,25 @@ korb_send_ic_dispatch(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
 static __attribute__((noinline, no_stack_protector)) RESULT
 korb_send_cached_full(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
                       struct korb_inlcache *ic, korb_value caller_self, struct korb_inlcache *site_ic);
+/* korb_dispatch_method's define_method case for korb_dm_simple_p's shape, called without a block, from an instance
+ * cache hit: korb_send_ic_dispatch and the dispatch switch were 30% of such a call (mb66 d1). */
+static __attribute__((noinline, no_stack_protector)) RESULT
+korb_invoke_dm_simple(CTX *c, korb_value *slots, struct korb_method *m, uint32_t argc, uint32_t mid, korb_value flink)
+{
+    const KorbProc *const p = VAL2PROC(m->dm_proc);
+    const struct korb_method *const dm_saved = c->dm_entry;
+    c->dm_entry = m;
+    korb_value *const dmbase = &slots[-(korb_sword_t)argc];
+    const bool framed = KORB_FLINK_FRAMED(flink);
+    const korb_value dm_link_saved = framed ? korb_cframe_enter(c, dmbase, m) : 0;
+    RESULT r = korb_dm_yield_simple(c, slots, p->iseq, p->env, dmbase, argc, &slots[-(korb_sword_t)argc - 1]);
+    if (framed) korb_cframe_leave(c, dm_link_saved);
+    c->dm_entry = dm_saved;
+    if (LIKELY(r.state == KORB_NORMAL)) return r;
+    if (r.state == KORB_BREAK || r.state == KORB_RETURN) { r.state = KORB_NORMAL; c->return_target = NULL; return r; }   /* no caller block: as korb_dispatch_method */
+    if (r.state == KORB_RAISE && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), korb_flink_line(flink), mid, m);
+    return r;
+}
 /* korb_invoke_simple for a method with optional parameters (no keywords / rest / post / block)
  * called without all of them: the missing defaults are evaluated in the method's scope, the
  * rest as korb_invoke_simple.  korb_invoke_method's generality (and the 4 calls in front of it)
@@ -16412,6 +16481,8 @@ korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint
         struct korb_method *const m = ic->m;
         if (korb_opt_call_p(m, argc))                    /* `o.m(a)` of `def m(a, b = 1)` */
             return korb_invoke_opt(c, slots, m, argc, korb_flink_line(flink), mid);
+        if (m->kind == KORB_METHOD_DM && c->def_definee == KORB_NIL && korb_dm_simple_p(VAL2PROC(m->dm_proc)->iseq, argc))
+            return korb_invoke_dm_simple(c, slots, m, argc, mid, flink);   /* `define_method(:m) { |a| ... }` */
         if (m->kind == KORB_METHOD_ATTR_W && argc == 1)   /* psych's node.start_line = ...: 4 x 180k per load */
             return korb_attr_write(c, slots, m, korb_flink_line(flink));
         /* `o.m(a)` of `def m(a, k: 1)`: no keywords to bind but the defaults (liquid's find_variable: 34k per iteration) */
