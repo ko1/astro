@@ -196,6 +196,8 @@ struct korb_supcache { uint64_t serial; korb_value klass; const struct korb_meth
  * them on those two lines.  `simple` is set only for a plain ISEQ that
  * korb_invoke_simple can run; the serial guard keeps it coherent (refinements
  * stamp a never-matching serial; a code-store swap bumps method_serial). */
+#define KORB_CASEEQ_MARK 0x8000FFFFu   /* korb_inlcache.smid of a class's Module#=== cache (korb_caseeq_class_cached) */
+#define KORB_SDI_MARK 0x80000000u   /* korb_inlcache.smid of an instance cache whose method is an SDI builtin: MARK | sdi_k */
 struct korb_inlcache {
     uint64_t serial;
     korb_value    klass;

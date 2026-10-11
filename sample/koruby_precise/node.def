@@ -1023,7 +1023,18 @@ node_caseeq(CTX *c, NODE *n, korb_value *slots, korb_ref wv@child, korb_value su
         return RESULT_OK(korb_value_eq(w, subj) ? KORB_TRUE : KORB_FALSE);
       default: {                                           /* Range / Class / Regexp / Proc / user obj → real === */
         RESULT dr;
-        if (KORB_OBJ_TYPE(w) == KORB_OBJ_CLASS && korb_caseeq_class_cached(c, w, subj, ic, &dr)) return dr;   /* `when String` */
+        if (KORB_OBJ_TYPE(w) == KORB_OBJ_CLASS) {
+            /* a class whose === is Module#=== (the site's cache says so) and a plain instance: its superclass chain here,
+             * without korb_caseeq_class_cached / korb_obj_kind_of_p (`Base === o` 175 instructions, YJIT 34) */
+            if (LIKELY((((ic->klass ^ w) | (ic->serial ^ c->vm->method_serial) | (uint64_t)(ic->smid ^ KORB_CASEEQ_MARK)) == 0)) &&
+                KORB_OBJECT_P(subj) && !(((const AroObjectHeader *)(uintptr_t)subj)->flags & KORB_FL_HAS_KLASS) &&
+                VAL2OBJ(subj)->klass != KORB_NIL && !VAL2CLASS(w)->is_module) {
+                for (korb_value k = VAL2OBJ(subj)->klass; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass)
+                    if (k == w) return RESULT_OK(KORB_TRUE);
+                return RESULT_OK(KORB_FALSE);
+            }
+            if (korb_caseeq_class_cached(c, w, subj, ic, &dr)) return dr;   /* `when String` */
+        }
         slots[0] = w; slots[1] = subj;   /* a builtin === (Module / Range / Regexp) through this site's cache */
         if (korb_deopt_cfunc_cached_any(c, slots + 2, c->vm->mid_eqq, 0, 1, ic, &dr)) return dr;
         return korb_send1_ic(c, slots + 2, c->vm->mid_eqq, 0, ic);   /* a user #=== */
