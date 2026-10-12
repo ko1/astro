@@ -925,7 +925,10 @@ node_eq(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@c
 {
     const korb_value l = KORB_REF_GET(lhs);
     KORB_TY_OBSERVE(c, n, l, rhs);
-    if (ty == 0) return korb_eq_body(c, slots, l, rhs, flink);
+    if (ty == 0) {   /* no hint: two fixnums inline, the rest in the shared korb_eq_generic (sdi23) */
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs) && !c->vm->basic_op_redefined)) return RESULT_OK(l == rhs ? KORB_TRUE : KORB_FALSE);
+        return korb_eq_generic(c, slots, l, rhs, flink);
+    }
     if (ty == KORB_TY2(KORB_TY_FIX, KORB_TY_FIX)) {
         if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs) && !c->vm->basic_op_redefined)) return RESULT_OK(l == rhs ? KORB_TRUE : KORB_FALSE);
     } else if (ty == KORB_TY2(KORB_TY_STR, KORB_TY_STR)) {
@@ -937,12 +940,11 @@ node_eq(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@c
     return korb_eq_generic(c, slots, l, rhs, flink);
 }
 
-NODE_DEF
-node_neq(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
+// the whole of `a != b` past two fixnums: one copy in the binary (korb_neq_generic), not one per site (sdi23)
+static inline RESULT
+korb_neq_body(CTX *c, korb_value *slots, korb_value l, korb_value rhs, uint64_t flink)
 {
-    (void)n;
-    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "!=", 2), 0, 1)); }
-    const korb_value l = KORB_REF_GET(lhs);
+    if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = l; slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "!=", 2), 0, 1)); }
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))    /* two fixnums: != is identity */
         return RESULT_OK(l != rhs ? KORB_TRUE : KORB_FALSE);
     if (l == rhs) {
@@ -983,6 +985,22 @@ node_neq(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@
         return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "!=", 2), 0, 1));
     }
     return RESULT_OK(KORB_TRUE);
+}
+#ifndef NODE_SKIP_COLD
+RESULT
+korb_neq_generic(CTX *c, korb_value *slots, korb_value l, korb_value rhs, uint64_t flink)
+{
+    return korb_neq_body(c, slots, l, rhs, flink);
+}
+#endif
+NODE_DEF
+node_neq(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
+{
+    (void)n;
+    const korb_value l = KORB_REF_GET(lhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs) && !c->vm->basic_op_redefined))    /* two fixnums: != is identity */
+        return RESULT_OK(l != rhs ? KORB_TRUE : KORB_FALSE);
+    return korb_neq_generic(c, slots, l, rhs, flink);
 }
 
 // case/when subject test: `whenval === subj`.  For value-equality types

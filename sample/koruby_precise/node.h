@@ -1366,6 +1366,7 @@ void korb_ty_observe(CTX *c, struct Node *n, unsigned lk, unsigned rk);   /* nod
 #define KORB_TY_OBSERVE(c, n, l, r) do { if (UNLIKELY((c)->vm->ty_observe)) korb_ty_observe((c), (n), korb_ty_kind(l), korb_ty_kind(r)); } while (0)
 #endif
 RESULT korb_eq_generic(CTX *c, korb_value *slots, korb_value l, korb_value rhs, uint64_t flink);   /* node.def, binary only */
+RESULT korb_neq_generic(CTX *c, korb_value *slots, korb_value l, korb_value rhs, uint64_t flink);   /* node.def, binary only (sdi23) */
 RESULT korb_aref_generic(CTX *c, korb_value *slots, korb_value r, korb_value idx, uint64_t flink, struct korb_inlcache *ic);
 
 /* Builtin receiver → class object (2 loads); mirrors korb_runtime.c's korb_builtin_class_obj. */
