@@ -24761,3 +24761,36 @@ korb_send_alt(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_
 
 /* the walk behind korb_eq_needs_send (context.h): one out-of-line copy for the binary and every SD */
 __attribute__((noinline)) bool korb_eq_needs_send_slow(korb_value v) { return korb_eq_needs_send_d(v, 0); }
+
+/* node_ivar_set past its hit and cached transition (sdi22): korb_ivar_set + cache refill, a class's own @ivar, side
+ * storage, frozen immediates.  One copy for every site; `selfp` is the site's self slot (rooted). */
+__attribute__((noinline)) RESULT
+korb_ivar_set_alt(CTX *c, korb_value *slots, korb_value *selfp, uint32_t name, korb_value val, struct korb_ivcache *ic)
+{
+    if (LIKELY(KORB_OBJECT_P(*selfp))) {
+        const KorbObject *const o = VAL2OBJ(*selfp);
+        const uint32_t before = o->shape_id;
+        RESULT r = korb_ivar_set(c, slots, KORB_REF_AT(selfp), ID2SYM(name), val);  /* may transition/grow */
+        if (LIKELY(r.state == KORB_NORMAL)) {             /* refill from the (re-read) object's new shape */
+            const KorbObject *const o2 = VAL2OBJ(*selfp);
+            const int32_t idx = korb_shape_index(c->vm, o2->shape_id, name);
+            if (idx >= 0) {
+                ic->shape_id = o2->shape_id; ic->slot = idx;
+                ic->from_shape = (o2->shape_id != before && c->vm->shapes[o2->shape_id].ivar_count == (uint32_t)idx + 1) ? before : 0;
+            }
+        }
+        return r;
+    }
+    if (KORB_CLASS_P(*selfp) && !(((const AroObjectHeader *)(uintptr_t)*selfp)->flags & KORB_FL_FROZEN)) {
+        const korb_value h = VAL2CLASS(*selfp)->class_ivars;   /* an existing pair, remembered by position (see node_ivar_get) */
+        const uint32_t i = (uint32_t)ic->slot;
+        if (h != KORB_NIL && ic->shape_id == KORB_IVC_CLASS && i < VAL2HASH(h)->len &&
+            korb_hash_pairs(VAL2HASH(h))[2 * i] == ID2SYM(name)) {
+            ARO_STORE(c, korb_hash_owner(VAL2HASH(h)), &korb_hash_pairs(VAL2HASH(h))[2 * i + 1], val);
+            return RESULT_OK(val);
+        }
+    }
+    if (AROH_IS_GC_OBJECT(*selfp))   /* class / exception / container / heap object → side storage (cold) */
+        return korb_ivar_set(c, slots, KORB_REF_AT(selfp), ID2SYM(name), val);
+    return korb_raise_frozen(c, slots, *selfp);   /* immediates are frozen (CRuby's FrozenError) */
+}

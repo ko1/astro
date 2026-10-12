@@ -3227,7 +3227,15 @@ node_aref(CTX *c, NODE *n, korb_value *slots, uint64_t flink, korb_ref recv@chil
 {
     const korb_value r = KORB_REF_GET(recv);
     KORB_TY_OBSERVE(c, n, r, idx);
-    if (ty == 0) return korb_aref_body(c, slots, r, idx, flink, ic);
+    if (ty == 0) {   /* no hint: Array[fixnum] inline, every other kind in the one shared korb_aref_generic (sdi22) */
+        if (LIKELY(KORB_ARRAY_P(r) && KORB_PLAIN_BUILTIN(r) && FIXNUM_P(idx) && !c->vm->aref_redefined)) {
+            const KorbArray *const a = VAL2ARY(r);
+            korb_sword_t i = FIX2LONG(idx);
+            if (i < 0) i += (korb_sword_t)a->len;
+            return RESULT_OK((uintptr_t)i < a->len ? korb_ary_ptr(a)[i] : KORB_NIL);
+        }
+        return korb_aref_generic(c, slots, r, idx, flink, ic);
+    }
     if (ty == KORB_TY2(KORB_TY_ARY, KORB_TY_FIX)) {
     if (LIKELY(KORB_ARRAY_P(r) && KORB_PLAIN_BUILTIN(r) && FIXNUM_P(idx) && !c->vm->aref_redefined)) {
         const KorbArray *const a = VAL2ARY(r);
@@ -4104,30 +4112,8 @@ node_ivar_set(CTX *c, NODE *n, korb_value *slots, int32_t self_off, uint32_t nam
             ARO_STORE(c, o->ivars, &korb_items_data(o->ivars)[ic->slot], val);
             return RESULT_OK(val);
         }
-        const uint32_t before = o->shape_id;
-        RESULT r = korb_ivar_set(c, slots, KORB_REF_AT(&slots[self_off]), ID2SYM(name), val);  /* may transition/grow */
-        if (LIKELY(r.state == KORB_NORMAL)) {             /* refill from the (re-read) object's new shape */
-            const KorbObject *const o2 = VAL2OBJ(slots[self_off]);
-            const int32_t idx = korb_shape_index(c->vm, o2->shape_id, name);
-            if (idx >= 0) {
-                ic->shape_id = o2->shape_id; ic->slot = idx;
-                ic->from_shape = (o2->shape_id != before && c->vm->shapes[o2->shape_id].ivar_count == (uint32_t)idx + 1) ? before : 0;
-            }
-        }
-        return r;
     }
-    if (KORB_CLASS_P(slots[self_off]) && !(((const AroObjectHeader *)(uintptr_t)slots[self_off])->flags & KORB_FL_FROZEN)) {
-        const korb_value h = VAL2CLASS(slots[self_off])->class_ivars;   /* an existing pair, remembered by position (see node_ivar_get) */
-        const uint32_t i = (uint32_t)ic->slot;
-        if (h != KORB_NIL && ic->shape_id == KORB_IVC_CLASS && i < VAL2HASH(h)->len &&
-            korb_hash_pairs(VAL2HASH(h))[2 * i] == ID2SYM(name)) {
-            ARO_STORE(c, korb_hash_owner(VAL2HASH(h)), &korb_hash_pairs(VAL2HASH(h))[2 * i + 1], val);
-            return RESULT_OK(val);
-        }
-    }
-    if (AROH_IS_GC_OBJECT(slots[self_off]))   /* class / exception / container / heap object → side storage (cold) */
-        return korb_ivar_set(c, slots, KORB_REF_AT(&slots[self_off]), ID2SYM(name), val);
-    return korb_raise_frozen(c, slots, slots[self_off]);   /* immediates are frozen (CRuby's FrozenError) */
+    return korb_ivar_set_alt(c, slots, &slots[self_off], name, val, ic);   /* refill, class / other selves: shared (sdi22) */
 }
 
 /* `@x += v` / `@x -= v`.  The three-node form (ivar_get, plus, ivar_set) pays
