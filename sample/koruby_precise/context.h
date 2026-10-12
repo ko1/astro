@@ -999,8 +999,9 @@ static inline bool korb_eq_needs_send_d(korb_value v, int depth)
         return depth >= 4 || korb_eq_needs_send_d(VAL2RANGE(v)->rbegin, depth + 1) || korb_eq_needs_send_d(VAL2RANGE(v)->rend, depth + 1);
     return KORB_HASH_P(v) || KORB_SET_P(v);
 }
-static bool korb_eq_needs_send_slow(korb_value v) __attribute__((noinline, unused));
-static bool korb_eq_needs_send_slow(korb_value v) { return korb_eq_needs_send_d(v, 0); }
+/* defined once in korb_runtime.c: a static noinline copy here was compiled into every SD object that compares
+ * (railsbench's store: 1 MB of 5.9 MB, sdi21) */
+bool korb_eq_needs_send_slow(korb_value v);
 /* Called per element / per comparison: the common answers are settled inline,
  * only containers and the rarer types take the out-of-line walk. */
 static inline bool korb_eq_needs_send(korb_value v) {

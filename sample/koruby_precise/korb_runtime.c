@@ -24758,3 +24758,6 @@ korb_send_alt(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_
     }
     return korb_send_cached(c, slots, mid, flink, argc, ic, caller_self, site_ic);
 }
+
+/* the walk behind korb_eq_needs_send (context.h): one out-of-line copy for the binary and every SD */
+__attribute__((noinline)) bool korb_eq_needs_send_slow(korb_value v) { return korb_eq_needs_send_d(v, 0); }
