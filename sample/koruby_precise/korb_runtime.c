@@ -5603,11 +5603,8 @@ korb_const_define_owned(CTX *c, uint32_t name_sym, korb_value val, korb_value ow
     /* keyed by (name, owner): reassigning the same constant in the same namespace
      * updates in place, but M::C and a top-level C get distinct entries so both
      * coexist (a bare read still finds the first match by name — hot path). */
-    for (uint32_t i = 0; i < vm->const_cnt; i++)
-        if (vm->const_names[i] == name_sym && vm->const_owners[i] == owner) {
-            vm->const_vals[i] = val;
-            return;
-        }
+    { const uint32_t i = korb_const_index_owned(vm, name_sym, owner);
+      if (i != UINT32_MAX) { vm->const_vals[i] = val; return; } }
     vm->const_serial++;                               /* a new (name, owner) can change what a lookup finds */
     if (vm->const_cnt == vm->const_capa) {
         uint32_t nc = vm->const_capa ? vm->const_capa * 2 : 16;
@@ -20227,8 +20224,13 @@ korb_const_assign_at(CTX *c, korb_value *slots, const struct Node *n, uint32_t n
 {
     /* reassigning an existing constant warns (the name table doubles as the
      * global-variable table — `$x = 1` is a plain assignment, never a warning) */
-    if (UNLIKELY(korb_const_index_owned(c->vm, name_sym, ownc) != UINT32_MAX) &&
-        korb_sym_name(c->vm, name_sym)[0] != '$')
+    const uint32_t idx = korb_const_index_owned(c->vm, name_sym, ownc);
+    const bool gvar = korb_sym_name(c->vm, name_sym)[0] == '$';
+    if (gvar && idx != UINT32_MAX) {                     /* `$x = v` again: no naming, location or hook */
+        c->vm->const_vals[idx] = val;                    /* root cell (scanned); no WB needed */
+        return RESULT_OK(val);
+    }
+    if (UNLIKELY(idx != UINT32_MAX) && !gvar)
         { uint32_t wf, wl;                                /* warn with this assignment's position */
           slots[0] = val; slots[1] = ownc;                /* park: the warning goes out through $stderr,
                                                            * which a harness can replace with a Ruby object */
