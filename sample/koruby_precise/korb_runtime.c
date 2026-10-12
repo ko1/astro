@@ -24794,3 +24794,40 @@ korb_ivar_set_alt(CTX *c, korb_value *slots, korb_value *selfp, uint32_t name, k
         return korb_ivar_set(c, slots, KORB_REF_AT(selfp), ID2SYM(name), val);
     return korb_raise_frozen(c, slots, *selfp);   /* immediates are frozen (CRuby's FrozenError) */
 }
+
+/* node_simple_entry's slow exit (sdi28): a RETURN to consume, then an escaped frame or a RAISE */
+__attribute__((noinline)) RESULT
+korb_entry_exit(CTX *c, korb_value *base, uint32_t locals_cnt, RESULT r)
+{
+    /* 明示 return は珍しくない (`return x if ...`): 自分宛の RETURN はここで消費し、
+     * 関数呼び出しに落とすのは RAISE / 他フレーム宛 / env クローズだけにする */
+    if (r.state == KORB_RETURN && (c->return_target == NULL || c->return_target == base)) {
+        r.state = KORB_NORMAL; c->return_target = NULL;
+    }
+    if (LIKELY(r.state == KORB_NORMAL && !korb_frame_escaped(base))) return r;
+    return korb_entry_ret_cold(c, base, locals_cnt, r);
+}
+__attribute__((noinline, cold)) RESULT
+korb_entry_overflow(CTX *c, korb_value *slots)
+{
+    return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
+}
+__attribute__((noinline, cold)) RESULT
+korb_call_ret_cold_s(CTX *c, RESULT r, const korb_value *slots, uint32_t argc, uint32_t mid)
+{
+    return korb_call_ret_cold(c, r, slots[-(korb_sword_t)argc - 3], mid, korb_id_get(slots - argc));
+}
+/* a whole node_send out of line (sdi28): the AOT inline sends' (KORB_SDI_DEFX) plain-send fallback, one copy */
+__attribute__((noinline)) RESULT
+korb_send_site(CTX *c, korb_value *slots, uint32_t mid, int32_t self_off, uint32_t argv_cnt, struct korb_inlcache *ic,
+               struct korb_inlcache *site_ic)
+{
+    const uint32_t argc = argv_cnt - 1;
+    const korb_value recv = slots[-(korb_sword_t)argc - 1];
+    if (LIKELY(KORB_OBJECT_P(recv) &&
+               !(((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) &&
+               ic->klass == VAL2OBJ(recv)->klass && ic->serial == c->vm->method_serial && ic->dispatch))
+        return korb_invoke_entry_ic(c, slots, ic, argc, mid);
+    const korb_value caller_self = (self_off == INT32_MIN) ? KORB_UNDEF : slots[self_off];
+    return korb_send_alt(c, slots, mid, slots[-(korb_sword_t)argv_cnt - 2], argc, ic, caller_self, site_ic);
+}

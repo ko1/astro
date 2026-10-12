@@ -1637,7 +1637,7 @@ node_simple_entry(CTX *c, NODE *n, korb_value *slots, NODE *body, uint32_t param
     char cstack_probe;
     korb_value *const resv = base + locals_cnt + KORB_FRAME_SLACK;
     if (UNLIKELY(resv > c->slots_limit || &cstack_probe < c->cstack_limit))
-        return korb_raise(c, slots, KORB_E_SYSSTACK, 0, "stack level too deep");
+        return korb_entry_overflow(c, slots);   /* shared (sdi28) */
     if (UNLIKELY(resv > c->slots_high_water)) c->slots_high_water = resv;
     if (locals_cnt > params_cnt)
         for (uint32_t i = params_cnt; i < locals_cnt; i++) base[i] = 0;   /* body locals start nil */
@@ -1646,13 +1646,10 @@ node_simple_entry(CTX *c, NODE *n, korb_value *slots, NODE *body, uint32_t param
     if (bref_scope) { korb_value *const bcell = korb_re_tilde_cell(c); korb_bref_push(c, *bcell, base); *bcell = KORB_NIL; }
     RESULT r = EVAL_ARG(c, body);
     if (bref_scope) *korb_re_tilde_cell(c) = korb_bref_pop(c);
-    /* 明示 return は珍しくない (`return x if ...`): 自分宛の RETURN はここで消費し、
-     * 関数呼び出しに落とすのは RAISE / 他フレーム宛 / env クローズだけにする */
-    if (r.state == KORB_RETURN && (c->return_target == NULL || c->return_target == base)) {
-        r.state = KORB_NORMAL; c->return_target = NULL;
-    }
-    if (LIKELY(r.state == KORB_NORMAL && !korb_frame_escaped(base))) return r;
-    return korb_entry_ret_cold(c, base, locals_cnt, r);
+    /* a plain return with no env made: here; a RETURN to consume, an escaped frame, a RAISE: the shared
+     * korb_entry_exit (sdi28: each method entry carried all of it) */
+    if (LIKELY(r.state == KORB_NORMAL && korb_ep_get(base) == 0)) return r;
+    return korb_entry_exit(c, base, locals_cnt, r);
 }
 
 // body is its own AOT entry (call sites dispatch via body->head.dispatcher
@@ -3012,7 +3009,7 @@ EVAL_node_send_inl_##K(CTX *c, NODE *n, korb_value *slots, uint32_t mid, uint64_
         BODY \
     } \
   send: \
-    return EVAL_node_send(c, n, slots, mid, flink, self_off, argv_cnt, ic); \
+    return korb_send_site(c, slots, mid, self_off, argv_cnt, ic, &n->u.node_send.ic); \
 }
 #else
 #define KORB_SDI_DEFX(K, ARGC, KL, NFN, BODY) \
@@ -3038,12 +3035,12 @@ EVAL_node_send_inl_##K(CTX *c, NODE *n, korb_value *slots, uint32_t mid, uint64_
         (void)a0; (void)a1; \
         BODY \
     } \
-    return EVAL_node_send(c, n, slots, mid, flink, self_off, argv_cnt, ic); \
+    return korb_send_site(c, slots, mid, self_off, argv_cnt, ic, &n->u.node_send.ic); \
 }
 #endif
 /* the builtin itself, without korb_send_cached's lookup (what its CFUNC branch does) */
 #define KORB_SDI_DIRECT(ARGC) { \
-        if (UNLIKELY(!ich)) return EVAL_node_send(c, n, slots, mid, flink, self_off, argv_cnt, ic);   /* m is the cache's */ \
+        if (UNLIKELY(!ich)) return korb_send_site(c, slots, mid, self_off, argv_cnt, ic, &n->u.node_send.ic);   /* m is the cache's */ \
         const struct korb_method *const m = ic->m; \
         const korb_value link = slots[-(korb_sword_t)argv_cnt - 2]; \
         const bool framed = KORB_FLINK_FRAMED(link); \

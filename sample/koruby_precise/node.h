@@ -1180,6 +1180,11 @@ RESULT korb_entry_ret_cold(CTX *c, korb_value *base, uint32_t locals_cnt, RESULT
 /* 呼び出し側に残る冷たい尾: RAISE のバックトレースだけ。base も locals_cnt も
  * 要らないので、dispatch をまたいで生存させる値が無くなる。 */
 RESULT korb_call_ret_cold(CTX *c, RESULT r, korb_value flink, uint32_t mid, korb_value fid);
+RESULT korb_call_ret_cold_s(CTX *c, RESULT r, const korb_value *slots, uint32_t argc, uint32_t mid);   /* sdi28 */
+RESULT korb_entry_exit(CTX *c, korb_value *base, uint32_t locals_cnt, RESULT r);   /* sdi28: node_simple_entry's slow exit */
+RESULT korb_entry_overflow(CTX *c, korb_value *slots);   /* sdi28: node_simple_entry's stack overflow */
+RESULT korb_send_site(CTX *c, korb_value *slots, uint32_t mid, int32_t self_off, uint32_t argv_cnt, struct korb_inlcache *ic,
+                      struct korb_inlcache *site_ic);   /* sdi28: a whole node_send, out of line (the SDI sends' fallback) */
 /* main.c: a node synthesized at runtime (attr_reader entry) — bind to a baked SD / instantiate like a parsed body. */
 void   korb_synth_node_ready(NODE *n);
 void   korb_optent_put(struct korb_vm *vm, const struct Node *body, struct Node **es);   /* parse.c: the per-argc entries it built */
@@ -1318,7 +1323,7 @@ korb_invoke_entry_ic(CTX *c, korb_value *slots, const struct korb_inlcache *ic, 
     if (LIKELY(r.state == KORB_NORMAL)) return r;
     /* The site's line rides the frame link it stored in base[-3]; reading it
      * back here keeps it out of the hot path entirely. */
-    return korb_call_ret_cold(c, r, slots[-(korb_sword_t)argc - 3], mid, korb_id_get(slots - argc));
+    return korb_call_ret_cold_s(c, r, slots, argc, mid);   /* sdi28: the argument loads in the shared tail */
 }
 
 /* Mirror for the top-level call cache. */
@@ -1329,7 +1334,7 @@ korb_invoke_entry_cc(CTX *c, korb_value *slots, const struct korb_callcache *cc,
     korb_id_set(slots - argc, (korb_value)((uintptr_t)cc->m | KORB_FID_METHOD));
     const RESULT r = (*cc->body->head.dispatcher)(c, cc->body, slots);   /* the body's current one (see korb_invoke_entry_ic) */
     if (LIKELY(r.state == KORB_NORMAL)) return r;
-    return korb_call_ret_cold(c, r, slots[-(korb_sword_t)argc - 3], mid, korb_id_get(slots - argc));
+    return korb_call_ret_cold_s(c, r, slots, argc, mid);   /* sdi28: the argument loads in the shared tail */
 }
 
 /* ---- EXPERIMENT KORB_TYHINT: per-site operand kinds, observed in the interpreter, baked into the SD ---- */
