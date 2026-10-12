@@ -1367,6 +1367,13 @@ void korb_ty_observe(CTX *c, struct Node *n, unsigned lk, unsigned rk);   /* nod
 #endif
 RESULT korb_eq_generic(CTX *c, korb_value *slots, korb_value l, korb_value rhs, uint64_t flink);   /* node.def, binary only */
 RESULT korb_neq_generic(CTX *c, korb_value *slots, korb_value l, korb_value rhs, uint64_t flink);   /* node.def, binary only (sdi23) */
+RESULT korb_plus_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink);   /* node.def, binary only (sdi26) */
+RESULT korb_minus_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink);   /* node.def, binary only (sdi26) */
+RESULT korb_mul_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink);   /* node.def, binary only (sdi26) */
+RESULT korb_lt_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink);   /* node.def, binary only (sdi26) */
+RESULT korb_gt_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink);   /* node.def, binary only (sdi26) */
+RESULT korb_le_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink);   /* node.def, binary only (sdi26) */
+RESULT korb_ge_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink);   /* node.def, binary only (sdi26) */
 RESULT korb_aref_generic(CTX *c, korb_value *slots, korb_value r, korb_value idx, uint64_t flink, struct korb_inlcache *ic);
 
 /* Builtin receiver → class object (2 loads); mirrors korb_runtime.c's korb_builtin_class_obj. */

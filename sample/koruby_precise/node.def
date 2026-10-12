@@ -494,8 +494,9 @@ node_massign_splat(CTX *c, NODE *n, korb_value *slots, void *offsets, uint32_t n
 // lhs is korb_ref (staged: rhs evaluation may GC), rhs is the last child
 // (register).  Slow paths re-root what they need (v2_design §4.5).
 
-NODE_DEF
-node_plus(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
+// node_plus past its two-fixnum path: the whole original body, one copy in the binary (sdi26)
+static inline RESULT
+korb_plus_body(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink)
 {
     (void)flink;
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "+", 1), korb_flink_line(flink), 1)); }
@@ -522,11 +523,37 @@ node_plus(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs
         slots[0] = l; slots[1] = rhs;
         return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "+", 1), korb_flink_line(flink), 1));
     }
-    return KP_OPD(c, flink, slots, lhs, "+", korb_plus_slow_n(c, slots, lhs, rhs, korb_flink_line(flink)));
+    return KP_OPD(c, flink, slots, lhs, "+", korb_plus_slow_n(c, slots, lhs, rhs, korb_flink_line(flink)));}
+#ifndef NODE_SKIP_COLD
+RESULT
+korb_plus_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink)
+{
+    return korb_plus_body(c, slots, lhs, rhs, flink);
+}
+#endif
+NODE_DEF
+node_plus(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
+{
+    (void)n;
+    if (LIKELY(!c->vm->basic_op_redefined)) {   /* two fixnums at the site; every other kind in korb_plus_generic (sdi26) */
+        const korb_value l = KORB_REF_GET(lhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
+            /* tagged add: l=2x+1, rhs-1=2y → l+(rhs-1)=2(x+y)+1 is already the tagged
+             * result, no FIX2LONG/LONG2FIX shifts.  64-bit signed overflow ⟺ x+y is
+             * not FIXABLE (the tag bit makes the tagged range == the fixnum range),
+             * so __builtin_add_overflow subsumes the explicit FIXABLE check. */
+            korb_sword_t s;
+            if (LIKELY(!__builtin_add_overflow((korb_sword_t)l, (korb_sword_t)rhs - 1, &s)))
+                return RESULT_OK((korb_value)s);
+            return KP_OPD(c, flink, slots, lhs, "+", korb_int_arith(c, slots, l, rhs, 0, korb_flink_line(flink)));
+        }
+    }
+    return korb_plus_generic(c, slots, lhs, rhs, flink);
 }
 
-NODE_DEF
-node_minus(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
+// node_minus past its two-fixnum path: the whole original body, one copy in the binary (sdi26)
+static inline RESULT
+korb_minus_body(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink)
 {
     (void)flink;
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "-", 1), korb_flink_line(flink), 1)); }
@@ -551,11 +578,35 @@ node_minus(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rh
         slots[0] = l; slots[1] = rhs;
         return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "-", 1), korb_flink_line(flink), 1));
     }
-    return KP_OPD(c, flink, slots, lhs, "-", korb_minus_slow_n(c, slots, lhs, rhs, korb_flink_line(flink)));   /* complex/rat/array/user/raise out-of-line → small SD */
+    return KP_OPD(c, flink, slots, lhs, "-", korb_minus_slow_n(c, slots, lhs, rhs, korb_flink_line(flink)));   /* complex/rat/array/user/raise out-of-line → small SD */}
+#ifndef NODE_SKIP_COLD
+RESULT
+korb_minus_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink)
+{
+    return korb_minus_body(c, slots, lhs, rhs, flink);
+}
+#endif
+NODE_DEF
+node_minus(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
+{
+    (void)n;
+    if (LIKELY(!c->vm->basic_op_redefined)) {   /* two fixnums at the site; every other kind in korb_minus_generic (sdi26) */
+        const korb_value l = KORB_REF_GET(lhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
+            /* tagged sub: l - (rhs-1) = (2x+1) - 2y = 2(x-y)+1, already tagged.
+             * 64-bit signed overflow ⟺ x-y not FIXABLE (see node_plus). */
+            korb_sword_t s;
+            if (LIKELY(!__builtin_sub_overflow((korb_sword_t)l, (korb_sword_t)rhs - 1, &s)))
+                return RESULT_OK((korb_value)s);
+            return KP_OPD(c, flink, slots, lhs, "-", korb_int_arith(c, slots, l, rhs, 1, korb_flink_line(flink)));
+        }
+    }
+    return korb_minus_generic(c, slots, lhs, rhs, flink);
 }
 
-NODE_DEF
-node_mul(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
+// node_mul past its two-fixnum path: the whole original body, one copy in the binary (sdi26)
+static inline RESULT
+korb_mul_body(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink)
 {
     (void)flink;
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "*", 1), korb_flink_line(flink), 1)); }
@@ -580,7 +631,30 @@ node_mul(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@
         slots[0] = l; slots[1] = rhs;
         return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "*", 1), korb_flink_line(flink), 1));
     }
-    return KP_OPD(c, flink, slots, lhs, "*", korb_mul_slow_n(c, slots, lhs, rhs, korb_flink_line(flink)));
+    return KP_OPD(c, flink, slots, lhs, "*", korb_mul_slow_n(c, slots, lhs, rhs, korb_flink_line(flink)));}
+#ifndef NODE_SKIP_COLD
+RESULT
+korb_mul_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink)
+{
+    return korb_mul_body(c, slots, lhs, rhs, flink);
+}
+#endif
+NODE_DEF
+node_mul(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
+{
+    (void)n;
+    if (LIKELY(!c->vm->basic_op_redefined)) {   /* two fixnums at the site; every other kind in korb_mul_generic (sdi26) */
+        const korb_value l = KORB_REF_GET(lhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs))) {
+            /* tagged mul: x*(rhs-1) = x*2y = 2xy, then |1 → 2xy+1 (tagged xy).  Only
+             * lhs needs decoding (one sar); 64-bit overflow of 2xy ⟺ xy not FIXABLE. */
+            korb_sword_t p;
+            if (LIKELY(!__builtin_mul_overflow(FIX2LONG(l), (korb_sword_t)rhs - 1, &p)))
+                return RESULT_OK((korb_value)(p | 1));
+            return KP_OPD(c, flink, slots, lhs, "*", korb_int_arith(c, slots, l, rhs, 2, korb_flink_line(flink)));
+        }
+    }
+    return korb_mul_generic(c, slots, lhs, rhs, flink);
 }
 
 // CRuby floor semantics for / and % (sign follows the divisor).
@@ -768,8 +842,9 @@ node_neg(CTX *c, NODE *n, korb_value *slots, korb_value v@child, uint32_t line, 
 
 // ---- comparison ------------------------------------------------------------
 
-NODE_DEF
-node_lt(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
+// node_lt past its two-fixnum path: the whole original body, one copy in the binary (sdi26)
+static inline RESULT
+korb_lt_body(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink)
 {
     (void)flink;   /* line read lazily from n only on the cold paths — keeps the
                    * fixnum fast path free of the per-op `line` memory load. */
@@ -783,11 +858,29 @@ node_lt(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@c
         slots[0] = l; slots[1] = rhs;
         return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "<", 1), korb_flink_line(flink), 1));
     }
-    return KP_OPD(c, flink, slots, lhs, "<", korb_cmp_slow_n(c, slots, l, rhs, 0, korb_flink_line(flink)));
+    return KP_OPD(c, flink, slots, lhs, "<", korb_cmp_slow_n(c, slots, l, rhs, 0, korb_flink_line(flink)));}
+#ifndef NODE_SKIP_COLD
+RESULT
+korb_lt_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink)
+{
+    return korb_lt_body(c, slots, lhs, rhs, flink);
+}
+#endif
+NODE_DEF
+node_lt(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
+{
+    (void)n;
+    if (LIKELY(!c->vm->basic_op_redefined)) {   /* two fixnums at the site; every other kind in korb_lt_generic (sdi26) */
+        const korb_value l = KORB_REF_GET(lhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
+            return RESULT_OK((korb_sword_t)l < (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
+    }
+    return korb_lt_generic(c, slots, lhs, rhs, flink);
 }
 
-NODE_DEF
-node_le(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
+// node_le past its two-fixnum path: the whole original body, one copy in the binary (sdi26)
+static inline RESULT
+korb_le_body(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink)
 {
     (void)flink;
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "<=", 2), korb_flink_line(flink), 1)); }
@@ -800,11 +893,29 @@ node_le(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@c
         slots[0] = l; slots[1] = rhs;
         return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, "<=", 2), korb_flink_line(flink), 1));
     }
-    return KP_OPD(c, flink, slots, lhs, "<=", korb_cmp_slow_n(c, slots, l, rhs, 1, korb_flink_line(flink)));
+    return KP_OPD(c, flink, slots, lhs, "<=", korb_cmp_slow_n(c, slots, l, rhs, 1, korb_flink_line(flink)));}
+#ifndef NODE_SKIP_COLD
+RESULT
+korb_le_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink)
+{
+    return korb_le_body(c, slots, lhs, rhs, flink);
+}
+#endif
+NODE_DEF
+node_le(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
+{
+    (void)n;
+    if (LIKELY(!c->vm->basic_op_redefined)) {   /* two fixnums at the site; every other kind in korb_le_generic (sdi26) */
+        const korb_value l = KORB_REF_GET(lhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
+            return RESULT_OK((korb_sword_t)l <= (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
+    }
+    return korb_le_generic(c, slots, lhs, rhs, flink);
 }
 
-NODE_DEF
-node_gt(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
+// node_gt past its two-fixnum path: the whole original body, one copy in the binary (sdi26)
+static inline RESULT
+korb_gt_body(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink)
 {
     (void)flink;
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, ">", 1), korb_flink_line(flink), 1)); }
@@ -817,11 +928,29 @@ node_gt(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@c
         slots[0] = l; slots[1] = rhs;
         return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, ">", 1), korb_flink_line(flink), 1));
     }
-    return KP_OPD(c, flink, slots, lhs, ">", korb_cmp_slow_n(c, slots, l, rhs, 2, korb_flink_line(flink)));
+    return KP_OPD(c, flink, slots, lhs, ">", korb_cmp_slow_n(c, slots, l, rhs, 2, korb_flink_line(flink)));}
+#ifndef NODE_SKIP_COLD
+RESULT
+korb_gt_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink)
+{
+    return korb_gt_body(c, slots, lhs, rhs, flink);
+}
+#endif
+NODE_DEF
+node_gt(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
+{
+    (void)n;
+    if (LIKELY(!c->vm->basic_op_redefined)) {   /* two fixnums at the site; every other kind in korb_gt_generic (sdi26) */
+        const korb_value l = KORB_REF_GET(lhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
+            return RESULT_OK((korb_sword_t)l > (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
+    }
+    return korb_gt_generic(c, slots, lhs, rhs, flink);
 }
 
-NODE_DEF
-node_ge(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
+// node_ge past its two-fixnum path: the whole original body, one copy in the binary (sdi26)
+static inline RESULT
+korb_ge_body(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink)
 {
     (void)flink;
     if (UNLIKELY(c->vm->basic_op_redefined)) { slots[0] = KORB_REF_GET(lhs); slots[1] = rhs; return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, ">=", 2), korb_flink_line(flink), 1)); }
@@ -834,7 +963,24 @@ node_ge(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@c
         slots[0] = l; slots[1] = rhs;
         return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, korb_intern_lit(c->vm, ">=", 2), korb_flink_line(flink), 1));
     }
-    return KP_OPD(c, flink, slots, lhs, ">=", korb_cmp_slow_n(c, slots, l, rhs, 3, korb_flink_line(flink)));
+    return KP_OPD(c, flink, slots, lhs, ">=", korb_cmp_slow_n(c, slots, l, rhs, 3, korb_flink_line(flink)));}
+#ifndef NODE_SKIP_COLD
+RESULT
+korb_ge_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink)
+{
+    return korb_ge_body(c, slots, lhs, rhs, flink);
+}
+#endif
+NODE_DEF
+node_ge(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, uint64_t flink)
+{
+    (void)n;
+    if (LIKELY(!c->vm->basic_op_redefined)) {   /* two fixnums at the site; every other kind in korb_ge_generic (sdi26) */
+        const korb_value l = KORB_REF_GET(lhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(rhs)))
+            return RESULT_OK((korb_sword_t)l >= (korb_sword_t)rhs ? KORB_TRUE : KORB_FALSE);
+    }
+    return korb_ge_generic(c, slots, lhs, rhs, flink);
 }
 
 // == / != : immediate identity / String content compare by default.  When a
