@@ -37,6 +37,24 @@
                     korb_op_bt((c), _od_, KORB_REF_GET(lhs), (op), sizeof(op) - 1, \
                                korb_flink_line(flink)); _od_; })
 
+#ifndef NODE_SKIP_COLD
+korb_value
+korb_str_frozen_fill(CTX *c, korb_value *slots, const char *bytes, uint32_t len, struct korb_fscache *fc)
+{
+    const korb_value v = korb_fstr_get(c, slots, bytes, len, KORB_ENC_UTF8);
+    fc->idx_plus1 = korb_fstr_slot(c->vm, v) + 1;
+    return v;
+}
+
+RESULT
+korb_not_generic(CTX *c, korb_value *slots, korb_value v)
+{
+    if (!korb_find_bang_override(c, v)) return RESULT_OK(KORB_TRUTHY(v) ? KORB_FALSE : KORB_TRUE);
+    slots[0] = v;
+    return korb_send(c, slots + 1, korb_intern_lit(c->vm, "!", 1), 0, 0);
+}
+#endif
+
 NODE_DEF @nogc
 node_lit(CTX *c, NODE *n, korb_value *slots, korb_value v)
 {
@@ -78,9 +96,7 @@ node_str_frozen(CTX *c, NODE *n, korb_value *slots, const char *bytes, uint32_t 
     /* equal frozen literals are ONE object (CRuby's fstring table); the node keeps the
      * pool slot, so a hot literal is not re-hashed per evaluation (erubi-rails: 3.7%) */
     if (LIKELY(fc->idx_plus1 != 0)) return RESULT_OK(c->vm->fstr_vals[fc->idx_plus1 - 1]);
-    const korb_value v = korb_fstr_get(c, slots, bytes, len, KORB_ENC_UTF8);
-    fc->idx_plus1 = korb_fstr_slot(c->vm, v) + 1;
-    return RESULT_OK(v);
+    return RESULT_OK(korb_str_frozen_fill(c, slots, bytes, len, fc));   /* first evaluation: shared, out of line (sdi29) */
 }
 
 // Same, for a literal whose encoding is not UTF-8: the file's `# encoding:`
@@ -545,7 +561,6 @@ node_plus(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs
             korb_sword_t s;
             if (LIKELY(!__builtin_add_overflow((korb_sword_t)l, (korb_sword_t)rhs - 1, &s)))
                 return RESULT_OK((korb_value)s);
-            return KP_OPD(c, flink, slots, lhs, "+", korb_int_arith(c, slots, l, rhs, 0, korb_flink_line(flink)));
         }
     }
     return korb_plus_generic(c, slots, lhs, rhs, flink);
@@ -598,7 +613,6 @@ node_minus(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rh
             korb_sword_t s;
             if (LIKELY(!__builtin_sub_overflow((korb_sword_t)l, (korb_sword_t)rhs - 1, &s)))
                 return RESULT_OK((korb_value)s);
-            return KP_OPD(c, flink, slots, lhs, "-", korb_int_arith(c, slots, l, rhs, 1, korb_flink_line(flink)));
         }
     }
     return korb_minus_generic(c, slots, lhs, rhs, flink);
@@ -651,7 +665,6 @@ node_mul(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@
             korb_sword_t p;
             if (LIKELY(!__builtin_mul_overflow(FIX2LONG(l), (korb_sword_t)rhs - 1, &p)))
                 return RESULT_OK((korb_value)(p | 1));
-            return KP_OPD(c, flink, slots, lhs, "*", korb_int_arith(c, slots, l, rhs, 2, korb_flink_line(flink)));
         }
     }
     return korb_mul_generic(c, slots, lhs, rhs, flink);
@@ -764,8 +777,10 @@ node_bxor(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs
     return KP_DEOPT(c, flink, slots, korb_send(c, slots + 1, c->vm->mid_bxor, korb_flink_line(flink), 1));
 }
 
-NODE_DEF
-node_shl(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, struct korb_inlcache *ic@ref, uint64_t flink)
+// node_shl past its fixnum shift and Array push with room: the whole original body, one copy in the binary (sdi29)
+#ifndef NODE_SKIP_COLD
+RESULT
+korb_shl_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, struct korb_inlcache *ic, uint64_t flink)
 {
     (void)flink;   /* line read lazily from n on the cold (non-fixnum) path only */
     const korb_value l = KORB_REF_GET(lhs);
@@ -803,6 +818,29 @@ node_shl(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@
      * multiple-assignment / array-literal RHS (frame collision → stack overflow),
      * so route non-String receivers through the robust uncached path. */
     return KP_DEOPT(c, flink, slots, korb_send(c, slots + 1, c->vm->mid_shl, korb_flink_line(flink), 1));
+}
+#endif
+NODE_DEF
+node_shl(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@child, struct korb_inlcache *ic@ref, uint64_t flink)
+{
+    (void)n;
+    const korb_value l = KORB_REF_GET(lhs);
+    if (LIKELY(!c->vm->basic_op_redefined && FIXNUM_P(l) && FIXNUM_P(rhs))) {
+        const korb_sword_t a = FIX2LONG(l), sh = FIX2LONG(rhs);
+        if (LIKELY(sh >= 0 && sh < 62)) {
+            const korb_sword_t r = a << sh;
+            if (LIKELY((r >> sh) == a && FIXABLE(r))) return RESULT_OK(LONG2FIX(r));   /* no overflow */
+        }
+    }
+    else if (LIKELY(KORB_ARRAY_P(l) && KORB_PLAIN_BUILTIN(l) && !c->vm->arr_shl_redefined)) {  /* a << x → push; a subclass may override #<< */
+        KorbArray *const arr = VAL2ARY(l);
+        if (LIKELY(arr->len < arr->capa)) {   /* full OR frozen (freeze sets capa = len) → the generic */
+            korb_ary_store_at(c, l, arr->len, rhs);
+            arr->len++;
+            return RESULT_OK(l);
+        }
+    }
+    return korb_shl_generic(c, slots, lhs, rhs, ic, flink);
 }
 
 NODE_DEF
@@ -1250,11 +1288,8 @@ node_not(CTX *c, NODE *n, korb_value *slots, korb_value v@child)
     (void)n;
     /* `!obj` is a real method call in Ruby; only heap objects can carry an
      * override, and the VM-wide flag keeps `!bool` a plain negation. */
-    if (UNLIKELY(c->vm->bang_redefined && AROH_IS_GC_OBJECT(v) &&
-                 korb_find_bang_override(c, v))) {
-        slots[0] = v;
-        return korb_send(c, slots + 1, korb_intern_lit(c->vm, "!", 1), 0, 0);
-    }
+    if (UNLIKELY(c->vm->bang_redefined && AROH_IS_GC_OBJECT(v)))
+        return korb_not_generic(c, slots, v);   /* an override's send: shared, out of line (sdi29) */
     return RESULT_OK(KORB_TRUTHY(v) ? KORB_FALSE : KORB_TRUE);
 }
 
@@ -3012,11 +3047,37 @@ EVAL_node_send_inl_##K(CTX *c, NODE *n, korb_value *slots, uint32_t mid, uint64_
     return korb_send_site(c, slots, mid, self_off, argv_cnt, ic, &n->u.node_send.ic); \
 }
 #else
+/* the mask path (a current cache holding another class: kl's own per-kind answer) runs BODY with ich = false; one
+ * copy per kind in the binary, so a site keeps only the hit (sdi29).  An empty or stale cache takes the plain send,
+ * which fills it (the mask path never would). */
+#ifndef NODE_SKIP_COLD
+#define KORB_SDI_ALT(K, ARGC, BODY) \
+RESULT \
+korb_sdi_alt_##K(CTX *c, NODE *n, korb_value *slots, uint32_t mid, int32_t self_off, uint32_t argv_cnt, \
+                 struct korb_inlcache *ic, korb_value kl) \
+{ \
+    if (kl != KORB_NIL && ic->serial == c->vm->method_serial && korb_sdi_mask_ok(c, kl, KORB_SDI_##K)) { \
+        const korb_value r = slots[-(korb_sword_t)(ARGC) - 1]; (void)r; \
+        const bool ich = false; (void)ich; \
+        const korb_value a0 = (ARGC) >= 1 ? slots[-(korb_sword_t)(ARGC)] : 0; \
+        const korb_value a1 = (ARGC) >= 2 ? slots[-(korb_sword_t)(ARGC) + 1] : 0; \
+        (void)a0; (void)a1; \
+        BODY \
+    } \
+    return korb_send_site(c, slots, mid, self_off, argv_cnt, ic, &n->u.node_send.ic); \
+}
+#else
+#define KORB_SDI_ALT(K, ARGC, BODY) \
+RESULT korb_sdi_alt_##K(CTX *c, NODE *n, korb_value *slots, uint32_t mid, int32_t self_off, uint32_t argv_cnt, \
+                        struct korb_inlcache *ic, korb_value kl);
+#endif
 #define KORB_SDI_DEFX(K, ARGC, KL, NFN, BODY) \
+KORB_SDI_ALT(K, ARGC, BODY) \
 static inline __attribute__((always_inline)) RESULT \
 EVAL_node_send_inl_##K(CTX *c, NODE *n, korb_value *slots, uint32_t mid, uint64_t flink, int32_t self_off, \
                        uint32_t argv_cnt, struct korb_inlcache *ic) \
 { \
+    (void)flink; \
     const korb_value r = slots[-(korb_sword_t)(ARGC) - 1]; \
     const korb_value kl = KL(c, r); \
     if (LIKELY(kl != KORB_NIL && KORB_SDI_HIT(c, ic, kl, KORB_SDI_##K, NFN))) { \
@@ -3025,17 +3086,9 @@ EVAL_node_send_inl_##K(CTX *c, NODE *n, korb_value *slots, uint32_t mid, uint64_
         const korb_value a1 = (ARGC) >= 2 ? slots[-(korb_sword_t)(ARGC) + 1] : 0; \
         (void)a0; (void)a1; \
         BODY \
+        return korb_send_site(c, slots, mid, self_off, argv_cnt, ic, &n->u.node_send.ic); \
     } \
-    /* a polymorphic site (a current cache holding another class): kl's own per-kind answer.  An \
-     * empty or stale cache takes the plain send, which fills it (the mask path never would) */ \
-    else if (kl != KORB_NIL && ic->serial == c->vm->method_serial && korb_sdi_mask_ok(c, kl, KORB_SDI_##K)) { \
-        const bool ich = false; (void)ich; \
-        const korb_value a0 = (ARGC) >= 1 ? slots[-(korb_sword_t)(ARGC)] : 0; \
-        const korb_value a1 = (ARGC) >= 2 ? slots[-(korb_sword_t)(ARGC) + 1] : 0; \
-        (void)a0; (void)a1; \
-        BODY \
-    } \
-    return korb_send_site(c, slots, mid, self_off, argv_cnt, ic, &n->u.node_send.ic); \
+    return korb_sdi_alt_##K(c, n, slots, mid, self_off, argv_cnt, ic, kl); \
 }
 #endif
 /* the builtin itself, without korb_send_cached's lookup (what its CFUNC branch does) */

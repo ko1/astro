@@ -17271,6 +17271,15 @@ static bool korb_sdi_class_resolve(CTX *c, korb_value kl, unsigned k);
 /* The AOT inline send's miss side (its site cache holds another class): kl's own per-kind answer.
  * Out of line and cold, so the hit path keeps the shape it had before the masks (nil_p +4.6%
  * instructions with this inlined). */
+__attribute__((noinline, cold)) void
+korb_bref_grow(CTX *c)
+{
+    c->bref_cap = c->bref_cap ? c->bref_cap * 2 : 64;
+    c->bref_saved = realloc(c->bref_saved, sizeof(korb_value) * c->bref_cap);
+    c->bref_base = realloc(c->bref_base, sizeof(*c->bref_base) * c->bref_cap);
+    if (!c->bref_saved || !c->bref_base) { fprintf(stderr, "koruby_precise: out of memory (backref scopes)\n"); abort(); }
+}
+
 /* korb_sdi_klass for all but a plain instance: one shared copy for the SDs built with KORB_SD_SHARE_KL */
 __attribute__((noinline)) korb_value
 korb_sdi_klass_slow(const struct korb_vm *vm, const korb_value r)

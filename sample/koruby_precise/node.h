@@ -1218,13 +1218,9 @@ void korb_frame_audit_ep(const korb_value *base, uint32_t mid, const char *where
 /* The `$~` cell (builtins/regexp.c).  Ruby scopes the backref to the METHOD
  * frame: an ISEQ invoke parks the caller's and starts at nil. */
 korb_value *korb_re_tilde_cell(CTX *c);
+void korb_bref_grow(CTX *c);   /* korb_runtime.c: out of line, every method entry with a backref scope inlines the push (sdi29) */
 static inline void korb_bref_push(CTX *c, korb_value v, const korb_value *const base) {
-    if (UNLIKELY(c->bref_n == c->bref_cap)) {
-        c->bref_cap = c->bref_cap ? c->bref_cap * 2 : 64;
-        c->bref_saved = realloc(c->bref_saved, sizeof(korb_value) * c->bref_cap);
-        c->bref_base = realloc(c->bref_base, sizeof(*c->bref_base) * c->bref_cap);
-        if (!c->bref_saved || !c->bref_base) { fprintf(stderr, "koruby_precise: out of memory (backref scopes)\n"); abort(); }
-    }
+    if (UNLIKELY(c->bref_n == c->bref_cap)) korb_bref_grow(c);
     c->bref_base[c->bref_n] = base;
     c->bref_saved[c->bref_n++] = v;
 }
@@ -1382,6 +1378,9 @@ RESULT korb_gt_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, 
 RESULT korb_le_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink);   /* node.def, binary only (sdi26) */
 RESULT korb_ge_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink);   /* node.def, binary only (sdi26) */
 RESULT korb_aref_generic(CTX *c, korb_value *slots, korb_value r, korb_value idx, uint64_t flink, struct korb_inlcache *ic);
+RESULT korb_shl_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, struct korb_inlcache *ic, uint64_t flink);   /* sdi29 */
+korb_value korb_str_frozen_fill(CTX *c, korb_value *slots, const char *bytes, uint32_t len, struct korb_fscache *fc);   /* sdi29 */
+RESULT korb_not_generic(CTX *c, korb_value *slots, korb_value v);   /* sdi29 */
 
 /* Builtin receiver → class object (2 loads); mirrors korb_runtime.c's korb_builtin_class_obj. */
 static inline korb_value
