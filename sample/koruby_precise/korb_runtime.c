@@ -24707,3 +24707,54 @@ korb_const_path_miss(CTX *c, korb_value *slots, uint32_t name, uint32_t line, in
     korb_flink_stage_at(c, &slots[fb_off], line);         /* the hook's `caller` must start at the reference */
     return korb_send(c, slots + 2, korb_intern_lit(vm, "const_missing", 13), line, 1);
 }
+
+/* node_ivar_get past its two shape hits: a miss (walk + refill) and the non-instance selves, shared by every site
+ * instead of inlined at each (sdi20) */
+__attribute__((noinline)) korb_value
+korb_ivar_get_alt(CTX *c, korb_value self, uint32_t name, struct korb_ivgcache *ic)
+{
+    if (LIKELY(KORB_OBJECT_P(self))) {
+        const KorbObject *const o = VAL2OBJ(self);
+        const uint32_t sh = o->shape_id;
+        /* miss → walk (railsbench's readers shared by several classes walked ~30M instructions an
+         * iteration with one entry); the new shape goes first, the one it held moves second */
+        const int32_t idx = korb_shape_index(c->vm, sh, name);
+        if (idx < 0) { ic->shape_id2 = sh; ic->slot2 = -1; return KORB_NIL; }
+        /* re-read (volatile): reusing the hit test's load would split its compare into a load + compare */
+        const uint32_t old = *(const volatile uint32_t *)&ic->shape_id;
+        if (old != KORB_IVC_CLASS) { ic->shape_id2 = old; ic->slot2 = ic->slot; }
+        ic->shape_id = sh; ic->slot = idx;
+        return korb_items_data(o->ivars)[idx];
+    }
+    if (KORB_CLASS_P(self)) {   /* the class's own @ivars: a pair of its side hash, remembered by position */
+        const korb_value h = VAL2CLASS(self)->class_ivars;
+        if (h == KORB_NIL) return KORB_NIL;
+        const KorbHash *const hh = VAL2HASH(h);
+        const korb_value *const kv = korb_hash_pairs(hh);
+        const uint32_t i = (uint32_t)ic->slot;
+        if (LIKELY(ic->shape_id == KORB_IVC_CLASS && i < hh->len && kv[2 * i] == ID2SYM(name))) return kv[2 * i + 1];
+        const int32_t idx = korb_hash_find_inl(hh, ID2SYM(name));
+        if (idx < 0) return KORB_NIL;
+        ic->shape_id = KORB_IVC_CLASS; ic->slot = idx;
+        return kv[2 * idx + 1];
+    }
+    if (AROH_IS_GC_OBJECT(self)) return korb_ivar_get(c, self, ID2SYM(name));   /* exc/container side storage (cold, no alloc) */
+    return KORB_NIL;   /* @x on an immediate self → nil */
+}
+
+/* node_send past its instance hit (sdi20): acct46's tag hits — a builtin receiver's C method, a class receiver's
+ * simple public method — then korb_send_cached.  One copy for every site. */
+__attribute__((noinline, no_stack_protector)) RESULT
+korb_send_alt(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
+              struct korb_inlcache *ic, korb_value caller_self, struct korb_inlcache *site_ic)
+{
+    if (LIKELY(c->vm->send_inl) && LIKELY(ic->serial == c->vm->method_serial) && LIKELY(!c->vm->refinements_active) &&
+        ic->cfunc_ok) {
+        const korb_value recv = slots[-(korb_sword_t)argc - 1];
+        if (ic->cfunc_ok >= 0xFE ? recv == ic->klass : korb_recv_tag_is(recv, ic->cfunc_ok)) {
+            if (ic->cfunc_ok == 0xFE) return korb_send_simple_hit(c, slots, mid, flink, argc, ic);
+            return korb_send_cfunc_hit(c, slots, mid, flink, argc, ic->m);
+        }
+    }
+    return korb_send_cached(c, slots, mid, flink, argc, ic, caller_self, site_ic);
+}

@@ -488,6 +488,10 @@ RESULT korb_call_blk_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, 
                         korb_value self, NODE *block, korb_value *def_env, korb_value *captured_self, struct korb_inlcache *ic);   /* node_call_blk / _blkproc */
 RESULT korb_send_cfunc_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc, const struct korb_method *m);   /* EXPERIMENT acct46 */
 RESULT korb_send_simple_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc, const struct korb_inlcache *ic);
+RESULT korb_send_alt(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
+                     struct korb_inlcache *ic, korb_value caller_self, struct korb_inlcache *site_ic);   /* sdi20: node_send's miss side */
+struct korb_ivgcache;
+korb_value korb_ivar_get_alt(CTX *c, korb_value self, uint32_t name, struct korb_ivgcache *ic);   /* sdi20: node_ivar_get's miss side */
 RESULT korb_send_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
                         struct korb_inlcache *ic, korb_value caller_self,
                         struct korb_inlcache *site_ic);   /* caller_self = KORB_UNDEF → no visibility check; site_ic = the node's own cache (shared-cc patch key) or NULL */

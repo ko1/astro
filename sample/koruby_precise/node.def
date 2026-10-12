@@ -2585,22 +2585,10 @@ node_call(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, 
     const korb_value self = slots[-(korb_sword_t)argv_cnt];       /* base[-1] (the staged self receiver) */
     if (LIKELY(KORB_OBJECT_P(self) && !(((const AroObjectHeader *)(uintptr_t)self)->flags & KORB_FL_HAS_KLASS))) {
         const korb_value klass = VAL2OBJ(self)->klass;            /* a singleton/extended self goes the slow way */
-        if (LIKELY(klass != KORB_NIL)) {                     /* user-instance self-call */
-            if (LIKELY(ic->serial == c->vm->method_serial && ic->klass == klass)) {
-                if (LIKELY(ic->dispatch)) return korb_invoke_entry_ic(c, slots, ic, argc, mid);
-                if (ic->m == NULL && ic->def_class == KORB_TRUE && cc->serial == c->vm->method_serial && cc->dispatch)
-                    return korb_invoke_entry_cc(c, slots, cc, argc, mid);   /* a top-level def (see korb_call_cached) */
-            }
-        } else if (LIKELY(cc->serial == c->vm->method_serial && cc->dispatch)) {
-            return korb_invoke_entry_cc(c, slots, cc, argc, mid);   /* top-level global (fib) */
-        }
-    } else if (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL &&
-               LIKELY(ic->serial == c->vm->method_serial && ic->m == NULL && ic->klass == c->vm->top_sclass &&
-                      cc->serial == c->vm->method_serial && cc->dispatch)) {
-        /* main has a singleton class (to_s / inspect): korb_call_cached cached that it
-         * lacks `mid`, so the top-level def (global table) is the callee */
-        return korb_invoke_entry_cc(c, slots, cc, argc, mid);
+        if (LIKELY(ic->serial == c->vm->method_serial && ic->klass == klass && ic->dispatch && klass != KORB_NIL))
+            return korb_invoke_entry_ic(c, slots, ic, argc, mid);   /* user-instance self-call */
     }
+    /* the top-level def / main cases (korb_invoke_entry_cc) live in korb_call_cached: one copy, not one per site (sdi20) */
     (void)flink;   /* codegen stores it into base[-3]; the body never reads it */
     /* the link is in the frame; korb_call_cached takes it raw and decodes once */
     return korb_call_cached(c, slots, mid, slots[-(korb_sword_t)argv_cnt - 2], cc, ic, argc, self, n, &n->u.node_call.ic);   /* EXPERIMENT acct45 */
@@ -2744,21 +2732,16 @@ node_send(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, uint64_t flink, 
     /* EXPERIMENT acct46: the two hits that used to go to korb_send_cached on every call (railsbench: 1,895 per
      * request, 93 instructions each): a C method on a builtin receiver, keyed by the receiver's builtin class, and a
      * class receiver's simple public method.  The site's own check + a direct call; the runtime only on a miss. */
-    if (LIKELY(c->vm->send_inl) && LIKELY(ic->serial == c->vm->method_serial) && LIKELY(!c->vm->refinements_active)) {
-        if (ic->cfunc_ok) {   /* the receiver's tag against the cached class's (no class lookup: ~10 instructions, 30 B) */
-            if (ic->cfunc_ok >= 0xFE ? recv == ic->klass : korb_recv_tag_is(recv, ic->cfunc_ok)) {
-                if (ic->cfunc_ok == 0xFE) return korb_send_simple_hit(c, slots, mid, slots[-(korb_sword_t)argv_cnt - 2], argc, ic);
-                return korb_send_cfunc_hit(c, slots, mid, slots[-(korb_sword_t)argv_cnt - 2], argc, ic->m);
-            }
-        }
-    }
+    /* Everything else — a builtin receiver's C method or a class receiver's simple method (acct46's tag hits), and
+     * then korb_send_cached — is one shared out-of-line function: each site keeps only the instance hit, so a wide
+     * program does not carry the other cases' code at every site (sdi20). */
     /* self_off == INT32_MIN → a synthetic send (op-assign/[]/=== desugar): public,
      * no visibility check.  Otherwise pass the caller's self (base[-1]) for the
      * private (self.foo only) / protected (is_a? owner) guard. */
     const korb_value caller_self = (self_off == INT32_MIN) ? KORB_UNDEF : slots[self_off];
     (void)flink;   /* codegen stores it into base[-3]; the body never reads it */
-    /* the link is in the frame; korb_send_cached takes it raw and decodes once */
-    return korb_send_cached(c, slots, mid, slots[-(korb_sword_t)argv_cnt - 2], argc, ic, caller_self, &n->u.node_send.ic);   /* EXPERIMENT acct45 */
+    /* the link is in the frame; korb_send_alt takes it raw and decodes once */
+    return korb_send_alt(c, slots, mid, slots[-(korb_sword_t)argv_cnt - 2], argc, ic, caller_self, &n->u.node_send.ic);
 }
 
 /* ---- AOT-only inline sends (enum korb_sdi, korb_sdi_tab) -------------------------------
@@ -4099,30 +4082,8 @@ node_ivar_get(CTX *c, NODE *n, korb_value *slots, int32_t self_off, uint32_t nam
         /* shape inline cache: a hit guarantees the slot is valid for this layout. */
         if (LIKELY(sh == ic->shape_id)) return RESULT_OK(korb_items_data(o->ivars)[ic->slot]);
         if (sh == ic->shape_id2) return RESULT_OK(ic->slot2 >= 0 ? korb_items_data(o->ivars)[ic->slot2] : KORB_NIL);
-        /* miss → walk (railsbench's readers shared by several classes walked ~30M instructions an
-         * iteration with one entry); the new shape goes first, the one it held moves second */
-        const int32_t idx = korb_shape_index(c->vm, sh, name);
-        if (idx < 0) { ic->shape_id2 = sh; ic->slot2 = -1; return RESULT_OK(KORB_NIL); }
-        /* re-read (volatile): reusing the hit test's load would split its compare into a load + compare */
-        const uint32_t old = *(const volatile uint32_t *)&ic->shape_id;
-        if (old != KORB_IVC_CLASS) { ic->shape_id2 = old; ic->slot2 = ic->slot; }
-        ic->shape_id = sh; ic->slot = idx;
-        return RESULT_OK(korb_items_data(o->ivars)[idx]);
     }
-    if (KORB_CLASS_P(self)) {   /* the class's own @ivars: a pair of its side hash, remembered by position */
-        const korb_value h = VAL2CLASS(self)->class_ivars;
-        if (h == KORB_NIL) return RESULT_OK(KORB_NIL);
-        const KorbHash *const hh = VAL2HASH(h);
-        const korb_value *const kv = korb_hash_pairs(hh);
-        const uint32_t i = (uint32_t)ic->slot;
-        if (LIKELY(ic->shape_id == KORB_IVC_CLASS && i < hh->len && kv[2 * i] == ID2SYM(name))) return RESULT_OK(kv[2 * i + 1]);
-        const int32_t idx = korb_hash_find_inl(hh, ID2SYM(name));
-        if (idx < 0) return RESULT_OK(KORB_NIL);
-        ic->shape_id = KORB_IVC_CLASS; ic->slot = idx;
-        return RESULT_OK(kv[2 * idx + 1]);
-    }
-    if (AROH_IS_GC_OBJECT(self)) return RESULT_OK(korb_ivar_get(c, self, ID2SYM(name)));   /* exc/container side storage (cold, no alloc) */
-    return RESULT_OK(KORB_NIL);   /* @x on an immediate self → nil */
+    return RESULT_OK(korb_ivar_get_alt(c, self, name, ic));   /* misses and non-instance selves: shared, out of line (sdi20) */
 }
 
 NODE_DEF
