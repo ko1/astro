@@ -16601,6 +16601,13 @@ korb_send_cfunc_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, u
     if (LIKELY(r.state == KORB_NORMAL)) return r;
     return korb_call_ret_cold(c, r, flink, mid, (korb_value)((uintptr_t)m | KORB_FID_CFUNC));
 }
+/* a builtin receiver's Ruby method hit (korb_send_alt's tag test): korb_invoke_entry_ic out of line, so korb_send_alt's
+ * C-method hit keeps its small frame */
+__attribute__((noinline, no_stack_protector)) RESULT
+korb_send_entry_hit(CTX *c, korb_value *slots, const struct korb_inlcache *ic, uint32_t argc, uint32_t mid)
+{
+    return korb_invoke_entry_ic(c, slots, ic, argc, mid);
+}
 /* the class receiver's simple public ISEQ hit, reached from the SD's own check: korb_invoke_simple with its frame here */
 __attribute__((noinline, no_stack_protector)) RESULT
 korb_send_simple_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc, const struct korb_inlcache *ic)
@@ -24778,7 +24785,7 @@ korb_send_alt(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_
         const korb_value recv = slots[-(korb_sword_t)argc - 1];
         if (ic->cfunc_ok >= 0xFE ? recv == ic->klass : korb_recv_tag_is(recv, ic->cfunc_ok)) {
             if (ic->cfunc_ok == 0xFE) return korb_send_simple_hit(c, slots, mid, flink, argc, ic);
-            if (ic->dispatch != NULL) return korb_invoke_entry_ic(c, slots, ic, argc, mid);   /* a builtin's Ruby method */
+            if (ic->dispatch != NULL) return korb_send_entry_hit(c, slots, ic, argc, mid);   /* a builtin's Ruby method */
             return korb_send_cfunc_hit(c, slots, mid, flink, argc, ic->m);
         }
     }

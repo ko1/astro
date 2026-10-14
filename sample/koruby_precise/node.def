@@ -3064,6 +3064,14 @@ korb_sdi_alt_##K(CTX *c, NODE *n, korb_value *slots, uint32_t mid, int32_t self_
         (void)a0; (void)a1; \
         BODY \
     } \
+    /* another class's method in a current cache (Symbol#to_sym at a to_sym site): korb_send_alt's tag hit, minus 2 hops */ \
+    if (LIKELY(c->vm->send_inl) && ic->serial == c->vm->method_serial && !c->vm->refinements_active && ic->cfunc_ok) { \
+        const korb_value rr_ = slots[-(korb_sword_t)(ARGC) - 1]; \
+        if (ic->cfunc_ok >= 0xFE ? (ic->cfunc_ok == 0xFF && rr_ == ic->klass) : korb_recv_tag_is(rr_, ic->cfunc_ok)) { \
+            if (ic->dispatch != NULL) return korb_send_entry_hit(c, slots, ic, (ARGC), mid);   /* a builtin's Ruby method */ \
+            return korb_send_cfunc_hit(c, slots, mid, slots[-(korb_sword_t)argv_cnt - 2], (ARGC), ic->m); \
+        } \
+    } \
     return korb_send_site(c, slots, mid, self_off, argv_cnt, ic, &n->u.node_send.ic); \
 }
 #else
