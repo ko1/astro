@@ -491,6 +491,8 @@ RESULT korb_call_blk_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, 
 RESULT korb_send_cfunc_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc, const struct korb_method *m);   /* EXPERIMENT acct46 */
 RESULT korb_send_simple_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc, const struct korb_inlcache *ic);
 RESULT korb_send_entry_hit(CTX *c, korb_value *slots, const struct korb_inlcache *ic, uint32_t argc, uint32_t mid);
+RESULT korb_send_klass_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
+                           struct korb_inlcache *ic, korb_value caller_self, struct korb_inlcache *site_ic);
 RESULT korb_send_alt(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
                      struct korb_inlcache *ic, korb_value caller_self, struct korb_inlcache *site_ic);   /* sdi20: node_send's miss side */
 struct korb_ivgcache;

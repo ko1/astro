@@ -16601,6 +16601,20 @@ korb_send_cfunc_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, u
     if (LIKELY(r.state == KORB_NORMAL)) return r;
     return korb_call_ret_cold(c, r, flink, mid, (korb_value)((uintptr_t)m | KORB_FID_CFUNC));
 }
+/* korb_send_alt's miss with an entry in the cache: a receiver with a singleton class or a builtin subclass's
+ * (ActiveSupport::Logger, HashWithIndifferentAccess) whose dispatch class is the cached one goes straight to the entry,
+ * without korb_send_cached's cascade; anything else takes korb_send_cached */
+__attribute__((noinline, no_stack_protector)) RESULT
+korb_send_klass_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_t argc,
+                    struct korb_inlcache *ic, korb_value caller_self, struct korb_inlcache *site_ic)
+{
+    const korb_value recv = slots[-(korb_sword_t)argc - 1];
+    if (AROH_IS_GC_OBJECT(recv) && (((const AroObjectHeader *)(uintptr_t)recv)->flags & KORB_FL_HAS_KLASS) &&
+        ic->kind == KORB_IC_INSTANCE && ic->serial == c->vm->method_serial && LIKELY(!c->vm->refinements_active) &&
+        LIKELY(c->vm->send_inl) && korb_dispatch_class(c, recv) == ic->klass)
+        return korb_invoke_entry_ic(c, slots, ic, argc, mid);
+    return korb_send_cached(c, slots, mid, flink, argc, ic, caller_self, site_ic);
+}
 /* a builtin receiver's Ruby method hit (korb_send_alt's tag test): korb_invoke_entry_ic out of line, so korb_send_alt's
  * C-method hit keeps its small frame */
 __attribute__((noinline, no_stack_protector)) RESULT
@@ -24789,6 +24803,7 @@ korb_send_alt(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_
             return korb_send_cfunc_hit(c, slots, mid, flink, argc, ic->m);
         }
     }
+    if (ic->dispatch != NULL && ic->cfunc_ok == 0) return korb_send_klass_hit(c, slots, mid, flink, argc, ic, caller_self, site_ic);
     return korb_send_cached(c, slots, mid, flink, argc, ic, caller_self, site_ic);
 }
 
