@@ -15027,6 +15027,7 @@ static RESULT korb_check_call_vis(CTX *c, korb_value *slots, const struct korb_m
         if (mm_handled_ || vr_.state != KORB_NORMAL) return vr_;                               \
     } } while (0)
 
+static RESULT korb_send_entry_direct(CTX *c, korb_value *slots, const struct korb_method *m, uint32_t argc, uint32_t mid);   /* fwd */
 /* Out of line: the 2 KB MRO buffer would otherwise sit in every korb_send_impl_vis
  * frame, and that frame is on the C stack once per Ruby call through this path. */
 static __attribute__((noinline, cold)) bool
@@ -15155,6 +15156,11 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
         struct korb_method *um = korb_mcache_find(vm, korb_obj_dispatch_klass(vm, self), mid, &def_class);
         if (um) {
             KORB_SEND_VIS_GUARD(um, def_class);
+            /* a simple method without a block (a user ==, &:sym's callee): its own entry, as a cached send hit,
+             * not korb_dispatch_method's kind cascade */
+            if (block == NULL && um->kind == KORB_METHOD_ISEQ && um->is_simple && um->simple_entry != NULL &&
+                argc == (uint32_t)um->params_cnt && LIKELY(!vm->refinements_active))
+                return korb_send_entry_direct(c, slots, um, argc, mid);
             return korb_dispatch_method(c, slots, um, mid, line, argc, def_class, block, def_env, captured_self, true);
         }
     }
@@ -16614,6 +16620,16 @@ korb_send_klass_hit(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, u
         LIKELY(c->vm->send_inl) && korb_dispatch_class(c, recv) == ic->klass)
         return korb_invoke_entry_ic(c, slots, ic, argc, mid);
     return korb_send_cached(c, slots, mid, flink, argc, ic, caller_self, site_ic);
+}
+/* a resolved simple method's own entry, from a frame staged with its header ([identity, link, EP, self, args]):
+ * what korb_send_simple_hit does for a cache hit, for the generic send's mcache hit */
+static __attribute__((noinline, no_stack_protector)) RESULT
+korb_send_entry_direct(CTX *c, korb_value *slots, const struct korb_method *m, uint32_t argc, uint32_t mid)
+{
+    korb_id_set(slots - argc, (korb_value)((uintptr_t)m | KORB_FID_METHOD));
+    const RESULT r = (*m->simple_entry->head.dispatcher)(c, m->simple_entry, slots);
+    if (LIKELY(r.state == KORB_NORMAL)) return r;
+    return korb_call_ret_cold(c, r, slots[-(korb_sword_t)argc - 3], mid, korb_id_get(slots - argc));
 }
 /* a builtin receiver's Ruby method hit (korb_send_alt's tag test): korb_invoke_entry_ic out of line, so korb_send_alt's
  * C-method hit keeps its small frame */
