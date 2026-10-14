@@ -24762,6 +24762,7 @@ korb_send_alt(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, uint32_
         const korb_value recv = slots[-(korb_sword_t)argc - 1];
         if (ic->cfunc_ok >= 0xFE ? recv == ic->klass : korb_recv_tag_is(recv, ic->cfunc_ok)) {
             if (ic->cfunc_ok == 0xFE) return korb_send_simple_hit(c, slots, mid, flink, argc, ic);
+            if (ic->dispatch != NULL) return korb_invoke_entry_ic(c, slots, ic, argc, mid);   /* a builtin's Ruby method */
             return korb_send_cfunc_hit(c, slots, mid, flink, argc, ic->m);
         }
     }

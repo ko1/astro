@@ -210,8 +210,10 @@ struct korb_inlcache {
     uint8_t  kind;
     uint8_t  shared;                 /* EXPERIMENT acct45: an interned, shared cache (in kind's pad): never written through korb_ic_fill */
     uint8_t  poly;                   /* EXPERIMENT acct45 (a node's own cache): the site missed while shared -> keeps its own cache for good */
-    uint8_t  cfunc_ok;               /* EXPERIMENT acct46: 0 = no; else m is a C method callable with this site's argc and this is the
-                                      * receiver's tag code the SD compares (korb_recv_tag_is), 0xFF = compare recv == klass (a class receiver) */
+    uint8_t  cfunc_ok;               /* EXPERIMENT acct46: 0 = no; else m is a C method callable with this site's argc, or (dispatch != NULL)
+                                      * a builtin class's Ruby method with an entry, and this is the receiver's tag code korb_send_alt
+                                      * compares (korb_recv_tag_is); 0xFF = compare recv == klass (a class receiver's C method), 0xFE = its
+                                      * simple ISEQ */
     uint32_t smid;                   /* KORB_IC_SEND: the name `send(:name, ...)` resolved (in kind's pad) */
 };
 
@@ -1471,6 +1473,8 @@ korb_ic_fill_raw(const struct korb_vm *vm, struct korb_inlcache *ic, uint64_t se
         NODE *const e = m->opt_entries[argc - m->req_cnt];   /* optionals left out: korb_opt_entries_build */
         ic->body = e; ic->dispatch = e->head.dispatcher;
     }
+    /* a builtin receiver's Ruby method with an entry (String#html_safe?): korb_send_alt's tag test goes straight to it */
+    if (ic->dispatch != NULL && ic->cfunc_ok == 0) ic->cfunc_ok = korb_bi_tag_code(vm, klass);
 }
 
 /* The same, for a site's own cache: a shared one (EXPERIMENT acct45) is only ever refreshed by korb_cc_intern. */
