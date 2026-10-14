@@ -13544,6 +13544,22 @@ korb_call_cached(CTX *c, korb_value *slots, uint32_t mid, korb_value flink,
          * class-method call does: finding its metaclass is a side-table lookup per call */
         const bool cls_self = KORB_CLASS_P(self);
         const bool hit = cls_self ? (ic->kind == KORB_IC_SMETHOD && ic->serial == vm->method_serial && ic->klass == self) : false;
+        if (!cls_self && ic->kind == KORB_IC_INSTANCE && ic->serial == vm->method_serial && ic->cfunc_ok != 0 &&
+            ic->cfunc_ok < 0xFE && korb_recv_tag_is(self, ic->cfunc_ok) && site != NULL) {
+            /* a builtin self's cached C method or Ruby method with an entry (empty? in a String method): the tag
+             * test, without korb_dispatch_class */
+            if (ic->dispatch != NULL) return korb_invoke_entry_ic(c, slots, ic, argc, mid);
+            if (!ic->m->uses_block) {
+                const struct korb_method *const cm = ic->m;
+                korb_value *const cbase = &slots[-(korb_sword_t)argc];
+                const bool framed = KORB_FLINK_FRAMED(flink);
+                const korb_value saved = framed ? korb_cframe_enter(c, cbase, cm) : 0;
+                RESULT r = cm->rfn(c, slots, KORB_REF_AT(&cbase[-1]), KORB_SLICE_MAKE(cbase, argc));
+                if (framed) korb_cframe_leave(c, saved);
+                if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value)) korb_bt_unwind(c, VAL2EXC(r.value), korb_flink_line(flink), mid, cm);
+                return r;
+            }
+        }
         const korb_value klass = hit ? self : korb_dispatch_class(c, self);
         if (LIKELY(KORB_CLASS_P(klass))) {
             struct korb_method *m;
