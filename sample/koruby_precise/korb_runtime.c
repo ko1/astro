@@ -17409,6 +17409,15 @@ void
 korb_sdi_init(CTX *c)
 {
     struct korb_vm *const vm = c->vm;
+    {   /* the builtin value classes' receiver tag codes (korb_bi_tag_code reads them on every cache fill) */
+        static const enum korb_class tagged[] = { KORB_C_STRING, KORB_C_ARRAY, KORB_C_HASH, KORB_C_PROC, KORB_C_RANGE, KORB_C_REGEXP,
+                                                  KORB_C_MATCHDATA, KORB_C_INTEGER, KORB_C_FLOAT, KORB_C_SYMBOL, KORB_C_NIL,
+                                                  KORB_C_TRUE, KORB_C_FALSE };
+        for (unsigned i = 0; i < sizeof(tagged) / sizeof(tagged[0]); i++) {
+            const korb_value k = korb_bi_class(vm, tagged[i]);
+            if (KORB_CLASS_P(k)) VAL2CLASS(k)->bi_tag = korb_bi_tag_code_slow(vm, k);
+        }
+    }
     for (uint8_t k = 1; k < KORB_SDI_N; k++) {
         const uint32_t mid = korb_intern(vm, korb_sdi_tab[k].name, strlen(korb_sdi_tab[k].name));
         vm->sdi_mid[k] = mid;

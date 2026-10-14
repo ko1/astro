@@ -1431,7 +1431,7 @@ korb_send_builtin_klass(struct korb_vm *vm, const korb_value recv)
 /* EXPERIMENT acct46: the tag code of a builtin class, for the SD's receiver test (0 = not a builtin class) */
 #define KORB_TAG_IMM 0xF0u
 static inline uint8_t
-korb_bi_tag_code(const struct korb_vm *vm, korb_value klass)
+korb_bi_tag_code_slow(const struct korb_vm *vm, korb_value klass)   /* korb_sdi_init's, once per builtin class */
 {
     static const struct { enum korb_class c; unsigned t; } tab[] = {
         { KORB_C_STRING, KORB_OBJ_STRING }, { KORB_C_ARRAY, KORB_OBJ_ARRAY }, { KORB_C_HASH, KORB_OBJ_HASH }, { KORB_C_PROC, KORB_OBJ_PROC },
@@ -1440,6 +1440,13 @@ korb_bi_tag_code(const struct korb_vm *vm, korb_value klass)
     static const enum korb_class imm[] = { KORB_C_INTEGER, KORB_C_FLOAT, KORB_C_SYMBOL, KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE };
     for (unsigned i = 0; i < 6; i++) if (korb_bi_class(vm, imm[i]) == klass) return (uint8_t)(KORB_TAG_IMM + 1 + i);
     return 0;
+}
+/* the class's own copy: a cache fill reads one byte, not 13 class compares (railsbench refills ~190 caches a request) */
+static inline uint8_t
+korb_bi_tag_code(const struct korb_vm *vm, korb_value klass)
+{
+    (void)vm;
+    return KORB_CLASS_P(klass) ? VAL2CLASS(klass)->bi_tag : 0;
 }
 static inline bool
 korb_recv_tag_is(korb_value recv, uint8_t code)

@@ -821,6 +821,7 @@ typedef struct KorbClass {
                                       * segment DFS would answer from the shallow copy, so lookups here must
                                       * walk the deduped linearization.  Sticky, propagated on include. */
     uint8_t  cext_alloc_yes;         /* korb_cext_has_alloc's answer, valid while cext_alloc_n == the vm's alloc_n */
+    uint8_t  bi_tag;                 /* a builtin value class's receiver tag code (korb_bi_tag_code, set by korb_sdi_init), else 0 */
     uint32_t cext_alloc_n;           /* alloc_n + 1 at the time (0 = not asked); allocators are only added, superclasses fixed */
     uint64_t looked_mids;            /* bit (mid & 63): a method cache may hold mid resolved from this class */
     uint32_t serial;                 /* monotonic per-class id (GC-stable identity for #hash of anonymous Struct/Data classes) */
