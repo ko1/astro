@@ -318,7 +318,18 @@ static bool korb_enc_bytes_valid(const struct korb_vm *const vm, const uint32_t 
                                  const char *const bytes, const uint32_t len)
 {
     struct korb_tc tc;
-    if (!korb_tc_find(korb_enc_name_of(vm, enc), &tc)) return true;
+    const char *const ename = korb_enc_name_of(vm, enc);
+    if (!korb_tc_find(ename, &tc)) {
+        if (strcmp(ename, "GB2312") == 0 || strcmp(ename, "GB12345") == 0) {   /* no converter here, but EUC's structure (CRuby) */
+            const unsigned char *const q = (const unsigned char *)bytes;
+            for (uint32_t i = 0; i < len; ) {
+                if (q[i] < 0x80) { i++; continue; }
+                if (q[i] < 0xA1 || q[i] == 0xFF || i + 1 >= len || q[i + 1] < 0xA1 || q[i + 1] == 0xFF) return false;
+                i += 2;
+            }
+        }
+        return true;
+    }
     if (tc.kind == KTC_ISO2022JP || tc.kind == KTC_SB || tc.kind == KTC_SB256) return true;   /* single-byte: every byte is a character, mapped or not */
     const unsigned char *const p = (const unsigned char *)bytes;
     for (uint32_t i = 0; i < len; ) {

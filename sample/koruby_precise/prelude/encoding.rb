@@ -1045,3 +1045,54 @@ class Regexp
     s.encoding == e ? s : s.dup.force_encoding(e)
   end
 end
+
+# Grapheme clusters of a UTF-16 / UTF-32 string: segmented as its UTF-8 form, each cluster handed back in the
+# string's own encoding (the C segmenter reads UTF-8).
+class String
+  alias_method :__grapheme_clusters_raw, :grapheme_clusters
+  alias_method :__each_grapheme_cluster_raw, :each_grapheme_cluster
+  private :__grapheme_clusters_raw, :__each_grapheme_cluster_raw
+  WIDE_UNICODE__ = [Encoding::UTF_16LE, Encoding::UTF_16BE, Encoding::UTF_32LE, Encoding::UTF_32BE].freeze
+  private_constant :WIDE_UNICODE__
+
+  def grapheme_clusters(&blk)
+    return __grapheme_clusters_raw(&blk) unless WIDE_UNICODE__.include?(encoding) && valid_encoding?
+    e = encoding
+    r = encode(Encoding::UTF_8).__send__(:__grapheme_clusters_raw).map { |g| g.encode(e) }
+    return r unless blk
+    r.each(&blk)
+    self
+  end
+
+  def each_grapheme_cluster(&blk)
+    return __each_grapheme_cluster_raw(&blk) unless WIDE_UNICODE__.include?(encoding) && valid_encoding?
+    return to_enum(:each_grapheme_cluster) { grapheme_clusters.size } unless blk
+    grapheme_clusters.each(&blk)
+    self
+  end
+end
+
+class String
+  # String#rindex / #byterindex with a \G pattern: \G is the limit `stopb` (a byte offset) at every start, so
+  # the part before it must end there and the part after start there.  Returns [position, MatchData] for the
+  # latest start (the position in characters unless `bytes`), or nil.  The MatchData is the two halves matched
+  # in a row from that start (its groups may split differently from the engine's own backward search).
+  private def __rindex_g(re, stopb, bytes)
+    src = re.source
+    i = src.index("\\G")
+    return nil unless i
+    before, after = src[0, i], src[i + 2..]
+    rest = Regexp.escape(byteslice(stopb..) || "")
+    head = Regexp.new("\\G(?:#{before})(?=#{rest}\\z)", re.options)
+    tail = Regexp.new("\\G(?:#{after})", re.options)
+    whole = Regexp.new("\\G(?:#{before})(?:#{after})", re.options)
+    stop_c = byteslice(0, stopb).length
+    return nil unless tail.match?(self, stop_c)
+    stop_c.downto(0) do |ci|
+      next unless head.match?(self, ci)
+      m = whole.match(self, ci) or next
+      return [bytes ? m.byteoffset(0)[0] : m.begin(0), m]
+    end
+    nil
+  end
+end

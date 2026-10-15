@@ -1912,6 +1912,17 @@ RESULT korb_re_str_rindex(CTX *c, korb_value *slots, korb_ref self, korb_value r
     if (stop < 0) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
     const long stopb = bytes ? stop : (stop >= ncp ? slen : (long)korb_re_startb(c->vm, slots[0], stop));
     korb_re_match_t last_m; bool have = false; long off = 0;
+    {   /* `\G` is where the search starts — the limit, for a backward search (CRuby): prelude's __rindex_g */
+        const KorbString *const src = KORB_STRING_P(VAL2RE(slots[1])->source) ? VAL2STR(VAL2RE(slots[1])->source) : NULL;
+        if (src != NULL && korb_byte_find(korb_str_ptr(src), src->len, "\\G", 2) >= 0) {
+            slots[2] = slots[0]; slots[3] = slots[1]; slots[4] = LONG2FIX(stopb); slots[5] = bytes ? KORB_TRUE : KORB_FALSE;
+            const RESULT mr = korb_send(c, slots + 6, korb_intern_lit(c->vm, "__rindex_g", 10), 0, 3);   /* [pos, md] | nil */
+            if (UNLIKELY(mr.state != KORB_NORMAL)) return mr;
+            if (!KORB_ARRAY_P(mr.value) || VAL2ARY(mr.value)->len != 2) { korb_re_set_lastmatch(c, KORB_NIL); return RESULT_OK(KORB_NIL); }
+            korb_re_set_lastmatch(c, korb_ary_ptr(VAL2ARY(mr.value))[1]);
+            return RESULT_OK(korb_ary_ptr(VAL2ARY(mr.value))[0]);
+        }
+    }
     while (off <= slen) {
         korb_re_match_t m; RESULT rr = korb_re_run(c, slots + 2, slots[1], slots[0], (size_t)off, &m);
         if (UNLIKELY(rr.state != KORB_NORMAL)) return rr;

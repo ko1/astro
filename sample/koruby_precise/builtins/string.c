@@ -322,7 +322,8 @@ static bool korb_str_enc_valid(const struct korb_vm *vm, const KorbString *s, ui
     }
     if (enc >= KORB_ENC_OTHER_MIN) {
         const signed char (*const trans)[256] = korb_enc_trans_of(vm, enc);
-        return trans == NULL || korb_enc_trans_valid(trans, (const unsigned char *)korb_str_ptr(s), s->len);
+        if (trans == NULL) return korb_enc_bytes_valid(vm, enc, korb_str_ptr(s), s->len);   /* as #valid_encoding? */
+        return korb_enc_trans_valid(trans, (const unsigned char *)korb_str_ptr(s), s->len);
     }
     if (enc == KORB_ENC_BINARY) return true;
     return korb_str_utf8_valid(s);
@@ -341,8 +342,15 @@ static RESULT korb_m_str_scrub(CTX *c, korb_value *slots, korb_ref self, korb_sl
         KORB_STR_ENC_SET((korb_value)r, enc);
         return RESULT_OK((korb_value)r);
     }
+    /* UTF-16 / UTF-32: a character is one or two code units, so a bad sequence is whole units */
+    const char *const ename = korb_enc_name_of(c->vm, enc);
+    const uint32_t wunit = (!strcmp(ename, "UTF-16LE") || !strcmp(ename, "UTF-16BE")) ? 2u
+                         : (!strcmp(ename, "UTF-32LE") || !strcmp(ename, "UTF-32BE")) ? 4u : 0u;
+    const bool wbe = wunit && ename[6] == 'B';
     char repbuf[64]; const char *rep; uint32_t replen;
-    if (us_ascii || trans != NULL) { rep = "?"; replen = 1; }
+    if (wunit == 2) { rep = wbe ? "\xFF\xFD" : "\xFD\xFF"; replen = 2; }                       /* U+FFFD */
+    else if (wunit == 4) { rep = wbe ? "\x00\x00\xFF\xFD" : "\xFD\xFF\x00\x00"; replen = 4; }
+    else if (us_ascii || trans != NULL) { rep = "?"; replen = 1; }
     else          { rep = "\xEF\xBF\xBD"; replen = 3; }   /* U+FFFD */
     const bool use_arg = KORB_SLICE_LEN(a) >= 1 && KORB_SLICE_GET(a, 0) != KORB_NIL;
     if (use_arg) {
@@ -365,14 +373,30 @@ static RESULT korb_m_str_scrub(CTX *c, korb_value *slots, korb_ref self, korb_sl
         const KorbString *const s = VAL2STR(KORB_REF_GET(self));
         const unsigned char *const p = (const unsigned char *)korb_str_ptr(s);
         const uint32_t n = s->len;
+        uint32_t l, bad_end;
+        if (wunit) {                                     /* one bad code unit (or the truncated tail) at a time */
+            if (i + wunit > n) { l = 0; bad_end = n; }
+            else {
+                uint32_t cu = 0;
+                for (uint32_t k = 0; k < wunit; k++) cu |= (uint32_t)p[i + (wbe ? k : wunit - 1 - k)] << (8 * (wunit - 1 - k));
+                if (wunit == 4) l = (cu <= 0x10FFFFu && (cu < 0xD800u || cu > 0xDFFFu)) ? 4u : 0u;
+                else if (cu >= 0xD800u && cu <= 0xDBFFu) {   /* a high surrogate needs its low one */
+                    const uint32_t lo = i + 4 <= n ? (wbe ? ((uint32_t)p[i + 2] << 8 | p[i + 3]) : ((uint32_t)p[i + 3] << 8 | p[i + 2])) : 0u;
+                    l = (lo >= 0xDC00u && lo <= 0xDFFFu) ? 4u : 0u;
+                } else l = (cu >= 0xDC00u && cu <= 0xDFFFu) ? 0u : 2u;
+                bad_end = i + wunit;
+            }
+            if (l) { SCRUB_PUT(p + i, l); i += l; continue; }
+        } else {
         const int32_t tl = trans != NULL ? korb_enc_trans_len(trans, p, i, n) : 0;
-        const uint32_t l = trans != NULL ? (tl > 0 ? (uint32_t)tl : 0u)
+        l = trans != NULL ? (tl > 0 ? (uint32_t)tl : 0u)
                          : us_ascii ? (p[i] < 0x80 ? 1u : 0u) : korb_utf8_seq_len(p, i, n);
         if (l) { SCRUB_PUT(p + i, l); i += l; continue; }
         /* one replacement per maximal invalid sequence (US-ASCII: per byte) */
-        uint32_t bad_end = trans != NULL ? i + (uint32_t)-tl : i + 1;
+        bad_end = trans != NULL ? i + (uint32_t)-tl : i + 1;
         if (trans == NULL && !us_ascii && p[i] >= 0xC2 && p[i] <= 0xF4)   /* truncated lead → consume its (too-few) continuations */
             while (bad_end < n && (p[bad_end] & 0xC0) == 0x80) bad_end++;
+        }
         if (use_blk) {                                   /* block form: bad bytes (BINARY) → replacement String */
             char badbuf[64];                             /* stack copy: korb_str_new allocs first → p would be stale */
             const uint32_t badlen = bad_end - i < sizeof badbuf ? bad_end - i : (uint32_t)sizeof badbuf;
@@ -3630,7 +3654,14 @@ static RESULT korb_str_each_enum(CTX *c, korb_value *slots, korb_ref self,
 }
 static RESULT korb_m_str_each_codepoint(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *captured_self) {
     (void)a;
-    if (block == NULL) return korb_str_each_enum(c, slots, self, korb_m_str_codepoints_enum, "each_codepoint", a);
+    if (block == NULL) {
+        const korb_value v = KORB_REF_GET(self);
+        if (UNLIKELY(!korb_str_enc_valid(c->vm, VAL2STR(v), KORB_STR_ENC(v)))) {   /* made fine, raises when run (CRuby) */
+            slots[0] = v; slots[1] = ID2SYM(korb_intern_lit(c->vm, "each_codepoint", 14));
+            return korb_send(c, slots + 2, korb_intern_lit(c->vm, "__to_enum_sized", 15), 0, 1);
+        }
+        return korb_str_each_enum(c, slots, self, korb_m_str_codepoints_enum, "each_codepoint", a);
+    }
     {   /* with a block CRuby validates the whole string before yielding */
         const korb_value v = KORB_REF_GET(self);
         const uint32_t enc = KORB_STR_ENC(v);
@@ -4084,6 +4115,11 @@ static RESULT korb_m_str_upto(CTX *c, korb_value *slots, korb_ref self, korb_sli
         }
         if (!KORB_STRING_P(slots[1]))
             return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, KORB_SLICE_GET(a, 0)));
+    }
+    {
+        uint32_t ce;
+        if (UNLIKELY(!korb_str_enc_combine(c->vm, slots[0], slots[1], &ce)))
+            return korb_raise_enc_compat(c, slots + 2, KORB_STR_ENC(slots[0]), KORB_STR_ENC(slots[1]));
     }
     if (block == NULL) slots[2] = UNWRAP(korb_ary_new(c, slots + 2, 8));   /* collect for the Enumerator */
     /* single-byte begin AND end → iterate by byte value (CRuby fast path:
