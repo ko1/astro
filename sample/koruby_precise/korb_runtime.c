@@ -9300,8 +9300,10 @@ korb_mod_hook_custom(CTX *c, korb_value mod, uint32_t mid)
     const korb_value dcls = korb_dispatch_class(c, mod);
     if (!KORB_CLASS_P(dcls)) return false;
     korb_value owner = KORB_NIL;
-    if (korb_class_find_method(dcls, mid, &owner) == NULL) return false;
-    return owner != korb_const_get(c->vm, korb_intern_lit(c->vm, "Module", 6));
+    const struct korb_method *const m = korb_class_find_method(dcls, mid, &owner);
+    if (m == NULL) return false;
+    /* a reopened `class Module; def const_added` is custom too: only the prelude's no-op is not */
+    return owner != korb_const_get(c->vm, korb_intern_lit(c->vm, "Module", 6)) || !m->core;
 }
 
 /* true when `cls` defines its own #=== (not Module's) — a rescue clause must

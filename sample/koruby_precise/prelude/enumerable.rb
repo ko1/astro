@@ -186,7 +186,12 @@ module Enumerable
   def tally(h = {}); h = h.to_hash if !h.is_a?(Hash) && h.respond_to?(:to_hash); __each_el { |x| h[x] = (h.key?(x) ? h[x] : 0) + 1 }; h; end
   # CRuby yields [key, elements] pairs from an Enumerator whose #size is nil.
   def chunk
-    return to_enum(:chunk) unless block_given?
+    unless block_given?   # CRuby: each(&b) on it is chunk(&b)
+      src = self
+      e = to_enum(:chunk)
+      e.define_singleton_method(:each) { |&b| b ? src.chunk(&b) : self }
+      return e
+    end
     r = []; lastk = nil; f = true
     __each_el { |x|
       k = yield(x)

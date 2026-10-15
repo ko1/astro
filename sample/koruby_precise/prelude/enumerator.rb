@@ -484,7 +484,12 @@ class Enumerator::Lazy
   private :__lazy_gen
 
   def chunk(&b)
-    return to_enum(:chunk) unless b     # CRuby: block-less #chunk is an enumerator, not an error
+    unless b                            # CRuby: block-less #chunk is an enumerator whose each(&b) is chunk(&b)
+      src = self
+      e = to_enum(:chunk).lazy
+      e.define_singleton_method(:each) { |&blk| blk ? src.chunk(&blk) : self }
+      return e
+    end
     src = self
     __lazy_gen do |y|
       cur = nil; key = nil; started = false

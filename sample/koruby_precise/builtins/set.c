@@ -2638,7 +2638,11 @@ static RESULT korb_m_mod_const_source_location(CTX *c, korb_value *slots, korb_r
             if (idx != UINT32_MAX) loc_owner = KORB_NIL;
         }
     }
-    if (idx == UINT32_MAX && !korb_autoload_registered_p(c, owner, sym)) return RESULT_OK(KORB_NIL);
+    if (idx == UINT32_MAX && !korb_autoload_registered_p(c, owner, sym)) {
+        /* mid-autoload (the file is running, so its feature already counts as loaded): still the registration */
+        const korb_value t = KORB_CLASS_P(owner) ? korb_ivar_get(c, owner, ID2SYM(vm->mid_autoloads)) : KORB_NIL;
+        if (!KORB_HASH_P(t) || korb_hash_find(VAL2HASH(t), ID2SYM(sym)) < 0) return RESULT_OK(KORB_NIL);
+    }
     uint32_t fsym = 0, line = 0;
     /* read the table BEFORE allocating: loc_owner is a bare C local, so the
      * array below would leave it pointing at the pre-GC copy of the module */

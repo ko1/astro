@@ -1442,7 +1442,19 @@ static RESULT korb_m_hash_grep_v(CTX *c, korb_value *slots, korb_ref self, korb_
 /* i-th element of a zip source arg: Array → data[i], Range → lo+i (in bounds), else nil. */
 static korb_value korb_zip_elem(korb_value arg, uint32_t i) {
     if (KORB_ARRAY_P(arg)) return i < VAL2ARY(arg)->len ? korb_ary_ptr(VAL2ARY(arg))[i] : KORB_NIL;
-    if (KORB_RANGE_P(arg)) { korb_sword_t lo, hi; if (korb_range_int_bounds(VAL2RANGE(arg), &lo, &hi)) { korb_sword_t v = lo + (korb_sword_t)i; if (v < hi) return LONG2FIX(v); } }
+    if (KORB_RANGE_P(arg)) {
+        korb_sword_t lo, hi;
+        if (korb_range_int_bounds(VAL2RANGE(arg), &lo, &hi)) { korb_sword_t v = lo + (korb_sword_t)i; if (v < hi) return LONG2FIX(v); }
+        else {   /* an Integer start with an endless / Float end (0..Float::INFINITY): by index too */
+            const KorbRange *const rg = VAL2RANGE(arg);
+            if (FIXNUM_P(rg->rbegin)) {
+                const korb_sword_t v = FIX2LONG(rg->rbegin) + (korb_sword_t)i;
+                double e;
+                if (rg->rend == KORB_NIL) return LONG2FIX(v);
+                if (KORB_FLOAT_P(rg->rend) && korb_num_to_d(rg->rend, &e) && (rg->exclude_end ? (double)v < e : (double)v <= e)) return LONG2FIX(v);
+            }
+        }
+    }
     if (KORB_ARITHSEQ_P(arg)) {   /* e.g. n.upto(∞): begin + i*step, lazily by index */
         korb_value beginv, limv, stepv; bool excl;
         korb_aseq_params(VAL2ASEQ(arg), &beginv, &limv, &stepv, &excl);
