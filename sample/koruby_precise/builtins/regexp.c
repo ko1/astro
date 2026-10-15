@@ -2022,6 +2022,25 @@ static __attribute__((noinline)) int korb_re_valid_wide(const struct korb_vm *co
     free(pw.u8);
     return ok ? 1 : 0;
 }
+/* An interpolated literal's pattern is checked when it is built, as Regexp.new does (`/#{"("}/`
+ * raises RegexpError there, not at the first match).  `src` must be rooted by the caller. */
+RESULT korb_re_validate_pub(CTX *c, korb_value *slots, korb_value src, uint32_t flags) {
+    (void)korb_re_load(c->vm);
+    const korb_re_valid_fn_t vf = (korb_re_valid_fn_t)c->vm->re_valid_fn;
+    if (!vf || !KORB_STRING_P(src)) return RESULT_OK(KORB_NIL);
+    const KorbString *const ps = VAL2STR(src);
+    const int wv = UNLIKELY(KORB_STR_ENC(src) >= KORB_ENC_OTHER_MIN) ? korb_re_valid_wide(c->vm, vf, src, flags) : 2;
+    const uint32_t se = KORB_STR_ENC(src);
+    const unsigned vflags = ((se == KORB_ENC_BINARY || (se >= KORB_ENC_OTHER_MIN && KORB_ENC_SB(c->vm, se))) &&
+                             !korb_str_bytes_ascii(src)) ? (flags | 128u) : flags;
+    if (UNLIKELY(wv < 0)) return korb_raise(c, slots, KORB_E_REGEXP, 0, "invalid multibyte character");
+    if (wv == 0 || (wv == 2 && !vf(korb_str_ptr(ps), ps->len, vflags))) {
+        char why[288]; const char *const m = korb_re_error(c->vm);
+        snprintf(why, sizeof why, "%s: /%.*s/", m ? m : "invalid regular expression", (int)ps->len, korb_str_ptr(ps));
+        return korb_raise(c, slots, KORB_E_REGEXP, 0, "%s", why);
+    }
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_m_re_new(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     if (UNLIKELY(korb_sub_overrides_init_p(c, KORB_REF_GET(self),
                                            korb_builtin_class_obj(c->vm, KORB_C_REGEXP)))) {

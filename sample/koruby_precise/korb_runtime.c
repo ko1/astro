@@ -6292,7 +6292,6 @@ korb_check_basic_op_redef(CTX *c, korb_value klass, uint32_t mid)
         for (size_t i = 0; i < sizeof(sops) / sizeof(sops[0]); i++)
             if (strcmp(nm, sops[i]) == 0) { vm->strary_op_redefined = true; return; }
     }
-    if (vm->basic_op_redefined) return;   /* already deopted */
     if (klass != korb_builtin_class_obj(vm, KORB_C_INTEGER) &&
         klass != korb_builtin_class_obj(vm, KORB_C_FLOAT)) return;
     static const char *const ops[] = {
@@ -6301,7 +6300,11 @@ korb_check_basic_op_redef(CTX *c, korb_value klass, uint32_t mid)
     };
     const char *const nm = korb_sym_name(vm, mid);
     for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); i++)
-        if (strcmp(nm, ops[i]) == 0) { vm->basic_op_redefined = true; return; }
+        if (strcmp(nm, ops[i]) == 0) {
+            vm->basic_op_redefined = true;
+            if (vm->boot_done) { vm->perf_warn_mid = mid; vm->perf_warn_float = klass == korb_builtin_class_obj(vm, KORB_C_FLOAT); }
+            return;
+        }
 }
 
 /* BasicObject#! — the default negation, reachable through send/respond_to?.
@@ -6779,6 +6782,20 @@ korb_fire_def_hook(CTX *c, korb_value *slots, korb_value mod, uint32_t mid, cons
  * singleton_method_added instead, like CRuby. */
 korb_value korb_object_class(const struct korb_vm *const vm) { return korb_builtin_class_obj(vm, KORB_C_OBJECT); }
 
+static bool korb_cur_pos(CTX *c, korb_value *scratch, const korb_value *link, const korb_value *carry, uint32_t carry_line_bits,
+                         uint32_t *file_sym, uint32_t *line);   /* fwd */
+/* Warning[cat] (Warning::CATEGORIES__ read directly; cold) */
+static bool korb_warning_category_on(CTX *c, korb_value *slots, const char *cat)
+{
+    (void)slots;
+    struct korb_vm *const vm = c->vm;
+    const korb_value w = korb_const_get(vm, korb_intern_lit(vm, "Warning", 7));
+    if (!KORB_CLASS_P(w)) return false;
+    const uint32_t ci = korb_const_index_owned(vm, korb_intern_lit(vm, "CATEGORIES__", 12), w);
+    if (ci == UINT32_MAX || !KORB_HASH_P(vm->const_vals[ci])) return false;
+    const int32_t hi = korb_hash_find(VAL2HASH(vm->const_vals[ci]), ID2SYM(korb_intern(vm, cat, (uint32_t)strlen(cat))));
+    return hi >= 0 && KORB_TRUTHY(korb_hash_pairs(VAL2HASH(vm->const_vals[ci]))[2 * hi + 1]);
+}
 /* `definee` (re)defined mid: a descendant's visibility clone of it (`public :mid` in a subclass)
  * runs the new body with its own visibility, as CRuby's ZSUPER entry does.  Cold: only after a clone. */
 static __attribute__((noinline, cold)) void
@@ -6808,6 +6825,18 @@ RESULT
 korb_fire_method_added(CTX *c, korb_value *slots, korb_value definee, uint32_t mid)
 {
     if (UNLIKELY(c->vm->vis_clone_cnt != 0) && KORB_CLASS_P(definee)) korb_vis_clone_refresh(c->vm, definee, mid, 0);
+    if (UNLIKELY(c->vm->perf_warn_mid != 0)) {           /* rb_vm_check_redefinition_opt_method's performance warning */
+        const uint32_t pm = c->vm->perf_warn_mid;
+        c->vm->perf_warn_mid = 0;
+        if (korb_warning_category_on(c, slots, "performance")) {
+            char msg[160];
+            snprintf(msg, sizeof msg, "Redefining '%s#%s' disables interpreter and JIT optimizations",
+                     c->vm->perf_warn_float ? "Float" : "Integer", korb_sym_name(c->vm, pm));
+            uint32_t fs = 0, ln = 0;                     /* at the def: the link node_def staged for method_added */
+            const bool at = c->carry_base != NULL && korb_cur_pos(c, slots, NULL, c->carry_base, c->carry_line_bits, &fs, &ln);
+            korb_warn_at(c, slots, at ? korb_sym_name(c->vm, fs) : NULL, ln, "%s", msg);
+        }
+    }
     /* Both non-dispatching exits drop a staged link: node_def hands one over, and
      * a link nobody consumes would be picked up by an unrelated later dispatch. */
     if (!KORB_CLASS_P(definee)) { c->carry_base = NULL; return RESULT_OK(KORB_NIL); }
@@ -8685,6 +8714,12 @@ korb_super_find_slow(CTX *c, uint32_t mid, korb_value entry_cell, korb_value sel
                 }
             }
             if (m == NULL) m = korb_class_find_method(VAL2CLASS(def_class)->superclass, mid, &found_def);
+            /* a module's method bound onto a hierarchy that lacks the module: super starts from the
+             * receiver's own class (CRuby) */
+            if (m == NULL && VAL2CLASS(def_class)->is_module) {
+                m = korb_class_find_method(korb_dispatch_class(c, self), mid, &found_def);
+                if (m == cur) m = NULL;
+            }
         }
     }
     if (m != NULL && m->kind == KORB_METHOD_UNDEF) { m = NULL; found_def = KORB_NIL; }   /* undef tombstone */

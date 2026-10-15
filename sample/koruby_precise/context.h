@@ -1300,6 +1300,8 @@ struct korb_vm {
     uint32_t orphan_cnt, orphan_capa;
     uint64_t method_serial;  /* bumped by def — invalidates call caches */
     uint32_t vis_clone_cnt;  /* korb_method.vis_clone entries made: 0 → a def need not look for them */
+    uint32_t perf_warn_mid;  /* an Integer/Float basic op just redefined: method_added warns (Warning[:performance]) */
+    uint8_t  perf_warn_float;
     uint8_t *mid_looked;     /* [mid]: some method lookup asked for it, so a cache may hold it (korb_mid_looked) */
     uint8_t *mid_undefed;    /* [mid]: an undef tombstone named mid exists somewhere (korb_method_undefed_p's fast no) */
     uint32_t mid_undefed_cap;

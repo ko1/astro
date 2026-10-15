@@ -156,7 +156,9 @@ node_regexp_dyn(CTX *c, NODE *n, korb_value *slots, uint32_t flags, korb_value s
 {
     (void)n;
     korb_dregx_src_enc(c->vm, src);
-    return korb_regexp_new(c, slots, src, flags);
+    slots[0] = src;
+    CHECK(korb_re_validate_pub(c, slots + 1, slots[0], flags));
+    return korb_regexp_new(c, slots + 1, slots[0], flags);
 }
 
 // `/...#{ }.../o` — interpolated and compiled on the first run only; later runs
