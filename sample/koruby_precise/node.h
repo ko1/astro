@@ -896,7 +896,8 @@ bool korb_hook_undefed_p(CTX *c, korb_value obj, uint32_t mid);         /* a hoo
 void korb_warn_caller(CTX *c, korb_value *slots, const korb_value *link, const char *fmt, ...);   /* positioned at the C method's caller */
 
 void korb_warn_const_redef(CTX *c, korb_value *slots, uint32_t name_sym, korb_value owner);
-RESULT korb_const_assign_at(CTX *c, korb_value *slots, const struct Node *n, uint32_t name_sym, korb_value ownc, korb_value val);
+RESULT korb_const_assign_at(CTX *c, korb_value *slots, const struct Node *n, uint32_t name_sym, korb_value ownc, korb_value val,
+                            const korb_value *fbase);
 void korb_warn_const_redef_at(CTX *c, korb_value *slots, uint32_t name_sym, korb_value owner,
                               const char *file, uint32_t line0);   /* with the assignment's position */
 void korb_const_reg_loc(struct korb_vm *vm, uint32_t name_sym, korb_value owner, uint32_t file_sym, uint32_t line);

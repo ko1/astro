@@ -1471,6 +1471,20 @@ static RESULT korb_m_class_allocate(CTX *c, korb_value *slots, korb_ref self, ko
     }
     return korb_obj_new(c, slots, KORB_REF_GET(self));
 }
+/* Clearing a temporary name also unnames the modules named under it (m::N),
+ * whose names were temporary through m (CRuby, [Bug #21094]). */
+static void korb_unname_nested(struct korb_vm *const vm, const korb_value mod, const uint32_t depth)
+{
+    if (depth > 64) return;
+    for (uint32_t i = 0; i < vm->const_cnt; i++) {
+        const korb_value v = vm->const_vals[i];
+        if (vm->const_owners[i] != mod || !KORB_CLASS_P(v) || v == mod) continue;
+        KorbClass *const k = VAL2CLASS(v);
+        if (k->enclosing != mod || k->name_sym != vm->const_names[i]) continue;
+        k->name_sym = 0;
+        korb_unname_nested(vm, v, depth + 1);
+    }
+}
 /* Module#set_temporary_name(name|nil) — assign/clear a temporary name on an
  * (anonymous) module; the name may not be a constant path (contain "::"). */
 static RESULT korb_m_module_set_temp_name(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
@@ -1481,7 +1495,7 @@ static RESULT korb_m_module_set_temp_name(CTX *c, korb_value *slots, korb_ref se
     const korb_value nm = KORB_SLICE_LEN(a) >= 1 ? KORB_SLICE_GET(a, 0) : KORB_NIL;
     /* clear → fully anonymous: CRuby drops the constant-derived name too, so a
      * module that was only reachable through an anonymous namespace has no name */
-    if (nm == KORB_NIL) { VAL2CLASS(sv)->temp_name_sym = 0; VAL2CLASS(sv)->name_sym = 0; KORB_NAMING_CHANGED(c->vm); return RESULT_OK(sv); }
+    if (nm == KORB_NIL) { VAL2CLASS(sv)->temp_name_sym = 0; VAL2CLASS(sv)->name_sym = 0; korb_unname_nested(c->vm, sv, 0); KORB_NAMING_CHANGED(c->vm); return RESULT_OK(sv); }
     if (UNLIKELY(!KORB_STRING_P(nm))) return korb_raise_not_sym(c, slots, nm);
     const KorbString *const s = VAL2STR(nm);
     if (UNLIKELY(s->len == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "empty class/module name");

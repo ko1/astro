@@ -1668,11 +1668,26 @@ kp_lexical_class_owner(struct kp_ctx *tc, uint32_t *owner)
  * synth local, then the read and the write go through const_get / const_set.
  * `or_form` picks ||= (probe with const_defined? so an unset constant does not
  * raise) over &&= (a plain read, which does raise when unset, like CRuby). */
+/* a constant assignment knows its frame (dc_off): a custom const_added sees the assignment's line */
+static NODE *
+kp_alloc_const_set(struct kp_ctx *tc, uint32_t name, uint32_t owner, int32_t self_off, NODE *val)
+{
+    NODE *const cn = ALLOC_node_const_set(name, owner, self_off, -4 - tc->chain, val);
+    bake_add(tc, &cn->u.node_const_set.dc_off);
+    return cn;
+}
+static NODE *
+kp_alloc_const_set_on(struct kp_ctx *tc, uint32_t name, NODE *owner, NODE *val)
+{
+    NODE *const cn = ALLOC_node_const_set_on(name, -4 - tc->chain, owner, val);
+    bake_add(tc, &cn->u.node_const_set_on.dc_off);
+    return cn;
+}
 /* `owner::name = val` on a runtime owner: a non-module owner is a TypeError at the expression's line */
 static NODE *
 kp_const_set_on(struct kp_ctx *tc, uint32_t line, uint32_t name, NODE *owner, NODE *val)
 {
-    NODE *const cn = ALLOC_node_const_set_on(name, owner, val);
+    NODE *const cn = kp_alloc_const_set_on(tc, name, owner, val);
     korb_reg_srcloc(tc->c->vm, cn, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), line);
     return cn;
 }
@@ -4753,7 +4768,7 @@ build_const_set(struct kp_ctx *tc, uint32_t name_cid, NODE *val)
      * at the string's own level belongs to the receiver, which only the runtime
      * eval cref names (graphql's per-monitor CURRENT_EV_KEY) */
     if (tc->in_eval && tc->seed_cref_is_caller && owner != 0 && owner == tc->seed_class_name) owner = 0;
-    NODE *cn = ALLOC_node_const_set(name_cid, owner,
+    NODE *cn = kp_alloc_const_set(tc, name_cid, owner,
                                     anon ? -1 - tc->chain : INT32_MIN, val);
     if (anon) bake_add(tc, &cn->u.node_const_set.self_off);   /* self at base[-1] */
     bake_cref_chain(tc, &cn->u.node_const_set.cache);
@@ -5289,6 +5304,18 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
       case PM_RANGE_NODE: {
         const pm_range_node_t *rn = (const pm_range_node_t *)node;
         uint32_t excl = (rn->base.flags & PM_RANGE_FLAGS_EXCLUDE_END) ? 1u : 0u;
+        {   /* Integer-literal / nil bounds: one shared frozen Range */
+            korb_sword_t bv = 0, ev = 0;
+            const bool bl = !rn->left || PM_NODE_TYPE_P(rn->left, PM_NIL_NODE) ||
+                            (PM_NODE_TYPE_P(rn->left, PM_INTEGER_NODE) && kp_integer_value(&((const pm_integer_node_t *)rn->left)->value, &bv));
+            const bool el = !rn->right || PM_NODE_TYPE_P(rn->right, PM_NIL_NODE) ||
+                            (PM_NODE_TYPE_P(rn->right, PM_INTEGER_NODE) && kp_integer_value(&((const pm_integer_node_t *)rn->right)->value, &ev));
+            if (bl && el) {
+                const korb_value b = (rn->left && PM_NODE_TYPE_P(rn->left, PM_INTEGER_NODE)) ? LONG2FIX(bv) : KORB_NIL;
+                const korb_value e = (rn->right && PM_NODE_TYPE_P(rn->right, PM_INTEGER_NODE)) ? LONG2FIX(ev) : KORB_NIL;
+                return ALLOC_node_range_lit(excl, b, e);
+            }
+        }
         NODE *b, *e;                                     /* a missing bound → nil (beginless/endless range) */
         uint32_t sc = kind_node_range_new.slot_count;
         WITH_CHAIN(tc, sc, (b = rn->left  ? transduce(tc, rn->left)  : lit_nil(),
@@ -6589,7 +6616,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
                        (PM_NODE_TYPE_P(parent, PM_CONSTANT_PATH_NODE) && kp_const_path_static_p(parent)))) {
             NODE *o, *v;
             WITH_CHAIN(tc, kind_node_const_set_on.slot_count, (o = transduce(tc, parent), v = transduce(tc, cpw->value)));
-            NODE *cn = ALLOC_node_const_set_on(name, o, v);
+            NODE *cn = kp_alloc_const_set_on(tc, name, o, v);
             korb_reg_srcloc(tc->c->vm, cn, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, node));
             return cn;
         }
@@ -6610,7 +6637,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
         NODE *val;
         uint32_t sc = kind_node_const_set.slot_count;
         WITH_CHAIN(tc, sc, (val = transduce(tc, cpw->value)));
-        NODE *cn = ALLOC_node_const_set(name, owner_name, INT32_MIN, val);
+        NODE *cn = kp_alloc_const_set(tc, name, owner_name, INT32_MIN, val);
         korb_reg_srcloc(tc->c->vm, cn, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), kp_line(tc, node));   /* Module#const_source_location */
         return cn;
       }
@@ -6623,7 +6650,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
         }
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, ow->value)));
-        NODE *set = ALLOC_node_const_set(name, owner, INT32_MIN, val);
+        NODE *set = kp_alloc_const_set(tc, name, owner, INT32_MIN, val);
         /* guard the read with a flat defined? probe of the rightmost name (no NameError) */
         NODE *dfn = ALLOC_node_defined(1, name, -1 - tc->chain, -4 - tc->chain);
         bake_add(tc, &dfn->u.node_defined.self_off); bake_add(tc, &dfn->u.node_defined.dc_off);
@@ -6639,7 +6666,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
         }
         NODE *val;
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, aw->value)));
-        NODE *set = ALLOC_node_const_set(name, owner, INT32_MIN, val);
+        NODE *set = kp_alloc_const_set(tc, name, owner, INT32_MIN, val);
         return ALLOC_node_and(KP_CONST(tc, name, owner, INT32_MIN, INT32_MIN, kp_line(tc, node)), set);
       }
       case PM_CONSTANT_PATH_OPERATOR_WRITE_NODE: {  /* `A::B op= v` (static owner) → A::B = A::B op v */
@@ -6672,7 +6699,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
                        (lhs = KP_CONST(tc, name, owner, INT32_MIN, INT32_MIN, kp_line(tc, node)), rhs = transduce(tc, ow->value)));
             (op != KP_BINOP_NONE) ? alloc_binop(tc, op, lhs, rhs, line) : kp_send1(tc, opmid, line, lhs, rhs);
         }));
-        return ALLOC_node_const_set(name, owner, INT32_MIN, binop);
+        return kp_alloc_const_set(tc, name, owner, INT32_MIN, binop);
       }
 
       case PM_RESCUE_MODIFIER_NODE: {   /* `expr rescue fallback` (catch-all) */

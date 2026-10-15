@@ -2192,12 +2192,14 @@ korb_hash_find_ctx_h(CTX *c, korb_value *slots, korb_ref href, korb_value key, R
         /* A pair stored under a different #hash is in another bucket, so CRuby
          * never compares it — not even by identity.  That is what makes an
          * entry whose key was mutated after insertion unreachable. */
+        bool same_hash = false;                           /* the stored hint already says the #hash matches */
         if (h->khints && h->khint_len == h->len) {
             const uint64_t stored = ((const uint64_t *)korb_strbuf_data(h->khints))[i];
             if (stored != 0 && stored != khint) continue;
+            same_hash = stored != 0;
         }
         if (existing == slots[0]) return (int32_t)i;      /* identity shortcut (no dispatch) */
-        if (KORB_OBJECT_P(existing)) {                    /* both are objects → compare their #hash */
+        if (KORB_OBJECT_P(existing) && !same_hash) {      /* both are objects → compare their #hash */
             slots[3] = existing;
             slots[4] = existing;
             const RESULT hr = korb_send_impl(c, slots + 5, hashm, 0, 0, NULL, NULL, NULL);
@@ -19259,9 +19261,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_COMPLEX, "inspect", korb_m_obj_inspect, 0);
 
     /* Enumerator (eager) */
-    korb_def_cmethod(c, KORB_C_ENUMERATOR, "to_a", korb_m_enum_to_a, 0);
-    korb_def_cmethod(c, KORB_C_ENUMERATOR, "entries", korb_m_enum_to_a, 0);
-    korb_def_cmethod(c, KORB_C_ENUMERATOR, "force", korb_m_enum_to_a, 0);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "to_a", korb_m_enum_to_a_m, -1);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "entries", korb_m_enum_to_a_m, -1);
+    korb_def_cmethod(c, KORB_C_ENUMERATOR, "force", korb_m_enum_to_a_m, -1);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "size", korb_m_enum_size, 0);
     korb_def_cmethod(c, KORB_C_ENUMERATOR, "__set_size", korb_m_enum_set_size, 1);
     /* NOT #to_s: CRuby's Enumerator#to_s is Object#to_s ("#<Enumerator:0x…>"),
@@ -20595,7 +20597,8 @@ korb_warn_const_redef_at(CTX *c, korb_value *slots, uint32_t name_sym, korb_valu
  * (with the assignment's position), define, record the position for
  * Module#const_source_location, and fire a custom const_added. */
 RESULT
-korb_const_assign_at(CTX *c, korb_value *slots, const struct Node *n, uint32_t name_sym, korb_value ownc, korb_value val)
+korb_const_assign_at(CTX *c, korb_value *slots, const struct Node *n, uint32_t name_sym, korb_value ownc, korb_value val,
+                     const korb_value *const fbase)
 {
     /* reassigning an existing constant warns (the name table doubles as the
      * global-variable table — `$x = 1` is a plain assignment, never a warning) */
@@ -20621,6 +20624,8 @@ korb_const_assign_at(CTX *c, korb_value *slots, const struct Node *n, uint32_t n
         if (UNLIKELY(korb_mod_hook_custom(c, hook_owner, ca))) {
             slots[0] = val;                              /* root val across the hook's GC */
             slots[1] = hook_owner; slots[2] = ID2SYM(name_sym);
+            uint32_t hf, hl;                             /* the hook's caller is the assignment's line */
+            if (fbase && korb_get_srcloc(c->vm, n, &hf, &hl)) korb_flink_stage_at(c, fbase, hl);
             RESULT hr = korb_send(c, slots + 3, ca, 0, 1);
             if (UNLIKELY(hr.state != KORB_NORMAL)) return hr;
             return RESULT_OK(slots[0]);                  /* re-read (may have moved) */

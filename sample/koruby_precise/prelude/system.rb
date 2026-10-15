@@ -1498,6 +1498,7 @@ module RbConfig
   CONFIG["UNICODE_VERSION"] = "17.0.0"      # the tables in builtins/unicode_case.h
   CONFIG["UNICODE_EMOJI_VERSION"] = "17.0"
   CONFIG["DLEXT"] = "kompat.so"          # CRuby extensions rebuilt for koruby's compatibility layer (builtins/cext.c)
+  CONFIG["EXTSTATIC"] = "static"         # the standard extensions (etc, zlib, ...) are built in: none loads from a .so
   CONFIG["target_os"] = CONFIG["host_os"]
   CONFIG["target_cpu"] = CONFIG["host_cpu"]
   CONFIG["CROSS_COMPILING"] = "no"

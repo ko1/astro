@@ -890,23 +890,26 @@ static RESULT korb_m_hash_invert(CTX *c, korb_value *slots, korb_ref self, korb_
     }
     return RESULT_OK(KORB_REF_GET(dst));
 }
-/* Hash#rehash — our hash has no cached digests, so this is a no-op returning self. */
 static RESULT korb_m_hash_replace(CTX *c, korb_value *slots, korb_ref self, korb_slice a);   /* fwd */
+/* Hash#rehash — recompute every key's hash (keys may have mutated) and drop
+ * duplicates: park the pairs in an Array, clear self, re-insert in order
+ * (korb_hash_set dedups by #eql?).  One #hash call per key, like CRuby. */
 static RESULT korb_m_hash_rehash(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a;
     KORB_CHECK_FROZEN(c, slots, KORB_REF_GET(self));
-    /* Recompute every key's hash (keys may have mutated) and drop duplicates:
-     * re-insert each pair, in order, into a fresh hash (korb_hash_set recomputes
-     * the hash and dedups by #eql?), then adopt those contents. */
     const uint32_t n = VAL2HASH(KORB_REF_GET(self))->len;
-    slots[0] = UNWRAP(korb_hash_new(c, slots, n ? n : 4));
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 2 * n + 1));
     korb_ref tmp = KORB_REF_AT(&slots[0]);
-    for (uint32_t i = 0; i < VAL2HASH(KORB_REF_GET(self))->len; i++) {
-        slots[1] = korb_hash_pairs(VAL2HASH(KORB_REF_GET(self)))[2 * i];       /* key (rooted across set) */
-        const korb_value val = korb_hash_pairs(VAL2HASH(KORB_REF_GET(self)))[2 * i + 1];
-        CHECK(korb_hash_set(c, slots + 2, tmp, KORB_REF_AT(&slots[1]), val));
+    for (uint32_t i = 0; i < 2 * n; i++)
+        CHECK(korb_ary_push_val(c, slots + 1, tmp, korb_hash_pairs(VAL2HASH(KORB_REF_GET(self)))[i]));
+    KORB_HASH_DROP_INDEX(VAL2HASH(KORB_REF_GET(self)));
+    VAL2HASH(KORB_REF_GET(self))->len = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        slots[1] = korb_ary_ptr(VAL2ARY(slots[0]))[2 * i];          /* key (rooted across set) */
+        const korb_value val = korb_ary_ptr(VAL2ARY(slots[0]))[2 * i + 1];
+        CHECK(korb_hash_set(c, slots + 2, self, KORB_REF_AT(&slots[1]), val));
     }
-    return korb_m_hash_replace(c, slots + 1, self, KORB_SLICE_MAKE(&slots[0], 1));   /* self ← recomputed copy */
+    return RESULT_OK(KORB_REF_GET(self));
 }
 /* Hash#replace(other) — replace self's contents with other's, in place; returns self. */
 static RESULT korb_m_hash_replace(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {

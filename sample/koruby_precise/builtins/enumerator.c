@@ -772,6 +772,28 @@ static RESULT korb_m_enum_to_a(CTX *c, korb_value *slots, korb_ref self, korb_sl
     if (SELF_ENUM->mode != 0) return korb_lazy_drive(c, slots, self, -1);   /* lazy: force (finite only) */
     return RESULT_OK(SELF_ENUM->values);
 }
+/* to_a(*args) / entries / force with arguments: Enumerable's, i.e. each(*args).to_a */
+__attribute__((cold, noinline)) static RESULT korb_m_enum_to_a_args(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    const uint32_t n = KORB_SLICE_LEN(a);
+    const KorbEnumerator *const e = SELF_ENUM;
+    if (e->mode == 1 || e->mode == 4) {                 /* Lazy: only a bare `enum.lazy` hands them on to enum's each */
+        const bool bare = (e->ops == KORB_NIL || (KORB_ARRAY_P(e->ops) && VAL2ARY(e->ops)->len == 0)) &&
+                          (e->head.flags & KORB_FL_HAS_IVARS);
+        const korb_value origin = bare ? korb_ivar_get(c, KORB_REF_GET(self), ID2SYM(korb_intern_lit(c->vm, "__lazy_origin", 13))) : KORB_NIL;
+        if (!KORB_ENUM_P(origin)) return korb_m_enum_to_a(c, slots, self, a);
+        slots[0] = origin;
+        for (uint32_t i = 0; i < n; i++) slots[1 + i] = KORB_SLICE_GET(a, i);
+        return korb_send(c, slots + 1 + n, korb_intern_lit(c->vm, "to_a", 4), 0, n);
+    }
+    slots[0] = KORB_REF_GET(self);
+    for (uint32_t i = 0; i < n; i++) slots[1 + i] = KORB_SLICE_GET(a, i);
+    slots[0] = UNWRAP(korb_send(c, slots + 1 + n, korb_intern_lit(c->vm, "each", 4), 0, n));
+    return korb_send(c, slots + 1, korb_intern_lit(c->vm, "to_a", 4), 0, 0);
+}
+static RESULT korb_m_enum_to_a_m(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    if (UNLIKELY(KORB_SLICE_LEN(a) != 0)) return korb_m_enum_to_a_args(c, slots, self, a);
+    return korb_m_enum_to_a(c, slots, self, a);
+}
 /* Enumerator#__set_size(n) — the size a block-less builtin knows for its own
  * enumerator (Object#__to_enum_sized).  Returns self so it can tail a to_enum. */
 static RESULT korb_m_enum_set_size(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
@@ -921,13 +943,26 @@ static RESULT korb_m_enum_initialize(CTX *c, korb_value *slots, korb_ref self, k
 /* map: collect block results over the materialized values; no block → self. */
 static RESULT korb_lazy_gen_new(CTX *c, korb_value *slots, korb_value proc, bool src_inf);   /* fwd */
 /* x.lazy — a lazy enumerator over x (Array/Range), or self if already lazy. */
+static RESULT korb_lazy_gen_new(CTX *c, korb_value *slots, korb_value proc, bool src_inf);
+/* a to_enum generator's lazy remembers the enumerator, so force(*args) can drive
+ * the receiver's method with them (Enumerable#to_a(*args)) */
+__attribute__((cold, noinline)) static RESULT korb_lazy_gen_origin(CTX *c, korb_value *slots, korb_ref self) {
+    const bool si = VAL2ENUM(KORB_REF_GET(self))->size_inf;
+    slots[1] = VAL2ENUM(KORB_REF_GET(self))->source;
+    slots[0] = UNWRAP(korb_lazy_gen_new(c, slots + 2, slots[1], si));
+    CHECK(korb_ivar_set(c, slots + 1, KORB_REF_AT(&slots[0]), ID2SYM(korb_intern_lit(c->vm, "__lazy_origin", 13)), KORB_REF_GET(self)));
+    return RESULT_OK(slots[0]);
+}
 static RESULT korb_m_to_lazy(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a;
     const korb_value v = KORB_REF_GET(self);
     if (KORB_ENUM_P(v)) {
         const uint8_t m = VAL2ENUM(v)->mode;
         if (m == 1 || m == 2 || m == 4) return RESULT_OK(v);    /* already lazy / cycle / lazy-generator */
-        if (m == 3) { const bool si = VAL2ENUM(v)->size_inf; slots[0] = VAL2ENUM(v)->source; return korb_lazy_gen_new(c, slots + 1, slots[0], si); }   /* generator → lazy generator (carry infinite size) */
+        if (m == 3) {                                            /* generator → lazy generator (carry infinite size) */
+            if (UNLIKELY(((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_IVARS)) return korb_lazy_gen_origin(c, slots, self);
+            const bool si = VAL2ENUM(v)->size_inf; slots[0] = VAL2ENUM(v)->source; return korb_lazy_gen_new(c, slots + 1, slots[0], si);
+        }
     }
     if (KORB_HASH_P(v)) {                                        /* lazy over the [k,v] pairs (the driver iterates Arrays) */
         slots[0] = v;
