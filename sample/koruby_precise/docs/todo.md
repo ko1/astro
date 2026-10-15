@@ -15,6 +15,11 @@
 ## 未: `proc { |_, _, _ = 1, *_, _:, _: 2, **_, &_| }` が "block param slot ordering" (2026-10-15)
 - def は重複 `_` に名前なしのスロットを割り当てるようにしたが、ブロック引数は未対応。rubyspec 1 例。
 
+## 検討: codeql の value_param.ql（引数の korb_value を may-GC 呼び出しの後に使う）を gate に入れるか (2026-10-15)
+- korb_puts_one_to が変換の呼び出しの後で引数 `v` を根に戻していた（2cab5fb8 で修正、STRESS+PURGE で SEGV）。
+  value_read_after_gc は局所変数だけを見るので検出しない。value_param.ql は README で「gate 外の実験」。
+  全体に流すと 20 分以上かかり、件数・誤検出率は未計測。
+
 ## 未: Hash#rehash が各キーの #hash を 2 回呼ぶ (2026-10-15)
 - 作り直した表を korb_m_hash_replace で元の Hash へ移すとき korb_hash_set がもう一度 #hash を呼ぶ
   （CRuby は 1 回）。表の構造をそのまま移す必要がある。rubyspec 1 例（mock の回数）。
