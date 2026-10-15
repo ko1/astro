@@ -233,6 +233,7 @@ kp_src_enc(CTX *c, const pm_parser_t *parser, const char *const src, const size_
     _r; \
 })
 
+static void kp_stash_warn_line(CTX *c, char level, const char *fname, const char *msg);
 static NODE *transduce(struct kp_ctx *tc, const pm_node_t *node);
 static bool kp_kernel_const_p(struct kp_ctx *tc, const pm_node_t *recv);
 static NODE *build_const_set(struct kp_ctx *tc, uint32_t name_cid, NODE *val);
@@ -1034,19 +1035,6 @@ lit_nil(void)
     return ALLOC_node_lit(KORB_NIL);
 }
 
-/* `defined?(expr)` in a statement position: nothing is evaluated, and the
- * warning fires once, on the first execution of the enclosing code (CRuby warns
- * while compiling — we go through Ruby's $stderr so a harness can capture it). */
-static NODE *
-kp_defined_void(struct kp_ctx *tc, const pm_node_t *st)
-{
-    struct korb_dupkey_warn *const w = malloc(sizeof(*w));   /* immortal: the node reads it */
-    if (!w) abort();
-    w->file = strdup(tc->fname); w->key = NULL;
-    w->line = kp_line(tc, st); w->line2 = 0; w->done = 0;
-    return ALLOC_node_void_warn(w, lit_nil());
-}
-
 static NODE *
 transduce_statements(struct kp_ctx *tc, const pm_statements_node_t *stmts)
 {
@@ -1055,10 +1043,9 @@ transduce_statements(struct kp_ctx *tc, const pm_statements_node_t *stmts)
     for (size_t i = 0; i < stmts->body.size; i++) {
         const pm_node_t *const st = stmts->body.nodes[i];
         NODE *one;
-        /* A `defined?(...)` whose value is discarded is not evaluated at all —
-         * CRuby warns at compile time and drops it. */
+        /* A `defined?(...)` whose value is discarded is not evaluated at all (prism warns) */
         if (i + 1 < stmts->body.size && PM_NODE_TYPE_P(st, PM_DEFINED_NODE)) {
-            one = kp_defined_void(tc, st);
+            one = lit_nil();
         } else {
             const pm_node_t *const saved_void = tc->void_stmt;
             tc->void_stmt = i + 1 < stmts->body.size ? st : NULL;
@@ -1584,7 +1571,6 @@ kp_strdup_pm(const pm_string_t *s, uint32_t *len_out)
     return buf;
 }
 
-static NODE *kp_warn_dup_hash_keys(struct kp_ctx *tc, struct pm_node **assocs, size_t n, NODE *h);
 
 /* ---- operators --------------------------------------------------------- */
 
@@ -2836,9 +2822,7 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
             for (uint32_t i = 0; i < pos_argc; i++) argv[1 + i] = transduce(tc, args->arguments.nodes[i]);
             for (uint32_t j = 0; j < kw_cnt; j++) argv[1 + pos_argc + j] = transduce(tc, ((const pm_assoc_node_t *)kh->elements.nodes[j])->value);
             tc->chain = saved;
-            /* `f(a: 1, a: 2)` warns like a Hash literal would */
-            return kp_warn_dup_hash_keys(tc, kh->elements.nodes, kh->elements.size,
-                                         KP_LINK(tc, node_call_kw, mid, kp_flink(tc, line), pos_argc, (const char *)(const void *)kw_syms, argv, cnt));
+            return KP_LINK(tc, node_call_kw, mid, kp_flink(tc, line), pos_argc, (const char *)(const void *)kw_syms, argv, cnt);
         }
     }
 
@@ -3316,7 +3300,7 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
                 tc->chain = ksaved;
                 NODE *kc = KP_LINK(tc, node_send_kw, mid, kp_flink(tc, line), kself_off, pos_argc, (const char *)(const void *)kw_syms, kargv, kcnt);
                 bake_add(tc, &kc->u.node_send_kw.self_off);
-                return kp_warn_dup_hash_keys(tc, kh->elements.nodes, kh->elements.size, kc);   /* `m(a: 1, a: 2)` warns like a Hash literal */
+                return kc;
             }
         }
         uint32_t cnt = 1u + (uint32_t)argc;
@@ -4564,84 +4548,6 @@ kp_jump_args_value(struct kp_ctx *tc, const pm_arguments_node_t *args)
     return build_array(tc, args->arguments.nodes, n, (uint32_t)n);
 }
 
-/* A literal Hash key, for the duplicate-key warning.  Only keys whose value is
- * known at parse time take part; `kind` separates :a from "a" from 1. */
-struct kp_hkey { const char *txt; size_t len; uint8_t kind; uint32_t line; };
-
-static bool
-kp_hkey_of(struct kp_ctx *tc, const pm_node_t *key, struct kp_hkey *out)
-{
-    out->line = kp_line(tc, key);
-    if (PM_NODE_TYPE_P(key, PM_SYMBOL_NODE)) {
-        const pm_string_t *const u = &((const pm_symbol_node_t *)key)->unescaped;
-        out->txt = (const char *)pm_string_source(u); out->len = pm_string_length(u); out->kind = 0;
-        return true;
-    }
-    if (PM_NODE_TYPE_P(key, PM_STRING_NODE)) {
-        const pm_string_t *const u = &((const pm_string_node_t *)key)->unescaped;
-        out->txt = (const char *)pm_string_source(u); out->len = pm_string_length(u); out->kind = 1;
-        return true;
-    }
-    if (PM_NODE_TYPE_P(key, PM_INTEGER_NODE) || PM_NODE_TYPE_P(key, PM_FLOAT_NODE)) {
-        out->txt = (const char *)pm_parser_start(tc->parser) + key->location.start;
-        out->len = key->location.length;
-        out->kind = 2;
-        return true;
-    }
-    return false;                                       /* dynamic / interpolated: no parse-time answer */
-}
-
-/* Collect the literal keys of a hash literal, descending into a `**{...}` whose
- * operand is itself a literal (CRuby warns across that boundary too). */
-static void
-kp_collect_hkeys(struct kp_ctx *tc, struct pm_node **assocs, size_t n,
-                 struct kp_hkey *keys, uint32_t *cnt, uint32_t max)
-{
-    for (size_t i = 0; i < n && *cnt < max; i++) {
-        const pm_node_t *const el = assocs[i];
-        if (PM_NODE_TYPE_P(el, PM_ASSOC_SPLAT_NODE)) {
-            const pm_node_t *const v = (const pm_node_t *)((const pm_assoc_splat_node_t *)el)->value;
-            if (v && PM_NODE_TYPE_P(v, PM_HASH_NODE)) {
-                const pm_hash_node_t *const inner = (const pm_hash_node_t *)v;
-                kp_collect_hkeys(tc, inner->elements.nodes, inner->elements.size, keys, cnt, max);
-            }
-            continue;
-        }
-        if (!PM_NODE_TYPE_P(el, PM_ASSOC_NODE)) continue;
-        if (kp_hkey_of(tc, (const pm_node_t *)((const pm_assoc_node_t *)el)->key, &keys[*cnt])) (*cnt)++;
-    }
-}
-
-/* Wrap `h` so the first evaluation reports each duplicate literal key, or return
- * it unchanged when there is none. */
-static NODE *
-kp_warn_dup_hash_keys(struct kp_ctx *tc, struct pm_node **assocs, size_t n, NODE *h)
-{
-    if (n < 2 || n > 256) return h;
-    struct kp_hkey keys[256];
-    uint32_t cnt = 0;
-    kp_collect_hkeys(tc, assocs, n, keys, &cnt, 256);
-    struct korb_dupkey_warn *warns = NULL;
-    uint32_t wcnt = 0;
-    static const char *const open[] = { ":", "\"", "" }, *const close[] = { "", "\"", "" };
-    for (uint32_t j = 1; j < cnt; j++) {                 /* one report per overwritten occurrence */
-        for (uint32_t i = j; i-- > 0; ) {
-            if (keys[i].kind != keys[j].kind || keys[i].len != keys[j].len ||
-                memcmp(keys[i].txt, keys[j].txt, keys[i].len) != 0) continue;
-            char *const key = malloc(keys[i].len + 3);
-            if (!key) abort();
-            snprintf(key, keys[i].len + 3, "%s%.*s%s", open[keys[i].kind],
-                     (int)keys[i].len, keys[i].txt, close[keys[i].kind]);
-            warns = realloc(warns, sizeof(*warns) * (wcnt + 1));
-            if (!warns) abort();
-            warns[wcnt++] = (struct korb_dupkey_warn){ strdup(tc->fname), key, keys[i].line, keys[j].line, 0 };
-            break;
-        }
-    }
-    if (wcnt == 0) return h;
-    return ALLOC_node_dupkey_warn(warns, wcnt, h);
-}
-
 /* Every one of assocs[0..n) is `sym: v` with a Symbol literal key, no two alike: no key can
  * equal another, so node_hash_set_sym may append without searching. */
 static bool
@@ -5235,8 +5141,6 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
       case PM_SOURCE_FILE_NODE: return ALLOC_node_str(tc->fname, (uint32_t)strlen(tc->fname));   /* __FILE__ */
       case PM_POST_EXECUTION_NODE: {     /* END { } — an at_exit handler over the current scope */
         const pm_post_execution_node_t *const pe = (const pm_post_execution_node_t *)node;
-        if (tc->frame->method_mid != 0)
-            fprintf(stderr, "%s:%u: warning: END in method; use at_exit\n", tc->fname, kp_line(tc, node));
         /* END shares the enclosing scope (prism resolves its locals at depth 0),
          * so the block is built over that same locals table. */
         static const pm_constant_id_list_t no_locals = { 0 };
@@ -5380,15 +5284,14 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
       case PM_HASH_NODE: {
         const pm_hash_node_t *hn = (const pm_hash_node_t *)node;
         size_t cnt = hn->elements.size;
-        return kp_warn_dup_hash_keys(tc, hn->elements.nodes, cnt,
-                                     build_hash(tc, hn->elements.nodes, cnt, (uint32_t)cnt));
+        return build_hash(tc, hn->elements.nodes, cnt, (uint32_t)cnt);
       }
 
       case PM_KEYWORD_HASH_NODE: {       /* trailing `k: v` / `**h` args → a Hash (becomes kwargs) */
         const pm_keyword_hash_node_t *hn = (const pm_keyword_hash_node_t *)node;
         size_t cnt = hn->elements.size;
         NODE *const h = build_hash(tc, hn->elements.nodes, cnt, (uint32_t)cnt);
-        return kp_warn_dup_hash_keys(tc, hn->elements.nodes, cnt, ALLOC_node_kwargs_mark(h));   /* the callee binds a tagged Hash to keywords */
+        return ALLOC_node_kwargs_mark(h);   /* the callee binds a tagged Hash to keywords */
       }
 
       case PM_X_STRING_NODE: {          /* `cmd` → self.`("cmd") */
@@ -6148,8 +6051,8 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
          * top level ends the file), but a class/module body is not — a `return`
          * that reaches one has nowhere to go (LocalJumpError). */
         if (mf->method_mid == 0 && (mf->class_name_sym || mf->anon_class_body)) depth = 0;
-        else if (mf->method_mid == 0 && !mf->lambda_body && depth == 0 && rn->arguments)   /* bare top-level return yields no value (CRuby warns only there) */
-            fprintf(stderr, "%s: warning: argument of top-level return is ignored\n", tc->fname);
+        else if (mf->method_mid == 0 && !mf->lambda_body && depth == 0 && rn->arguments)   /* bare top-level return yields no value */
+            kp_stash_warn_line(tc->c, 'D', tc->fname, "argument of top-level return is ignored");
         if (depth == 0) {
             return ALLOC_node_return(kp_jump_args_value(tc, rn->arguments));
         }
@@ -6951,6 +6854,22 @@ kp_first_error_line(const pm_parser_t *const parser)
     const pm_diagnostic_t *d0 = NULL;
     pm_parser_errors_each(parser, kp_diag_first, &d0);
     return d0 ? kp_line_column(parser, pm_diagnostic_location(d0).start).line : 0;
+}
+
+/* Queue one warning line ("file: warning: msg") for the caller to emit; level 'V' needs $VERBOSE true */
+static void
+kp_stash_warn_line(CTX *const c, const char level, const char *const fname, const char *const msg)
+{
+    struct korb_vm *const vm = c->vm;
+    char buf[512];
+    const int n = snprintf(buf, sizeof buf, "%c%s: warning: %s\n", level, fname, msg);
+    if (n <= 0) return;
+    const size_t len = (size_t)n < sizeof buf ? (size_t)n : sizeof buf - 1;
+    char *const nb = realloc(vm->parse_warns, vm->parse_warns_len + len);
+    if (!nb) abort();
+    memcpy(nb + vm->parse_warns_len, buf, len);
+    vm->parse_warns = nb;
+    vm->parse_warns_len += len;
 }
 
 /* prism's warnings, kept for the caller to emit once it can run Ruby (Warning.warn): the

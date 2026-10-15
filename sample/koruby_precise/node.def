@@ -306,43 +306,6 @@ node_gvar_coerce(CTX *c, NODE *n, korb_value *slots, uint32_t kind, korb_value v
     return RESULT_OK(slots[0]);
 }
 
-// `defined?(...)` used as a statement: CRuby drops it and warns while compiling.
-// We warn on the first evaluation instead, so the message goes through the Ruby
-// $stderr the program (and mspec's `complain`) can redirect.
-NODE_DEF @noinline
-node_void_warn(CTX *c, NODE *n, korb_value *slots, void *warn, korb_value val@child)
-{
-    (void)n;
-    struct korb_dupkey_warn *const w = (struct korb_dupkey_warn *)warn;
-    if (!w->done) {
-        w->done = 1;
-        slots[0] = val;                  /* park: the warning goes out through $stderr, which a
-                                          * harness can replace with a Ruby object */
-        korb_warn_at(c, slots + 1, w->file, w->line, "possibly useless use of defined? in void context");
-        return RESULT_OK(slots[0]);      /* re-read (may have moved) */
-    }
-    return RESULT_OK(val);
-}
-
-// Hash literal with duplicate literal keys.  CRuby warns while compiling; we
-// warn on the first evaluation instead, so the message goes through the Ruby
-// $stderr the program (and mspec's `complain`) can redirect.
-NODE_DEF @noinline
-node_dupkey_warn(CTX *c, NODE *n, korb_value *slots, void *warns, uint32_t cnt, korb_value val@child)
-{
-    (void)n;
-    struct korb_dupkey_warn *const w = (struct korb_dupkey_warn *)warns;
-    bool warned = false;
-    for (uint32_t i = 0; i < cnt; i++) {
-        if (w[i].done) continue;
-        w[i].done = 1;
-        if (!warned) { slots[0] = val; warned = true; }   /* park: $stderr can be a Ruby object */
-        korb_warn_at(c, slots + 1, w[i].file, w[i].line,
-                     "key %s is duplicated and overwritten on line %u", w[i].key, w[i].line2);
-    }
-    return RESULT_OK(warned ? slots[0] : val);            /* re-read (the warning ran Ruby) */
-}
-
 NODE_DEF @noinline
 node_deprecated_gvar_warn(CTX *c, NODE *n, korb_value *slots, const char *name, korb_value val@child)
 {

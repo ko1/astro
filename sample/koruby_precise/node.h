@@ -884,9 +884,6 @@ void korb_warn_at(CTX *c, korb_value *slots, const char *file, uint32_t line, co
 void korb_flush_parse_warnings(CTX *c, korb_value *slots);   /* prism's warnings from the last parse */
 void korb_warn_caller(CTX *c, korb_value *slots, const korb_value *link, const char *fmt, ...);   /* positioned at the C method's caller */
 
-/* One duplicate-key report for a Hash literal, filled in by the parser; `done`
- * makes the warning fire once however often the literal is evaluated. */
-struct korb_dupkey_warn { const char *file; const char *key; uint32_t line, line2; uint8_t done; };
 void korb_warn_const_redef(CTX *c, korb_value *slots, uint32_t name_sym, korb_value owner);
 RESULT korb_const_assign_at(CTX *c, korb_value *slots, const struct Node *n, uint32_t name_sym, korb_value ownc, korb_value val);
 void korb_warn_const_redef_at(CTX *c, korb_value *slots, uint32_t name_sym, korb_value owner,
