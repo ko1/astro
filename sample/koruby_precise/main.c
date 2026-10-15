@@ -1666,6 +1666,10 @@ main(int argc, char *argv[])
 
     NODE *ast = koruby_parse_source(c, src, src_len, src_name, true);
 #endif /* KORUBY_EMBED */
+    /* held until $VERBOSE is set: a require on the way (rubygems) flushes the VM's list */
+    char *const script_warns = c->vm->parse_warns;
+    const size_t script_warns_len = c->vm->parse_warns_len;
+    c->vm->parse_warns = NULL; c->vm->parse_warns_len = 0;
 
     if (OPTION.syntax_check) {              /* -c: the parse above is the check */
         printf("Syntax OK\n");
@@ -1871,6 +1875,9 @@ main(int argc, char *argv[])
             korb_const_define(c, korb_intern(c->vm, "$/", 2), sep);
             korb_const_define(c, korb_intern(c->vm, "$-0", 3), sep);
         }
+        free(c->vm->parse_warns);
+        c->vm->parse_warns = script_warns; c->vm->parse_warns_len = script_warns_len;
+        korb_flush_parse_warnings(c, toplevel_cursor);   /* the script's parse warnings, now that $VERBOSE is set */
         if (OPTION.inplace) {                   /* -i[ext]: ARGF.inplace_mode = ext */
             toplevel_cursor[0] = korb_const_get(c->vm, korb_intern(c->vm, "ARGF", 4));
             toplevel_cursor[1] = korb_str_new(c, toplevel_cursor + 1, OPTION.inplace, (uint32_t)strlen(OPTION.inplace)).value;

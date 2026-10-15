@@ -1984,6 +1984,7 @@ static RESULT korb_m_ary_reduce(CTX *c, korb_value *slots, korb_ref self, korb_s
      * sym form (op=a[0]); argc 1 + block → block form with init; argc 0 → block. */
     const uint32_t na0 = KORB_SLICE_LEN(a);
     bool sym_form = false;
+    if (UNLIKELY(na0 >= 2 && block != NULL)) korb_warn_caller(c, slots, a.p + KORB_FLINK_OFF, "given block not used");
     if (na0 >= 2 || (na0 == 1 && block == NULL)) {
         bool ok; RESULT rr = korb_reduce_resolve_op(c, slots, KORB_SLICE_GET(a, na0 - 1), &op_mid, &ok);
         if (UNLIKELY(!ok)) return rr;

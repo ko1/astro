@@ -2504,6 +2504,7 @@ static RESULT korb_method_defined_vis(CTX *c, korb_value *slots, korb_ref self, 
      * class's own method table — ignoring superclasses AND included/prepended
      * modules (CRuby semantics). */
     const bool inherit = (KORB_SLICE_LEN(a) < 2) || KORB_TRUTHY(KORB_SLICE_GET(a, 1));
+    const bool any_vis = want < 0 && KORB_SLICE_LEN(a) >= 3 && KORB_TRUTHY(KORB_SLICE_GET(a, 2));   /* 4.1: private too */
     if (!inherit) {
         if (!KORB_CLASS_P(cls)) return RESULT_OK(KORB_FALSE);
         const KorbClass *const k = VAL2CLASS(cls);
@@ -2511,11 +2512,11 @@ static RESULT korb_method_defined_vis(CTX *c, korb_value *slots, korb_ref self, 
             const struct korb_method *const om = k->methods[j];
             if (om->mid != mid) continue;
             if (om->kind == KORB_METHOD_UNDEF) return RESULT_OK(KORB_FALSE);
-            const bool ok = (want < 0) ? (om->visibility != 1) : (om->visibility == want);
+            const bool ok = (want < 0) ? (any_vis || om->visibility != 1) : (om->visibility == want);
             return RESULT_OK(ok ? KORB_TRUE : KORB_FALSE);
         }
         if (cls == korb_builtin_class_obj(c->vm, KORB_C_OBJECT) && korb_toplevel_def(c->vm, mid))
-            return RESULT_OK((want == 1) ? KORB_TRUE : KORB_FALSE);
+            return RESULT_OK((want == 1 || any_vis) ? KORB_TRUE : KORB_FALSE);
         if (cls == korb_builtin_class_obj(c->vm, KORB_C_CLASS) && mid == korb_intern_lit(c->vm, "new", 3))
             return RESULT_OK((want <= 0) ? KORB_TRUE : KORB_FALSE);   /* Class#new: public, no table entry */
         return RESULT_OK(KORB_FALSE);
@@ -2536,14 +2537,14 @@ static RESULT korb_method_defined_vis(CTX *c, korb_value *slots, korb_ref self, 
          * inherits via Kernel: private_method_defined? true, public/method false. */
         const struct korb_method *const gm = korb_method_lookup(c->vm, mid);
         if (gm != NULL && gm->kind == KORB_METHOD_BUILTIN)
-            return RESULT_OK((want == 1) ? KORB_TRUE : KORB_FALSE);
+            return RESULT_OK((want == 1 || any_vis) ? KORB_TRUE : KORB_FALSE);
         /* send / __send__ / public_send have no table entry (dispatch special
          * cases) but are public instance methods of every object in CRuby. */
         if (korb_universal_send_p(c->vm, mid))
             return RESULT_OK((want <= 0) ? KORB_TRUE : KORB_FALSE);
         return RESULT_OK(KORB_FALSE);
     }
-    const bool ok = (want < 0) ? (me->visibility != 1) : (me->visibility == want);
+    const bool ok = (want < 0) ? (any_vis || me->visibility != 1) : (me->visibility == want);
     return RESULT_OK(ok ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_class_method_defined(CTX *c, korb_value *slots, korb_ref self, korb_slice a)           { return korb_method_defined_vis(c, slots, self, a, -1); }
@@ -3062,8 +3063,8 @@ static RESULT korb_obj_exec_impl(CTX *c, korb_value *slots, korb_ref self, korb_
     /* @@vars keep resolving against the block's definition scope, which self no
      * longer names once the receiver is bound in. */
     if (singleton_definee && cself != NULL)                /* a forwarded Proc carries its own captured self */
-        c->cvar_cref = korb_cvar_self_class_pub(c, def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC
-                                                   ? VAL2PROC(*cself)->self : KORB_CSELF_VAL(cself));
+        c->cvar_cref = korb_cvar_cref_or_top(korb_cvar_self_class_pub(c, def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC
+                                                   ? VAL2PROC(*cself)->self : KORB_CSELF_VAL(cself)));
     RESULT r;
     if (def_env == KORB_BLK_FWD) {                        /* forwarded Proc: keep ITS closure env, rebind self only */
         slots[1 + argc] = VAL2PROC(*cself)->env;          /* proc's captured env (used as def_env below, not FWD) */
@@ -3211,8 +3212,8 @@ static RESULT korb_obj_eval_impl(CTX *c, korb_value *slots, korb_ref self, korb_
         if (VAL2PROC(*cself)->refined_copy) { c->refine_sealed = c->refinements; c->vm->method_serial++; }
     }
     if (singleton_definee && cself != NULL)                /* a forwarded Proc carries its own captured self */
-        c->cvar_cref = korb_cvar_self_class_pub(c, def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC
-                                                   ? VAL2PROC(*cself)->self : KORB_CSELF_VAL(cself));
+        c->cvar_cref = korb_cvar_cref_or_top(korb_cvar_self_class_pub(c, def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC
+                                                   ? VAL2PROC(*cself)->self : KORB_CSELF_VAL(cself)));
     RESULT r;
     if (block == KORB_BLK_CPROC)                          /* forwarded C-proc: fixed binding */
         r = korb_block_yield(c, slots + 1, block, def_env, slots, 1, cself);

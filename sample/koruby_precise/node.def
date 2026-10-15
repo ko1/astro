@@ -3786,11 +3786,16 @@ node_alias(CTX *c, NODE *n, korb_value *slots, uint32_t new_sym@sym, uint32_t ol
      * instance_exec block must find the `foo` it just defined.  (`alias_method`
      * is a Module method and keeps using its receiver.) */
     korb_value definee = c->def_definee;
-    if (UNLIKELY(definee != KORB_NIL && !KORB_CLASS_P(definee))) definee = UNWRAP(korb_definee_class(c, slots));
+    if (UNLIKELY(definee != KORB_NIL && !KORB_CLASS_P(definee))) {
+        definee = UNWRAP(korb_definee_class(c, slots));
+        if (UNLIKELY(!KORB_CLASS_P(definee)))         /* instance_eval on a value with no singleton (1, :sym) */
+            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't define singleton");
+    }
     if (!KORB_CLASS_P(definee)) definee = slots[self_off];
     (void)n;
     korb_flink_stage_at(c, &slots[self_off + 1], line);   /* hand method_added this frame (see node_def) */
-    return korb_do_alias(c, slots, definee, new_sym, old_sym);
+    CHECK(korb_do_alias(c, slots, definee, new_sym, old_sym));
+    return RESULT_OK(KORB_NIL);                           /* the alias statement's value (alias_method answers the name) */
 }
 
 // `undef foo, bar` — retire the named instance methods on the enclosing class
@@ -4459,7 +4464,7 @@ node_cvar_get(CTX *c, NODE *n, korb_value *slots, int32_t self_off, int32_t dc_o
 }
 
 NODE_DEF
-node_cvar_set(CTX *c, NODE *n, korb_value *slots, int32_t self_off, int32_t dc_off, uint32_t name@sym, korb_value val@child)
+node_cvar_set(CTX *c, NODE *n, korb_value *slots, int32_t self_off, int32_t dc_off, uint32_t name@sym, korb_value val@child, uint32_t line)
 {
     (void)n;
     korb_value self = slots[self_off];
@@ -4469,7 +4474,7 @@ node_cvar_set(CTX *c, NODE *n, korb_value *slots, int32_t self_off, int32_t dc_o
         if (KORB_CLASS_P(lc)) self = lc;
         val = slots[0];
     }
-    return korb_cvar_set(c, slots, self, slots[dc_off], name, val);
+    return korb_raise_line_fill(c, korb_cvar_set(c, slots, self, slots[dc_off], name, val), line);
 }
 
 // ---- outer-variable access (depth >= 1, docs/v2_blocks_design.md §3) --------

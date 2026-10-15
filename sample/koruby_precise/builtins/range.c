@@ -1501,6 +1501,10 @@ static RESULT korb_m_range_find_index(CTX *c, korb_value *slots, korb_ref self, 
 static RESULT korb_m_ary_reduce(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *captured_self);
 static RESULT korb_m_range_reduce(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *captured_self) {
     korb_sword_t lo, hi;
+    if (UNLIKELY(KORB_SLICE_LEN(a) >= 2 && block != NULL)) {   /* (init, sym) wins over the block */
+        korb_warn_caller(c, slots, a.p + KORB_FLINK_OFF, "given block not used");
+        block = NULL;
+    }
     if (!korb_range_int_bounds(SELF_RANGE, &lo, &hi)) {     /* non-integer range → reduce over to_a */
         slots[0] = UNWRAP(korb_m_range_to_a(c, slots, self, KORB_SLICE_MAKE(NULL, 0)));
         return korb_m_ary_reduce(c, slots + 1, KORB_REF_AT(&slots[0]), a, block, def_env, captured_self);

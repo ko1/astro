@@ -792,7 +792,8 @@ static RESULT korb_m_md_size(CTX *c, korb_value *slots, korb_ref self, korb_slic
 static RESULT korb_m_md_string(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a; slots[0] = KORB_REF_GET(self);
     slots[1] = VAL2MD(slots[0])->subject;
-    if (((const AroObjectHeader *)(uintptr_t)slots[1])->flags & KORB_FL_FROZEN) return RESULT_OK(slots[1]);   /* already a snapshot */
+    if ((((const AroObjectHeader *)(uintptr_t)slots[1])->flags & (KORB_FL_FROZEN | KORB_FL_CHILLED)) == KORB_FL_FROZEN)
+        return RESULT_OK(slots[1]);                       /* already a snapshot (a chilled literal is not frozen) */
     const uint32_t n = VAL2STR(slots[1])->len;
     slots[2] = UNWRAP(korb_str_slice_new(c, slots + 2, KORB_REF_AT(&slots[1]), 0, n));   /* CRuby: a frozen copy */
     ((AroObjectHeader *)(uintptr_t)slots[2])->flags |= KORB_FL_FROZEN;

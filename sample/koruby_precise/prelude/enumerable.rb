@@ -56,7 +56,7 @@ module Enumerable
   def lazy = to_enum(:each).lazy
   def to_h(*args, &blk); h = {}; each(*args) { |*a| pair = blk ? blk.call(*a) : (a.size <= 1 ? a[0] : a); pair = pair.to_ary if !pair.is_a?(Array) && pair.respond_to?(:to_ary); raise TypeError, "wrong element type #{pair.class} (expected array)" unless pair.is_a?(Array); raise ArgumentError, "element has wrong array length (expected 2, was #{pair.size})" unless pair.size == 2; h[pair[0]] = pair[1] }; h; end
   alias entries to_a
-  def count(*args, &blk); raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)" if args.size > 1; n = 0; if args.size > 0; warn "given block not used" if blk; item = args[0]; __each_el { |x| n += 1 if x == item }; elsif blk; each { |*a| n += 1 if blk.call(*a) }; else; each { |*a| n += 1 }; end; n; end
+  def count(*args, &blk); raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)" if args.size > 1; n = 0; if args.size > 0; warn("given block not used", uplevel: 1) if blk; item = args[0]; __each_el { |x| n += 1 if x == item }; elsif blk; each { |*a| n += 1 if blk.call(*a) }; else; each { |*a| n += 1 }; end; n; end
   def include?(v); __each_el { |e| return true if e == v }; false; end
   alias member? include?
   def first(*args)
@@ -79,7 +79,7 @@ module Enumerable
   end
   # reduce/inject: (sym) | (init, sym) | { block } | (init) { block }.
   def reduce(*args)
-    warn "given block not used" if args.size >= 2 && block_given?   # (init, sym) wins over the block
+    warn("given block not used", uplevel: 1) if args.size >= 2 && block_given?   # (init, sym) wins over the block
     if block_given? && args.size < 2
       if args.size >= 1 then acc = args[0]; f = false else acc = nil; f = true end
       __each_el { |x| if f then acc = x; f = false else acc = yield(acc, x) end }
@@ -137,10 +137,10 @@ module Enumerable
   def sort(&blk); entries.sort(&blk); end   # not #to_a: a Hash subclass's own #each decides (CRuby enum_sort)
   def sort_by; return __to_enum_sized(:sort_by) unless block_given?; a = []; __each_el { |x| a << x }; a.sort_by { |x| yield(x) }; end
   # all?/any?/none?/one? accept an optional pattern (uses pattern === x), else a block, else truthiness.
-  def all?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; if a.size > 0; warn "given block not used" if blk; pt = a[0]; __each_el { |x| return false unless pt === x }; elsif blk; ok = true; each { |*ar| unless blk.call(*ar); ok = false; break; end }; return ok; else; __each_el { |x| return false unless x }; end; true; end
-  def any?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; if a.size > 0; warn "given block not used" if blk; pt = a[0]; __each_el { |x| return true if pt === x }; elsif blk; hit = false; each { |*ar| if blk.call(*ar); hit = true; break; end }; return hit; else; __each_el { |x| return true if x }; end; false; end
-  def none?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; if a.size > 0; warn "given block not used" if blk; pt = a[0]; __each_el { |x| return false if pt === x }; elsif blk; hit = false; each { |*ar| if blk.call(*ar); hit = true; break; end }; return !hit; else; __each_el { |x| return false if x }; end; true; end
-  def one?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; n = 0; if a.size > 0; warn "given block not used" if blk; pt = a[0]; __each_el { |x| (n += 1; break if n > 1) if pt === x }; elsif blk; each { |*ar| (n += 1; break if n > 1) if blk.call(*ar) }; else; __each_el { |x| (n += 1; break if n > 1) if x }; end; n == 1; end
+  def all?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; if a.size > 0; warn("given block not used", uplevel: 1) if blk; pt = a[0]; __each_el { |x| return false unless pt === x }; elsif blk; ok = true; each { |*ar| unless blk.call(*ar); ok = false; break; end }; return ok; else; __each_el { |x| return false unless x }; end; true; end
+  def any?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; if a.size > 0; warn("given block not used", uplevel: 1) if blk; pt = a[0]; __each_el { |x| return true if pt === x }; elsif blk; hit = false; each { |*ar| if blk.call(*ar); hit = true; break; end }; return hit; else; __each_el { |x| return true if x }; end; false; end
+  def none?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; if a.size > 0; warn("given block not used", uplevel: 1) if blk; pt = a[0]; __each_el { |x| return false if pt === x }; elsif blk; hit = false; each { |*ar| if blk.call(*ar); hit = true; break; end }; return !hit; else; __each_el { |x| return false if x }; end; true; end
+  def one?(*a, &blk); raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" if a.size > 1; n = 0; if a.size > 0; warn("given block not used", uplevel: 1) if blk; pt = a[0]; __each_el { |x| (n += 1; break if n > 1) if pt === x }; elsif blk; each { |*ar| (n += 1; break if n > 1) if blk.call(*ar) }; else; __each_el { |x| (n += 1; break if n > 1) if x }; end; n == 1; end
   def cycle(n = nil, &blk)                                          # delegate to Array#cycle (break handled there)
     # no block → Enumerator (each not called until iterated); its size is the
     # receiver's times n, or Infinity when cycling forever
@@ -243,7 +243,7 @@ module Enumerable
   def drop_while(&blk); return __to_enum_sized(:drop_while) unless blk; r = []; dropping = true; each { |*ar| e = ar.size <= 1 ? ar[0] : ar; dropping = false if dropping && !blk.call(e); r << e unless dropping }; r; end
   def minmax(&blk); [min(&blk), max(&blk)]; end   # honor an optional comparator block
   def minmax_by; return __to_enum_sized(:minmax_by) unless block_given?; [min_by { |x| yield(x) }, max_by { |x| yield(x) }]; end
-  def find_index(*v, &blk); return __to_enum_sized(:find_index) if !blk && v.empty?; i = 0; if blk && v.empty?; idx = nil; each { |*ar| if blk.call(*ar); idx = i; break; end; i += 1 }; return idx; else; warn "given block not used" if blk; t = v[0]; __each_el { |x| return i if x == t; i += 1 }; end; nil; end
+  def find_index(*v, &blk); return __to_enum_sized(:find_index) if !blk && v.empty?; i = 0; if blk && v.empty?; idx = nil; each { |*ar| if blk.call(*ar); idx = i; break; end; i += 1 }; return idx; else; warn("given block not used", uplevel: 1) if blk; t = v[0]; __each_el { |x| return i if x == t; i += 1 }; end; nil; end
   def each_slice(n, &blk); n = __as_int(n); raise ArgumentError, "invalid slice size" unless n > 0; unless blk; this = self; sz = (respond_to?(:size) && (z = size)) ? (z + n - 1) / n : nil; return Enumerator.new(sz) { |y| this.each_slice(n) { |s| y << s } }; end; s = []; __each_el { |x| s << x; if s.size == n; yield s; s = []; end }; yield s unless s.empty?; self; end
   def each_cons(n, &blk); n = __as_int(n); raise ArgumentError, "invalid size" unless n > 0; unless blk; this = self; sz = (respond_to?(:size) && (z = size)) ? (z >= n ? z - n + 1 : 0) : nil; return Enumerator.new(sz) { |y| this.each_cons(n) { |c| y << c } }; end; buf = []; __each_el { |x| buf << x; if buf.size == n; yield buf.dup; buf.shift; end }; self; end
   def zip(*others)

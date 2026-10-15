@@ -198,6 +198,8 @@ static RESULT korb_flt_round_nd(CTX *c, korb_value *slots, const double d, const
     const double f = pow(10.0, (double)ndig);
     return korb_float_new(c, slots, korb_round_half_s(d, f, half) / f);
 }
+static RESULT korb_m_int_floor(CTX *c, korb_value *slots, korb_ref self, korb_slice a);
+static RESULT korb_m_int_ceil(CTX *c, korb_value *slots, korb_ref self, korb_slice a);
 static RESULT korb_flt_round_to(CTX *c, korb_value *slots, double d, int kind, korb_slice a) {
     uint32_t npos; const int half = korb_round_half(c, a, &npos); KORB_ROUND_CHECK_HALF(c, slots, a, &npos);
     korb_sword_t ndig = 0;
@@ -214,6 +216,12 @@ static RESULT korb_flt_round_to(CTX *c, korb_value *slots, double d, int kind, k
         return korb_flt_toint(c, slots, d, kind);
     }
     if (kind == 2) return korb_flt_round_nd(c, slots, d, ndig, half, a);
+    if (ndig < 0) {                                        /* CRuby: to an Integer first, then Integer#floor/ceil exactly */
+        const int ik = kind == 3 ? (d < 0 ? 1 : 0) : kind;
+        slots[0] = UNWRAP(korb_flt_toint(c, slots, d, ik));
+        return ik == 0 ? korb_m_int_floor(c, slots + 1, KORB_REF_AT(&slots[0]), a)
+                       : korb_m_int_ceil(c, slots + 1, KORB_REF_AT(&slots[0]), a);
+    }
     double f = pow(10.0, (double)(ndig < 0 ? -ndig : ndig));
     if (ndig > 0 && (isinf(f) || !isfinite(d * f))) return korb_float_new(c, slots, d);   /* beyond float precision → self */
     double scaled = ndig > 0 ? d * f : d / f;

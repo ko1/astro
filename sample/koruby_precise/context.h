@@ -1670,6 +1670,8 @@ struct korb_vm {
      * encoding-name symbol per index (0 = free).  Character-level ops on these
      * raise NotImplementedError; #encoding still round-trips via the name. */
     const char *last_syntax_msg;     /* parse-time SyntaxError detail (static string), NULL if none */
+    char *parse_warns;               /* prism's warnings from the last parse, emitted by the caller: "V"/"D" + line + '\n' each */
+    size_t parse_warns_len;
     /* Module#const_source_location: where each (name, owner) constant was assigned. */
     /* owner is keyed by the class's GC-stable `serial` (0 = top-level), not by a
      * korb_value: this table is libc memory the collector does not scan, so a moving

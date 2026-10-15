@@ -5,6 +5,20 @@
 
 
 
+## 未: `$_` がフレーム局所でなくグローバル（require の中の readline が main に漏れる） (2026-10-15)
+`require "json"` の後で main の `$_` が "\n" になる（rubygems の StubSpecification が gemspec を readline で読む）。
+CRuby の `$_` は `$~` と同じくメソッドのフレームごと。koruby は `$_` を大域の定数表に置いている。`$~` の仕組み
+（kp_note_backref とフレームの backref セル）に載せれば直る見込み。
+
+## 未: Enumerator#each(*args) が引数を受け手の each に渡さない (2026-10-15)
+CRuby は引数を足した Enumerator で回し直す（Lazy#force(*args) も同じ）。koruby の Enumerator は値を先に作る作りで、
+回し直しの材料（受け手・メソッド・元の引数）を持たない。spec: core/enumerator/lazy/force_spec。
+
+## 未: instance_exec されたブロックの中の eval で、トップレベルの @@x が受け手のクラスに解決される (2026-10-15)
+mspec の `it` ブロック（`@env.instance_exec(&block)`、self は MSpecEnv）で `eval "@@x"` が NameError（CRuby は
+RuntimeError "class variable access from toplevel"）。cvar の基点を self のクラスで近似しているため。ブロックを書いた
+場所の字句的な cref が要る。spec: language/class_variable_spec。
+
 ## 未: define_method に渡した proc の中で、外のブロックの `return` がメソッドを抜けない (2026-10-15)
 - `pr = mp { return :good }; define_method(:foo, proc { |x| x.call }); foo(pr)` → CRuby は :good（pr の
   return は pr を作ったメソッドを抜ける）、koruby は DM 呼び出しが return を飲み込み :bad。

@@ -881,6 +881,7 @@ void korb_warn_serious(CTX *c, korb_value *slots, uint32_t mid, bool undefining)
 void korb_warn_ignore_verbose(CTX *c, korb_value *slots, const char *fmt, ...);   /* category warnings ($VERBOSE-independent) */
 void korb_warn_deprecated(CTX *c, korb_value *slots, const char *msg);   /* gated on Warning[:deprecated] */
 void korb_warn_at(CTX *c, korb_value *slots, const char *file, uint32_t line, const char *fmt, ...);
+void korb_flush_parse_warnings(CTX *c, korb_value *slots);   /* prism's warnings from the last parse */
 void korb_warn_caller(CTX *c, korb_value *slots, const korb_value *link, const char *fmt, ...);   /* positioned at the C method's caller */
 
 /* One duplicate-key report for a Hash literal, filled in by the parser; `done`

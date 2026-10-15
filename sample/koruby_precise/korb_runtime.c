@@ -3290,6 +3290,9 @@ korb_cvar_check_overtaken(CTX *c, korb_value *slots, korb_value front, korb_valu
  * instance_exec kept, since self there names the receiver, not a class. */
 static korb_value korb_dispatch_class(CTX *c, korb_value self);            /* fwd */
 static korb_value korb_cvar_self_class(CTX *c, korb_value self);           /* fwd */
+/* c->cvar_cref for a block written at the top level: false (set, but no class), so @@x raises
+ * there instead of falling back to the instance_eval receiver's class */
+static korb_value korb_cvar_cref_or_top(const korb_value k) { return k == KORB_NIL ? KORB_FALSE : k; }
 korb_value korb_cvar_self_class_pub(CTX *c, korb_value self) {
     return KORB_CLASS_P(self) ? self : korb_cvar_self_class(c, self);
 }
@@ -20364,6 +20367,7 @@ korb_eval_toplevel_wrap(CTX *c, korb_value *slots, const char *src, size_t len, 
 {
     const uint32_t repo_before = code_repo_count();               /* bodies this file adds: [repo_before, count) */
     NODE *ast = koruby_parse_source(c, src, len, fname, false);   /* immortal AST; no GC */
+    korb_flush_parse_warnings(c, slots);
     if (UNLIKELY(ast == NULL)) {
         return korb_raise_syntax_at(c, slots, "syntax error", fname);   /* prism's diagnostics, as CRuby; #path = the file */
     }
@@ -22053,6 +22057,23 @@ void korb_warn_caller(CTX *c, korb_value *slots, const korb_value *link, const c
     const char *const file = link != NULL && korb_caller_pos(c, link, &fs, &ln) ? korb_sym_name(c->vm, fs) : NULL;
     korb_warn_at(c, slots, file, ln, "%s", body);
 }
+/* Emit (and drop) the warnings the last parse stashed, gated on $VERBOSE as CRuby's compile warnings */
+void korb_flush_parse_warnings(CTX *c, korb_value *slots) {
+    struct korb_vm *const vm = c->vm;
+    if (LIKELY(vm->parse_warns_len == 0)) return;
+    char *const buf = vm->parse_warns;
+    const size_t n = vm->parse_warns_len;
+    vm->parse_warns = NULL; vm->parse_warns_len = 0;      /* Warning.warn may parse again */
+    const korb_value verbose = korb_const_get(vm, korb_intern_lit(vm, "$VERBOSE", 8));
+    for (size_t i = 0; i < n; ) {
+        const char *const nl = memchr(buf + i, '\n', n - i);
+        const size_t e = nl ? (size_t)(nl - buf) + 1 : n;
+        if (verbose != KORB_NIL && (buf[i] == 'D' || verbose == KORB_TRUE))
+            korb_warn_emit(c, slots, buf + i + 1, e - i - 1);
+        i = e;
+    }
+    free(buf);
+}
 /* like korb_warn, but for category warnings whose own flag is the gate */
 void korb_warn_ignore_verbose(CTX *c, korb_value *slots, const char *fmt, ...) {
     char body[240];
@@ -22688,6 +22709,7 @@ korb_eval_str_self(CTX *c, korb_value *slots, korb_value str, korb_value self_va
                                        korb_enc_name_of(c->vm, KORB_STR_ENC(str)), cref_name,
                                        nencl ? encl : NULL, nencl, true);   /* immortal AST; no GC */
     c->vm->parse_anon_cref = false;
+    korb_flush_parse_warnings(c, slots);
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
     /* AOT: bind (+ compile when producing) as a loaded file is — class_eval'd methods (Rails' attribute
      * methods, compiled ERB views) ran on the interpreter: 16% of railsbench's AOT instructions */
@@ -22874,6 +22896,7 @@ korb_eval_binding_core(CTX *c, korb_value *slots, korb_value *src_slot, korb_val
                                             bind_mid,
                                             cref_name, nencl ? encl : NULL, nencl, cref_is_caller);
     c->vm->parse_anon_cref = false;
+    korb_flush_parse_warnings(c, slots);
     free(decl); free(outer_names); free(outer_cnt);
     if (UNLIKELY(entry == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
     const uint32_t L = koruby_toplevel_locals_cnt;
@@ -23030,6 +23053,7 @@ korb_bi_eval(CTX *c, korb_value *slots, korb_slice args)
     const uint32_t repo_before = code_repo_count();
     NODE *ast = koruby_parse_source_at(c, korb_str_ptr(s), s->len, fname, eline, false,
                                        korb_enc_name_of(c->vm, KORB_STR_ENC(sv)), 0, NULL, 0, true);   /* immortal AST; no GC */
+    korb_flush_parse_warnings(c, slots);
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
     korb_load_time_specialize(c, ast, repo_before, fname);   /* AOT: bind (+ compile when producing), as a loaded file */
     const uint32_t locals = koruby_toplevel_locals_cnt;

@@ -275,6 +275,7 @@ static RESULT korb_m_obj_remove_ivar(CTX *c, korb_value *slots, korb_ref self, k
     if (UNLIKELY(!ok)) return korb_raise_not_sym(c, slots, KORB_SLICE_GET(a, 0));
     if (UNLIKELY(!korb_valid_ivar_name(c->vm, SYM2ID(sym))))
         return korb_raise_bad_ivar_name(c, slots, KORB_REF_GET(self), KORB_SLICE_GET(a, 0), SYM2ID(sym));
+    if (UNLIKELY(!AROH_IS_GC_OBJECT(KORB_REF_GET(self)))) return korb_raise_frozen(c, slots, KORB_REF_GET(self));   /* nil, :sym, 1: always frozen */
     KORB_CHECK_FROZEN(c, slots, KORB_REF_GET(self));
     bool found;                                       /* true-remove from the shape / side hash */
     const korb_value old = korb_ivar_remove(c, KORB_REF_GET(self), sym, &found);

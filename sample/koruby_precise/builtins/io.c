@@ -30,6 +30,7 @@ typedef struct KorbIORep {
     uint8_t  sig_epipe;              /* the process's own STDOUT: an uncaught EPIPE ends by SIGPIPE (reopen drops it) */
     uint8_t  univ;                   /* universal newline on read ("rt", newline: :universal): text readers see \r\n / \r as \n */
     uint8_t  nl_skip;                /* univ: the last converted chunk ended in a \r, so a leading \n is dropped */
+    uint8_t  line_rd;                /* the last read was by line: its read-ahead is what CRuby keeps buffered */
     int8_t   wnl;                    /* memo of the write decorator (korb_io_write_newline); -1 = not read yet */
     int      slow_fd1;               /* fd + 1 that `slow` was worked out for; 0 = not yet */
     uint32_t lineno;                 /* IO#lineno: lines handed out by #gets */
@@ -1162,6 +1163,7 @@ static RESULT korb_m_io_read(CTX *c, korb_value *slots, korb_ref self, korb_slic
     KorbIORep *rep = korb_io_rep(c, KORB_REF_GET(self));
     if (!korb_io_open_p(rep)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     KORB_IO_NEED_READ(c, slots, self);
+    rep->line_rd = 0;
     const uint32_t na = KORB_SLICE_LEN(a);
     bool bounded = false;
     korb_sword_t want = 0;
@@ -1346,6 +1348,7 @@ static RESULT korb_m_io_gets(CTX *c, korb_value *slots, korb_ref self, korb_slic
     struct korb_line_args la;
     CHECK(korb_io_line_args(c, slots, a, 0, &la));      /* separator → slots[0] */
     rep = korb_io_rep(c, KORB_REF_GET(self));          /* the parse may dispatch #to_str/#to_int */
+    rep->line_rd = 1;
     RESULT r = korb_io_read_sep(c, slots + 1, rep, KORB_REF_AT(&slots[0]), &la);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (KORB_STRING_P(r.value)) {                        /* the record carries the stream's encoding */
@@ -1676,6 +1679,8 @@ static RESULT korb_m_io_sysseek(CTX *c, korb_value *slots, korb_ref self, korb_s
     /* CRuby's length-limited reads leave nothing buffered, so a sysseek right
      * after one works.  koruby buffers more eagerly; rewind the descriptor by
      * the unread remainder first so the offsets agree. */
+    if (rep->rpos < rep->rlen && rep->line_rd)
+        return korb_raise(c, slots, KORB_E_IOERROR, 0, "sysseek for buffered IO");
     if (rep->rpos < rep->rlen) {
         const off_t back = (off_t)(rep->rlen - rep->rpos);
         if (lseek(rep->fd, -back, SEEK_CUR) < 0)

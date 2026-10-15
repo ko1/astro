@@ -362,7 +362,7 @@ class Encoding
     loc = ENV["LC_CTYPE"] if loc.nil? || loc.empty?
     loc = ENV["LANG"] if loc.nil? || loc.empty?
     if loc.nil? || loc.empty? || loc == "C" || loc == "POSIX" then "ANSI_X3.4-1968"
-    elsif loc =~ /\.(utf-?8)\z/i then "UTF-8"
+    elsif loc.match?(/\.(utf-?8)\z/i) then "UTF-8"   # match?: no $~ left in the main frame
     else nil
     end
   end

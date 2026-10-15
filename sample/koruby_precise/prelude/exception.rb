@@ -407,7 +407,7 @@ class SystemCallError < StandardError
     if self == SystemCallError
       raise ArgumentError, "wrong number of arguments (given 0, expected 1..3)" if args.empty?
       num = (args[0].is_a?(Integer) && args.size == 1) ? args[0] : __scerr_num(args[1])
-      cls = num && Errno::BY_NUM__[num]
+      cls = num && Errno.send(:const_get, :BY_NUM__)[num]
       return cls.new(*args) if cls
     end
     super(*args)
@@ -453,26 +453,27 @@ class SystemCallError < StandardError
   end
 end
 module Errno
+  # CRuby's known_errors.def order: the first name for a number is the class (EAGAIN,
+  # not EWOULDBLOCK); a name this platform lacks is NOERROR, as in CRuby
   BY_NUM__ = {}
-  # 同じ番号の別名 (EAGAIN/EWOULDBLOCK 等) は同じクラス。クラス名は CRuby の
-  # 正準名に合わせるため、正準名を先に登録する 2-pass。
-  CANON__ = { "EWOULDBLOCK" => "EAGAIN", "EOPNOTSUPP" => "ENOTSUP", "EDEADLOCK" => "EDEADLK" }
-  tbl = __errno_table
-  [true, false].each do |canon_pass|
-    tbl.each do |name, num|
-      next if CANON__.key?(name.to_s) == canon_pass   # pass1: 正準名, pass2: 別名
-      unless const_defined?(name, false)
-        if num > 0 && BY_NUM__[num]
-          const_set(name, BY_NUM__[num])
-        else
-          cls = Class.new(SystemCallError)
-          cls.const_set(:Errno, num)
-          const_set(name, cls)
-        end
-      end
-      BY_NUM__[num] ||= const_get(name) if num > 0
+  noerr = Class.new(SystemCallError)
+  noerr.const_set(:Errno, 0)
+  const_set(:NOERROR, noerr)
+  BY_NUM__[0] = noerr
+  __errno_table.each do |name, num|
+    next if const_defined?(name, false)
+    if num < 0
+      const_set(name, noerr)
+    elsif BY_NUM__[num]
+      const_set(name, BY_NUM__[num])
+    else
+      cls = Class.new(SystemCallError)
+      cls.const_set(:Errno, num)
+      const_set(name, cls)
+      BY_NUM__[num] = cls
     end
   end
+  private_constant :BY_NUM__
 end
 
 # Exception-detail constructors: NameError/NoMethodError carry #name/#receiver/#args;

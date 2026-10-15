@@ -996,7 +996,7 @@ static NODE *
 bake_cvar_set(struct kp_ctx *tc, uint32_t name, NODE *val)
 {
     kp_needs_definee(tc);
-    NODE *n = ALLOC_node_cvar_set(-1 - tc->chain, -4 - tc->chain, name, val);
+    NODE *n = ALLOC_node_cvar_set(-1 - tc->chain, -4 - tc->chain, name, val, kp_cur_line(tc));
     bake_add(tc, &n->u.node_cvar_set.self_off);
     bake_add(tc, &n->u.node_cvar_set.dc_off);
     return n;
@@ -4952,6 +4952,17 @@ kp_note_file_locals(struct kp_ctx *tc, const uint32_t *const syms, const uint32_
 }
 
 static NODE *transduce_1(struct kp_ctx *tc, const pm_node_t *node);
+/* A flip-flop end that is an integer literal compares with $. (CRuby's cond0) */
+static NODE *
+kp_cond_operand(struct kp_ctx *tc, const pm_node_t *node)
+{
+    if (node == NULL || !PM_NODE_TYPE_P(node, PM_INTEGER_NODE)) return transduce(tc, node);
+    NODE *recv, *arg;
+    WITH_CHAIN(tc, KP_SEND1_SC, (recv = KP_CONST(tc, korb_intern(tc->c->vm, "$.", 2), 0, INT32_MIN, INT32_MIN, 0),
+                                 arg = transduce(tc, node)));
+    return kp_send1(tc, korb_intern(tc->c->vm, "==", 2), kp_line(tc, node), recv, arg);
+}
+
 static NODE *
 transduce(struct kp_ctx *tc, const pm_node_t *node)
 {
@@ -5084,6 +5095,15 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
         if (mode == 2) return ALLOC_node_str_frozen(bytes, len);
         if (mode == 1) return ALLOC_node_str_chilled(bytes, len);
         return ALLOC_node_str(bytes, len);
+      }
+      case PM_MATCH_LAST_LINE_NODE: {      /* `if /pat/` → /pat/ =~ $_ (the node is laid out as a regexp literal) */
+        pm_regular_expression_node_t re;
+        memcpy(&re, node, sizeof re);
+        re.base.type = PM_REGULAR_EXPRESSION_NODE;
+        NODE *recv, *arg;
+        WITH_CHAIN(tc, KP_SEND1_SC, (recv = transduce(tc, (const pm_node_t *)&re),
+                                     arg = KP_CONST(tc, korb_intern(tc->c->vm, "$_", 2), 0, INT32_MIN, INT32_MIN, 0)));
+        return kp_send1(tc, korb_intern(tc->c->vm, "=~", 2), kp_line(tc, node), recv, arg);
       }
       case PM_REGULAR_EXPRESSION_NODE: {   /* /pat/ → Regexp (matching via astrogre) */
         kp_note_backref(tc);
@@ -5229,8 +5249,8 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
       }
       case PM_FLIP_FLOP_NODE: {     /* `if a..b` — sed/awk range condition (state on the node) */
         const pm_flip_flop_node_t *ff = (const pm_flip_flop_node_t *)node;
-        NODE *l = transduce(tc, ff->left);       /* evaluated in place (no staging slots) */
-        NODE *r = transduce(tc, ff->right);
+        NODE *l = kp_cond_operand(tc, ff->left);       /* evaluated in place (no staging slots) */
+        NODE *r = kp_cond_operand(tc, ff->right);
         return ALLOC_node_flipflop(l, r, (ff->base.flags & PM_RANGE_FLAGS_EXCLUDE_END) ? 1u : 0u);
       }
       case PM_SOURCE_LINE_NODE: return ALLOC_node_lit(LONG2FIX((korb_sword_t)(int32_t)kp_line(tc, node)));    /* __LINE__ (signed: eval's first line may be negative) */
@@ -6933,6 +6953,35 @@ kp_first_error_line(const pm_parser_t *const parser)
     return d0 ? kp_line_column(parser, pm_diagnostic_location(d0).start).line : 0;
 }
 
+/* prism's warnings, kept for the caller to emit once it can run Ruby (Warning.warn): the
+ * level byte then "file:line: warning: msg\n" (PM_WARNING_LEVEL_VERBOSE needs $VERBOSE true) */
+struct kp_warn_ctx { CTX *c; const pm_parser_t *parser; const char *fname; };
+static void
+kp_warn_one(const pm_diagnostic_t *const d, void *const data)
+{
+    const struct kp_warn_ctx *const w = data;
+    struct korb_vm *const vm = w->c->vm;
+    const int32_t line = kp_line_column(w->parser, pm_diagnostic_location(d).start).line;
+    char buf[512];
+    const int n = snprintf(buf, sizeof buf, "%c%s:%d: warning: %s\n",
+                           pm_diagnostic_warning_level(d) == PM_WARNING_LEVEL_VERBOSE ? 'V' : 'D',
+                           w->fname, (int)line, pm_diagnostic_message(d));
+    if (n <= 0) return;
+    const size_t len = (size_t)n < sizeof buf ? (size_t)n : sizeof buf - 1;
+    char *const nb = realloc(vm->parse_warns, vm->parse_warns_len + len);
+    if (!nb) abort();
+    memcpy(nb + vm->parse_warns_len, buf, len);
+    vm->parse_warns = nb;
+    vm->parse_warns_len += len;
+}
+static void
+kp_stash_warnings(CTX *const c, const pm_parser_t *const parser, const char *const fname)
+{
+    if (strcmp(fname, KORB_PRELUDE_FILE) == 0) return;
+    struct kp_warn_ctx w = { c, parser, fname };
+    pm_parser_warnings_each(parser, kp_warn_one, &w);
+}
+
 /* Keep the parser's diagnostics for the SyntaxError the eval path raises, in
  * prism's own wording and layout (what CRuby's message is made of). */
 static void
@@ -7010,6 +7059,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
     pm_arena_t *const arena = pm_arena_new();
     pm_parser_t *const parser = pm_parser_new(arena, (const uint8_t *)src, len, options);
     pm_node_t *root = pm_parse(parser);
+    kp_stash_warnings(c, parser, fname);
 
     if (pm_parser_errors_size(parser) > 0) {
         if (!exit_on_error) {                        /* eval(str): return NULL so the caller raises SyntaxError */
@@ -7141,6 +7191,7 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
     pm_arena_t *const arena = pm_arena_new();
     pm_parser_t *const parser = pm_parser_new(arena, (const uint8_t *)src, len, options);
     pm_node_t *root = pm_parse(parser);
+    kp_stash_warnings(c, parser, fname);
     if (pm_parser_errors_size(parser) > 0) {
         kp_stash_syntax_msg(c, parser);
         kp_parser_free(parser, arena, options);

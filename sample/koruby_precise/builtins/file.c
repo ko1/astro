@@ -29,73 +29,11 @@ struct passwd { const char *pw_dir; };
 #  define PATH_MAX 4096
 #endif
 
-/* 無い errno 名には番兵を与えて下の表を成立させる。X-macro のリストの中には
- * プリプロセッサ指令を書けないので、リストの手前で埋めるしかない。番兵は
- * 負値なのでプラットフォームが返すことはなく、逆引きは korb_errno_name の
- * ガードで飛ばす。Errno::<名前> 自体は (値 < 0 で) 定義されたままになる。 */
-#ifndef EHOSTDOWN
-#  define EHOSTDOWN (-1001)
-#endif
-#ifndef ENODATA
-#  define ENODATA (-1002)
-#endif
-#ifndef ENOSR
-#  define ENOSR (-1003)
-#endif
-#ifndef ENOSTR
-#  define ENOSTR (-1004)
-#endif
-#ifndef EPFNOSUPPORT
-#  define EPFNOSUPPORT (-1005)
-#endif
-#ifndef EREMOTE
-#  define EREMOTE (-1006)
-#endif
-#ifndef ESHUTDOWN
-#  define ESHUTDOWN (-1007)
-#endif
-#ifndef ESOCKTNOSUPPORT
-#  define ESOCKTNOSUPPORT (-1008)
-#endif
-#ifndef ESRMNT
-#  define ESRMNT (-1009)
-#endif
-#ifndef ETIME
-#  define ETIME (-1010)
-#endif
-#ifndef ETOOMANYREFS
-#  define ETOOMANYREFS (-1011)
-#endif
-#ifndef EUSERS
-#  define EUSERS (-1012)
-#endif
-/* The Errno::* names koruby knows.  One list drives both directions: the
- * errno → class-name lookup used when raising, and the __errno_table builtin
- * the prelude uses to define the Errno constants.  Keeping them in step is why
- * this is a list and not two hand-written tables (they had drifted: the raise
- * side knew 12 names, the prelude defined 28, and the socket specs wanted
- * EAFNOSUPPORT and friends that neither had). */
-#define KORB_ERRNO_LIST(X)                                                     \
-    X(EPERM) X(ENOENT) X(ESRCH) X(EINTR) X(EIO) X(ENXIO) X(E2BIG) X(ENOEXEC)   \
-    X(EBADF) X(ECHILD) X(EAGAIN) X(ENOMEM) X(EACCES) X(EFAULT) X(EBUSY)        \
-    X(EEXIST) X(EXDEV) X(ENODEV) X(ENOTDIR) X(EISDIR) X(EINVAL) X(ENFILE)      \
-    X(EMFILE) X(ENOTTY) X(ETXTBSY) X(EFBIG) X(ENOSPC) X(ESPIPE) X(EROFS)       \
-    X(EMLINK) X(EPIPE) X(EDOM) X(ERANGE) X(EDEADLK) X(ENAMETOOLONG) X(ENOLCK)  \
-    X(ENOSYS) X(ENOTEMPTY) X(ELOOP) X(ENOMSG) X(EIDRM) X(ENOLINK) X(EPROTO)    \
-    X(EMULTIHOP) X(EBADMSG) X(EOVERFLOW) X(EILSEQ) X(EUSERS) X(ENOTSOCK)       \
-    X(EDESTADDRREQ) X(EMSGSIZE) X(EPROTOTYPE) X(ENOPROTOOPT)                   \
-    X(EPROTONOSUPPORT) X(ESOCKTNOSUPPORT) X(EOPNOTSUPP) X(EPFNOSUPPORT)        \
-    X(EAFNOSUPPORT) X(EADDRINUSE) X(EADDRNOTAVAIL) X(ENETDOWN) X(ENETUNREACH)  \
-    X(ENETRESET) X(ECONNABORTED) X(ECONNRESET) X(ENOBUFS) X(EISCONN)           \
-    X(ENOTCONN) X(ESHUTDOWN) X(ETOOMANYREFS) X(ETIMEDOUT) X(ECONNREFUSED)      \
-    X(EHOSTDOWN) X(EHOSTUNREACH) X(EALREADY) X(EINPROGRESS) X(ESTALE)          \
-    X(EDQUOT) X(ECANCELED) X(ENOTSUP) X(ENODATA) X(ETIME) X(ENOSTR) X(ENOSR)   \
-    X(EREMOTE) X(ESRMNT) X(EWOULDBLOCK)
-
+/* The Errno::* names: CRuby's whole list, one table for both directions — the
+ * errno → class-name lookup used when raising, and the __errno_table builtin the
+ * prelude defines the constants from (a name this libc lacks becomes NOERROR). */
 static const struct { const char *name; int num; } korb_errno_tab[] = {
-#define KORB_ERRNO_ENTRY(N) { #N, N },
-    KORB_ERRNO_LIST(KORB_ERRNO_ENTRY)
-#undef KORB_ERRNO_ENTRY
+#include "errno_known.h"
 };
 
 /* map an errno to its Errno::* constant name (NULL → generic).  Several names
