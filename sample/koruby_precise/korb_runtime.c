@@ -22185,6 +22185,21 @@ void korb_warn_caller(CTX *c, korb_value *slots, const korb_value *link, const c
     const char *const file = link != NULL && korb_caller_pos(c, link, &fs, &ln) ? korb_sym_name(c->vm, fs) : NULL;
     korb_warn_at(c, slots, file, ln, "%s", body);
 }
+/* $0 = / Process.setproctitle: overwrite the original argv memory (what ps reads), truncating */
+void korb_set_proctitle(struct korb_vm *const vm, const char *const s, const size_t n)
+{
+    if (vm->title_area == NULL || vm->title_len < 2) return;
+    const size_t k = n < vm->title_len - 1 ? n : vm->title_len - 1;
+    memcpy(vm->title_area, s, k);
+    memset(vm->title_area + k, 0, vm->title_len - k);
+}
+static RESULT korb_bi_setproctitle(CTX *c, korb_value *slots, korb_slice args)
+{
+    const korb_value v = KORB_SLICE_GET(args, 0);
+    if (!KORB_STRING_P(v)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, v));
+    korb_set_proctitle(c->vm, korb_str_ptr(VAL2STR(v)), VAL2STR(v)->len);
+    return RESULT_OK(v);
+}
 /* __syscall(num, *args) — Kernel#syscall: Integer args as is, a String as its byte pointer (rb_f_syscall) */
 static RESULT korb_bi_syscall(CTX *c, korb_value *slots, korb_slice args)
 {
@@ -24807,7 +24822,8 @@ korb_ctx_new(void)
     korb_mark_loaded(c->vm, "set");   /* Set is core-loaded in modern Ruby: require 'set' ⇒ false */
     korb_builtin_define(c, "__refinement_import", korb_bi_refinement_import, 2);   /* Refinement#import_methods (prelude) */
     korb_builtin_define(c, "__korb_mark_native", korb_bi_mark_native, 1);
-    korb_builtin_define(c, "__syscall", korb_bi_syscall, -1);         /* lib/zlib.rb etc.: C to CRuby */
+    korb_builtin_define(c, "__syscall", korb_bi_syscall, -1);
+    korb_builtin_define(c, "__setproctitle", korb_bi_setproctitle, 1);         /* lib/zlib.rb etc.: C to CRuby */
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
     korb_builtin_define(c, "__method__", korb_bi_method_name, 0);
     korb_builtin_define(c, "block_given?", korb_bi_block_given_p, 0);

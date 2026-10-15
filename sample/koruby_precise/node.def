@@ -289,13 +289,13 @@ node_gvar_coerce(CTX *c, NODE *n, korb_value *slots, uint32_t kind, korb_value v
     (void)n;
     if (kind == 0) return RESULT_OK(val == KORB_NIL ? KORB_NIL : (KORB_TRUTHY(val) ? KORB_TRUE : KORB_FALSE));
     if (kind == 2) {                                   /* $0 / $PROGRAM_NAME: String or #to_str */
-        if (KORB_STRING_P(val)) return RESULT_OK(val);
+        if (KORB_STRING_P(val)) { korb_set_proctitle(c->vm, korb_str_ptr(VAL2STR(val)), VAL2STR(val)->len); return RESULT_OK(val); }
         slots[0] = val;
         const uint32_t to_str = korb_intern_lit(c->vm, "to_str", 6);
         if (KORB_OBJECT_P(slots[0]) && korb_responds_to(c, slots[0], to_str)) {
             RESULT sr = korb_send(c, slots + 1, to_str, 0, 0);
             if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;
-            if (KORB_STRING_P(sr.value)) return RESULT_OK(sr.value);
+            if (KORB_STRING_P(sr.value)) { korb_set_proctitle(c->vm, korb_str_ptr(VAL2STR(sr.value)), VAL2STR(sr.value)->len); return RESULT_OK(sr.value); }
         }
         return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into String",
                           korb_coerce_name(c, slots[0]));

@@ -1577,6 +1577,10 @@ module RbConfig
                      CONFIG["vendorlibdir"].dup, CONFIG["vendorarchdir"].dup)
   # root's CRuby stdlib goes last, behind koruby's own lib/ (which replaces its C-backed parts)
   $LOAD_PATH.push(CONFIG["rubylibdir"].dup) if __root && __pfx == __root
+  # the default entries (from sitelibdir on) carry @gem_prelude_index, as CRuby's gem_prelude marks them
+  if (__gpi = $LOAD_PATH.index(CONFIG["sitelibdir"]))
+    $LOAD_PATH[__gpi..].each { |e| e.instance_variable_set(:@gem_prelude_index, e) }
+  end
   CONFIG["rubyhdrdir"] = "#{__pfx}/include/ruby-#{__rv}"
   CONFIG["rubyarchhdrdir"] = "#{__pfx}/include/ruby-#{__rv}/#{__arch}"
   CONFIG["sitehdrdir"] = "#{__pfx}/include/ruby-#{__rv}/site_ruby"
@@ -2372,7 +2376,7 @@ module Process
   def self.maxgroups; @__maxgroups || 65536; end
   def self.maxgroups=(v); @__maxgroups = v.to_int; v; end
   def self.initgroups(user, group) = __initgroups(user.to_s, __pid_arg(group))
-  def self.setproctitle(title); title.to_s; end
+  def self.setproctitle(title) = __setproctitle(title.is_a?(String) ? title : String.try_convert(title) || raise(TypeError, "no implicit conversion of #{title.class} into String"))
   def self.getsid(pid = 0); __getpgid(pid); end
   def self.warmup; true; end
   # waitall — 全子プロセスを回収して [[pid, status], ...] を返す

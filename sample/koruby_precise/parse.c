@@ -238,6 +238,16 @@ static void kp_stash_warn_line(CTX *c, char level, const char *fname, const char
 static NODE *transduce(struct kp_ctx *tc, const pm_node_t *node);
 static bool kp_kernel_const_p(struct kp_ctx *tc, const pm_node_t *recv);
 static NODE *build_const_set(struct kp_ctx *tc, uint32_t name_cid, NODE *val);
+/* Is the class/module body enclosing the one just pushed an unnamed one (`class << obj`, or itself
+ * inside one)?  Then the new body's name means a different class on each run. */
+static bool kp_enclosing_body_anon(const struct kp_ctx *tc)
+{
+    for (const struct kp_frame *f = tc->frame->prev; f; f = f->prev) {
+        if (f->anon_class_body) return true;
+        if (f->class_name_sym || f->method_mid) return false;
+    }
+    return false;
+}
 static NODE *index_opassign_splat(struct kp_ctx *tc, const pm_index_operator_write_node_t *iw, const pm_node_t *node,
                                   const pm_arguments_node_t *args, const pm_node_t *value);
 
@@ -3837,6 +3847,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
     /* in an eval under an unnamed / singleton cref the body's name cannot be
      * resolved from the top, so its constants go through self (racc's
      * `Module.new { instance_eval(parser_src) }`) */
+    if (kp_enclosing_body_anon(tc)) tc->frame->anon_class_body = true;   /* `class << obj; class X`: X's name is per run */
     if (tc->in_eval && (tc->seed_class_name == 0 || tc->seed_cref_is_caller)) tc->frame->anon_class_body = true;
     const uint32_t blabel = tc->frame->body_label = kp_body_label(tc, 'c', name_sym);   /* backtrace label; blocks inside read it */
     NODE *body;
@@ -4334,6 +4345,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
     WITH_CHAIN(tc, 1, (base_node = dyn_base ? transduce(tc, dyn_base) : ALLOC_node_lit(KORB_NIL)));
     push_frame(tc, &mn->locals);
     tc->frame->class_name_sym = nest_sym;       /* for Module.nesting (the whole path for `class A::B`) */
+    if (kp_enclosing_body_anon(tc)) tc->frame->anon_class_body = true;   /* `class << obj; class X`: X's name is per run */
     if (tc->in_eval && (tc->seed_class_name == 0 || tc->seed_cref_is_caller)) tc->frame->anon_class_body = true;   /* see the class body */
     const uint32_t blabel = tc->frame->body_label = kp_body_label(tc, 'm', name_sym);
     NODE *body;

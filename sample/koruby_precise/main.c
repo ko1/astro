@@ -1322,6 +1322,14 @@ extern void koruby_embed_setup(CTX *c);
 int
 main(int argc, char *argv[])
 {
+    /* ps shows the argv strings' memory: keep the contiguous run for $0 = and work on copies (setproctitle.c) */
+    char *title_area = NULL; size_t title_len = 0;
+    if (argc > 0 && argv[0] != NULL) {
+        char *hi = argv[0] + strlen(argv[0]) + 1;
+        for (int k = 1; k < argc && argv[k] == hi; k++) hi = argv[k] + strlen(argv[k]) + 1;
+        title_area = argv[0]; title_len = (size_t)(hi - argv[0]);
+        for (int k = 0; k < argc; k++) { argv[k] = strdup(argv[k]); if (!argv[k]) abort(); }
+    }
     struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
     /* `-v` is Ruby's "print the version banner and be verbose"; the ASTro
      * framework spells its own diagnostic switch --verbose, so tell them apart
@@ -1607,6 +1615,7 @@ main(int argc, char *argv[])
 #endif /* !KORUBY_EMBED */
 
     CTX *c = korb_ctx_new();
+    c->vm->title_area = title_area; c->vm->title_len = title_len;
     c->vm->script_name = src_name;
     c->vm->main_fsym = korb_intern(c->vm, src_name, strlen(src_name));   /* eval moves script_name; this stays put */
     c->vm->cur_load_file = src_name;   /* __dir__ / require_relative base for top-level code */
@@ -1672,6 +1681,8 @@ main(int argc, char *argv[])
         ast = ALLOC_node_lit(KORB_NIL);
     }
 #endif /* KORUBY_EMBED */
+    const uint32_t *const main_local_syms = koruby_toplevel_local_syms;   /* a later parse (-r) overwrites these */
+    const uint32_t main_local_cnt = koruby_toplevel_local_cnt;
     /* held until $VERBOSE is set: a require on the way (rubygems) flushes the VM's list */
     char *const script_warns = c->vm->parse_warns;
     const size_t script_warns_len = c->vm->parse_warns_len;
@@ -1843,9 +1854,9 @@ main(int argc, char *argv[])
         }
         /* TOPLEVEL_BINDING: a Binding over the (persistent) toplevel frame. */
         {
+            /* no locals yet: -r libraries run before the main script is parsed in CRuby (filled in below) */
             RESULT tb = korb_make_binding(c, toplevel_cursor, c->slots,
-                                          korb_binding_tbl_flat(koruby_toplevel_local_syms, koruby_toplevel_local_cnt),
-                                          koruby_toplevel_local_cnt,
+                                          korb_binding_tbl_flat(main_local_syms, 0), 0,
                                           c->slots[-1], 0);
             if (tb.state == KORB_NORMAL)
                 korb_const_define(c, korb_intern(c->vm, "TOPLEVEL_BINDING", 16), tb.value);
@@ -1934,6 +1945,13 @@ main(int argc, char *argv[])
             const int hs = korb_drain_at_exit_x(c, toplevel_cursor + 4, &ex);
             korb_io_flush_all(c->vm);
             return hs >= 0 ? hs : 1;
+        }
+        {   /* the main script's locals join TOPLEVEL_BINDING as it starts */
+            const korb_value tbv = korb_const_get(c->vm, korb_intern(c->vm, "TOPLEVEL_BINDING", 16));
+            if (KORB_BINDING_P(tbv)) {
+                VAL2BIND(tbv)->name_syms = korb_binding_tbl_flat(main_local_syms, main_local_cnt);
+                VAL2BIND(tbv)->name_cnt = main_local_cnt;
+            }
         }
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
