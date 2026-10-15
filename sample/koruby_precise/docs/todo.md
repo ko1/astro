@@ -5,6 +5,11 @@
 
 
 
+## 未: 外の変数を使わないブロックの binding がメソッドの引数を見ない (2026-10-16)
+`def o.m(some) = -> {}; eval("some", o.m(1).binding)` が NameError（CRuby は 1）。何も捕まえないブロックは
+環境を作らない（メソッドが戻った後はフレームが無い）。直すとブロックを作るたびに環境を確保することになり遅く
+なるので見送り。spec: core/proc/binding_spec。
+
 ## 未: $LOAD_PATH の symlink ディレクトリを realpath で正規化しない (2026-10-16)
 CRuby は展開済みの load path（realpath、キャッシュ付き）で探し、$LOADED_FEATURES にも実ディレクトリ側を
 残す。koruby で見つけたときだけ realpath すると、名前での既読判定（korb_feature_in_load_path_p）が書いた
@@ -27,11 +32,6 @@ CRuby の `$_` は `$~` と同じくメソッドのフレームごと。koruby �
 ## 未: Enumerator#each(*args) が引数を受け手の each に渡さない (2026-10-15)
 CRuby は引数を足した Enumerator で回し直す（Lazy#force(*args) も同じ）。koruby の Enumerator は値を先に作る作りで、
 回し直しの材料（受け手・メソッド・元の引数）を持たない。spec: core/enumerator/lazy/force_spec。
-
-## 未: instance_exec されたブロックの中の eval で、トップレベルの @@x が受け手のクラスに解決される (2026-10-15)
-mspec の `it` ブロック（`@env.instance_exec(&block)`、self は MSpecEnv）で `eval "@@x"` が NameError（CRuby は
-RuntimeError "class variable access from toplevel"）。cvar の基点を self のクラスで近似しているため。ブロックを書いた
-場所の字句的な cref が要る。spec: language/class_variable_spec。
 
 ## 未: define_method に渡した proc の中で、外のブロックの `return` がメソッドを抜けない (2026-10-15)
 - `pr = mp { return :good }; define_method(:foo, proc { |x| x.call }); foo(pr)` → CRuby は :good（pr の

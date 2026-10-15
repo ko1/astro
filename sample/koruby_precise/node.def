@@ -1772,7 +1772,7 @@ node_singleton_def(CTX *c, NODE *n, korb_value *slots, uint32_t mid@sym, NODE *b
      * since the method is added first, defining the hook fires it for itself). */
     obj = KORB_REF_GET(recv);
     const uint32_t smad = korb_intern_lit(c->vm, "singleton_method_added", 22);
-    if (UNLIKELY(korb_responds_to(c, obj, smad))) {
+    if (UNLIKELY(korb_responds_to(c, obj, smad) || korb_hook_undefed_p(c, obj, smad))) {
         slots[0] = obj; slots[1] = ID2SYM(mid);          /* recv, arg */
         uint32_t fsym = 0, fline = 0;                    /* the hook's caller is this frame, at the def line */
         korb_get_srcloc(c->vm, body, &fsym, &fline);
@@ -2455,8 +2455,15 @@ node_defined(CTX *c, NODE *n, korb_value *slots, uint32_t kind, uint32_t id@sym,
                 if (i == UINT32_MAX && korb_autoload_registered_p(c, o, id)) res = "constant";
             }
         }
-        if (i == UINT32_MAX && res == NULL) i = korb_const_index_owned(vm, id, KORB_NIL);
-        if (i == UINT32_MAX && res == NULL) {
+        /* a class below BasicObject but not Object (and no module) never reaches the top level (rb_const_get) */
+        const korb_value inner = KORB_CLASS_P(self_cref) ? self_cref : entry_cref;
+        bool no_top = KORB_CLASS_P(inner) && !VAL2CLASS(inner)->is_module;
+        if (no_top) {
+            const korb_value objc0 = korb_const_get(vm, vm->class_name[KORB_C_OBJECT]);
+            for (korb_value k = inner; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) if (k == objc0) { no_top = false; break; }
+        }
+        if (i == UINT32_MAX && res == NULL && !no_top) i = korb_const_index_owned(vm, id, KORB_NIL);
+        if (i == UINT32_MAX && res == NULL && !no_top) {
             const korb_value objc = korb_const_get(vm, vm->class_name[KORB_C_OBJECT]);
             if (KORB_CLASS_P(objc)) {
                 i = korb_const_in_ancestry(vm, objc, id);

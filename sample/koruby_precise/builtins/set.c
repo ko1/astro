@@ -775,8 +775,8 @@ static RESULT korb_m_obj_instance_of(CTX *c, korb_value *slots, korb_ref self, k
 /* main's private singleton #include: into Object.  It is a singleton method in
  * CRuby, so it wins over an #include a module mixed into Object defines. */
 static RESULT korb_m_main_include(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
-    (void)self;
-    return korb_do_include(c, slots, korb_builtin_class_obj(c->vm, KORB_C_OBJECT), a);
+    (void)self;   /* in load(file, true) the wrapper module takes it (CRuby top_include) */
+    return korb_do_include(c, slots, KORB_CLASS_P(c->eval_cref) ? c->eval_cref : korb_builtin_class_obj(c->vm, KORB_C_OBJECT), a);
 }
 /* Get-or-create obj's singleton class (a per-instance class whose superclass is
  * obj's current class, is_singleton=1), recorded in the override table.  obj must

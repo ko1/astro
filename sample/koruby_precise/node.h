@@ -890,7 +890,8 @@ void korb_warn_ignore_verbose(CTX *c, korb_value *slots, const char *fmt, ...); 
 void korb_warn_deprecated(CTX *c, korb_value *slots, const char *msg);   /* gated on Warning[:deprecated] */
 void korb_warn_at(CTX *c, korb_value *slots, const char *file, uint32_t line, const char *fmt, ...);
 void korb_flush_parse_warnings(CTX *c, korb_value *slots);
-void korb_set_proctitle(struct korb_vm *vm, const char *s, size_t n);   /* $0 = */   /* prism's warnings from the last parse */
+void korb_set_proctitle(struct korb_vm *vm, const char *s, size_t n);   /* $0 = */
+bool korb_hook_undefed_p(CTX *c, korb_value obj, uint32_t mid);         /* a hook method undef'd on obj's class */   /* prism's warnings from the last parse */
 void korb_warn_caller(CTX *c, korb_value *slots, const korb_value *link, const char *fmt, ...);   /* positioned at the C method's caller */
 
 void korb_warn_const_redef(CTX *c, korb_value *slots, uint32_t name_sym, korb_value owner);

@@ -797,6 +797,8 @@ static RESULT korb_m_md_string(CTX *c, korb_value *slots, korb_ref self, korb_sl
     const uint32_t n = VAL2STR(slots[1])->len;
     slots[2] = UNWRAP(korb_str_slice_new(c, slots + 2, KORB_REF_AT(&slots[1]), 0, n));   /* CRuby: a frozen copy */
     ((AroObjectHeader *)(uintptr_t)slots[2])->flags |= KORB_FL_FROZEN;
+    slots[0] = KORB_REF_GET(self);                            /* re-read: the copy allocated */
+    ARO_STORE(c, VAL2MD(slots[0]), &VAL2MD(slots[0])->subject, slots[2]);   /* the same String on every call */
     return RESULT_OK(slots[2]);
 }
 static RESULT korb_m_md_regexp(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots;(void)a; return RESULT_OK(VAL2MD(KORB_REF_GET(self))->regexp); }

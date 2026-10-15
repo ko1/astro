@@ -13388,7 +13388,9 @@ korb_call_impl(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
      * top level (self is main) where it includes into Object. */
     if (UNLIKELY(mid == vm->mid_include) && argc >= 1 &&
         (KORB_CLASS_P(self) || (KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL))) {
-        const korb_value target = KORB_CLASS_P(self) ? self : korb_builtin_class_obj(vm, KORB_C_OBJECT);
+        const korb_value target = KORB_CLASS_P(self) ? self
+                                : KORB_CLASS_P(c->eval_cref) ? c->eval_cref   /* load(file, true): the wrapper */
+                                : korb_builtin_class_obj(vm, KORB_C_OBJECT);
         return korb_do_include(c, slots, target, KORB_SLICE_MAKE(slots - argc, argc));
     }
     /* `prepend Mod...` inside a class/module body (self is the class) */
@@ -22185,6 +22187,12 @@ void korb_warn_caller(CTX *c, korb_value *slots, const korb_value *link, const c
     const char *const file = link != NULL && korb_caller_pos(c, link, &fs, &ln) ? korb_sym_name(c->vm, fs) : NULL;
     korb_warn_at(c, slots, file, ln, "%s", body);
 }
+/* `undef_method :singleton_method_added` on obj's singleton: the hook must then be sent (and raise) */
+bool korb_hook_undefed_p(CTX *c, korb_value obj, uint32_t mid)
+{
+    if (LIKELY(mid >= c->vm->mid_undefed_cap || !c->vm->mid_undefed[mid])) return false;   /* never undef'd: no class lookup */
+    return korb_method_undefed_p(c->vm, korb_dispatch_class(c, obj), mid);
+}
 /* $0 = / Process.setproctitle: overwrite the original argv memory (what ps reads), truncating */
 void korb_set_proctitle(struct korb_vm *const vm, const char *const s, const size_t n)
 {
@@ -23077,6 +23085,10 @@ korb_eval_binding_core(CTX *c, korb_value *slots, korb_value *src_slot, korb_val
     }
     fb[-1] = self_slot ? *self_slot : VAL2BIND(*bind_slot)->self;   /* self cell (base[-1]) */
     korb_cref_push(c);
+    if (self_slot == NULL) {   /* @@x in eval(str, binding): the binding's class, not an instance_exec around the eval */
+        const korb_value bc = VAL2BIND(*bind_slot)->cref;
+        c->cvar_cref = korb_cvar_cref_or_top(KORB_CLASS_P(bc) ? bc : KORB_NIL);
+    }
     const char *const saved_name = c->vm->script_name;
     /* instance_eval/class_eval(String) name the definee outright, so their cref
      * sets both.  A cref that merely came from the BINDING (`eval(str)`) is
