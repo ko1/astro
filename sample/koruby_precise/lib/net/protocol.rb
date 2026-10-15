@@ -26,7 +26,7 @@ require 'io/wait'
 module Net # :nodoc:
 
   class Protocol   #:nodoc: internal use only
-    VERSION = "0.2.2"
+    VERSION = "0.3.0"
 
     private
     def Protocol.protocol_param(name, val)
@@ -83,6 +83,21 @@ module Net # :nodoc:
   # ReadLimitExceeded, a subclass of ProtocolError, is raised if the
   # terminator is not found within the byte limit given to
   # Net::BufferedIO#readuntil.
+  #
+  # The limit is the largest result readuntil may return, counting the
+  # terminator itself, so a limit of 4 accepts "abc\n" and rejects
+  # "abcd\n". Unlike the limit of IO#gets it never truncates a result to
+  # fit. Either the whole thing comes back or this is raised, except
+  # under ignore_eof, which still returns what was buffered when the
+  # stream ended. The count is in bytes while the IO hands back binary
+  # strings, which every real one does.
+  #
+  # It bounds one call, not a connection. The unconsumed buffer can
+  # still run one BUFSIZE past the limit, and a peer sending endless
+  # short lines is not bounded at all.
+  #
+  # Nothing is consumed when this is raised, so the usual response is to
+  # close the connection rather than read on under a wider limit.
 
   class ReadLimitExceeded < ProtocolError; end
 

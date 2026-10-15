@@ -26,6 +26,17 @@ static uint32_t korb_pack_ptr_register(CTX *const c, const char *const data, con
     return idx + 1;
 }
 
+/* The packed String remembers the indices it carries (internal ivars: a dup keeps them, a
+ * String rebuilt from its bytes does not), as CRuby's rb_str_associate */
+static RESULT korb_pack_ptr_associate(CTX *const c, korb_value *slots, korb_ref str, const uint64_t lo, const uint64_t hi) {
+    CHECK(korb_ivar_set(c, slots, str, ID2SYM(korb_intern_lit(c->vm, "__pack_plo", 10)), LONG2FIX((korb_sword_t)lo)));
+    return korb_ivar_set(c, slots, str, ID2SYM(korb_intern_lit(c->vm, "__pack_phi", 10)), LONG2FIX((korb_sword_t)hi));
+}
+static bool korb_pack_ptr_associated_p(CTX *const c, const korb_value str, const uint64_t idx) {
+    const korb_value lo = korb_ivar_get(c, str, ID2SYM(korb_intern_lit(c->vm, "__pack_plo", 10)));
+    const korb_value hi = korb_ivar_get(c, str, ID2SYM(korb_intern_lit(c->vm, "__pack_phi", 10)));
+    return FIXNUM_P(lo) && FIXNUM_P(hi) && idx >= (uint64_t)FIX2LONG(lo) && idx <= (uint64_t)FIX2LONG(hi);
+}
 /* Recover the bytes registered by korb_pack_ptr_register; NULL if idx1 is 0 or
  * out of range.  The returned pointer is malloc'd and stable across GC. */
 static const char *korb_pack_ptr_lookup(const CTX *const c, const uint64_t idx1, uint32_t *const lenp) {
@@ -156,6 +167,7 @@ static RESULT korb_m_ary_pack(CTX *c, korb_value *slots, korb_ref self, korb_sli
     static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     uint32_t ti = 0, ai = 0;                             /* template / array cursors */
     unsigned enc_state = 1;                              /* 1 = US-ASCII, 2 = UTF-8, 0 = ASCII-8BIT */
+    uint64_t ptr_lo = 0, ptr_hi = 0;                     /* P/p side-table indices this call made (unpack checks them) */
     unsigned errtype = 0; const char *errmsg = NULL; char bad = 0; bool has_bad = false;
     char errbuf[128];                                    /* for messages naming the offending type */
     while (ti < t->len) {
@@ -377,7 +389,11 @@ static RESULT korb_m_ary_pack(CTX *c, korb_value *slots, korb_ref self, korb_sli
             if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
             korb_value e = korb_ary_ptr(ary)[ai++];
             uint64_t idx = 0;
-            if (KORB_STRING_P(e)) { const KorbString *es = VAL2STR(e); idx = korb_pack_ptr_register(c, korb_str_ptr(es), es->len); }
+            if (KORB_STRING_P(e)) {
+                const KorbString *es = VAL2STR(e); idx = korb_pack_ptr_register(c, korb_str_ptr(es), es->len);
+                if (ptr_lo == 0) ptr_lo = idx;
+                ptr_hi = idx;
+            }
             for (int k = 0; k < 8; k++) PK_PUT((idx >> (8 * k)) & 0xff);
         } else if (d == 'a' || d == 'A' || d == 'Z' || d == 'B' || d == 'b' || d == 'H' || d == 'h' || d == 'M' || d == 'm' || d == 'u') {
             if (ai >= ary->len) { errtype = KORB_E_ARGUMENT; errmsg = "too few arguments"; break; }
@@ -538,6 +554,7 @@ static RESULT korb_m_ary_pack(CTX *c, korb_value *slots, korb_ref self, korb_sli
             RESULT ar = korb_str_cat(c, slots + 2, KORB_REF_AT(&slots[1]), ob ? (const char *)ob + skip : "", (uint32_t)(olen - skip));
             free(ob);
             if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+            if (UNLIKELY(ptr_lo != 0)) CHECK(korb_pack_ptr_associate(c, slots + 2, KORB_REF_AT(&slots[1]), ptr_lo, ptr_hi));
             return RESULT_OK(slots[1]);
         }
     }
@@ -548,6 +565,11 @@ static RESULT korb_m_ary_pack(CTX *c, korb_value *slots, korb_ref self, korb_sli
     if (LIKELY(r.state == KORB_NORMAL))
         KORB_STR_ENC_SET(r.value, enc_state == 2 ? KORB_ENC_UTF8
                                 : enc_state == 1 ? KORB_ENC_USASCII : KORB_ENC_BINARY);
+    if (UNLIKELY(ptr_lo != 0) && r.state == KORB_NORMAL) {
+        slots[0] = r.value;
+        CHECK(korb_pack_ptr_associate(c, slots + 1, KORB_REF_AT(&slots[0]), ptr_lo, ptr_hi));
+        r.value = slots[0];
+    }
     return r;
     #undef PK_RESERVE
     #undef PK_PUT
@@ -743,8 +765,11 @@ static RESULT korb_m_str_unpack(CTX *c, korb_value *slots, korb_ref self, korb_s
             si = VAL2STR(slots[1])->len;
         } else if (d == 'P' || d == 'p') {                /* pointer: recover bytes via side table */
             uint64_t idx = 0;
-            for (int k = 0; k < 8; k++) { const KorbString *s = VAL2STR(slots[1]); if (si < s->len) idx |= (uint64_t)(unsigned char)korb_str_ptr(s)[si] << (8 * k); si++; }
+            if (si + 8 > VAL2STR(slots[1])->len) continue;   /* fewer than a pointer's bytes left: nothing, nothing consumed (CRuby) */
+            for (int k = 0; k < 8; k++) { idx |= (uint64_t)(unsigned char)korb_str_ptr(VAL2STR(slots[1]))[si] << (8 * k); si++; }
             uint32_t plen = 0;
+            if (idx != 0 && !korb_pack_ptr_associated_p(c, slots[1], idx))
+                return korb_raise(c, slots + 3, KORB_E_ARGUMENT, 0, "no associated pointer");
             const char *const pd = korb_pack_ptr_lookup(c, idx, &plen);   /* malloc'd, stable across GC */
             if (!pd) { CHECK(korb_ary_push_val(c, slots + 3, res, KORB_NIL)); }
             else {
