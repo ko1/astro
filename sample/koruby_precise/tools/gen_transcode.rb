@@ -21,10 +21,10 @@ SINGLE = %w[
   macThai macTurkish macUkraine
 ]
 
-# Kept deliberately small: these four cover the Japanese legacy encodings the
-# specs and real code actually use.  Adding Big5/GBK/EUC-KR would triple the
-# table size for encodings nothing here exercises.
-MULTI = %w[Shift_JIS Windows-31J EUC-JP CP51932]
+# Kept deliberately small: the Japanese legacy encodings the specs and real code use,
+# plus Big5 (the specs' ConverterNotFoundError cases).  GBK/EUC-KR would grow the
+# table further for encodings nothing here exercises.
+MULTI = %w[Shift_JIS Windows-31J EUC-JP CP51932 Big5]
 
 def cname(n) = n.gsub(/[^A-Za-z0-9]/, "_").upcase
 

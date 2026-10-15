@@ -459,15 +459,21 @@ class Encoding
       @src_name = senc.name
       @dst_name = denc.name
       @flags = 0
+      @crlf = false
       repl = nil
       if opts.is_a?(Hash)
         @flags |= 1 if (opts[:invalid] == :replace) || opts[:invalid_replace]
         @flags |= 2 if (opts[:undef] == :replace) || opts[:undef_replace]
+        @crlf = !!opts[:crlf_newline]
         repl = opts[:replace]
       elsif opts.is_a?(Integer)
         @flags |= 1 if (opts & INVALID_MASK) == INVALID_REPLACE
         @flags |= 2 if (opts & UNDEF_MASK) == UNDEF_REPLACE
+        @crlf = (opts & CRLF_NEWLINE_DECORATOR) != 0
       end
+      # a stateful ISO-2022-JP target stays shifted across calls; #finish resets it
+      @jis = @dst_name == "ISO-2022-JP"
+      @jis_x0208 = false
       if repl.nil?
         @replacement = @dst_name == "UTF-8" ? "\u{fffd}".dup.force_encoding("UTF-8") : "?".dup.force_encoding("US-ASCII")
       else
@@ -511,7 +517,7 @@ class Encoding
     end
     def convpath
       path = Converter.__convpath_pairs(@source_encoding, @destination_encoding)
-      (@flags & 4) != 0 ? path + ["crlf_newline"] : path
+      @crlf ? path + ["crlf_newline"] : path
     end
     def self.search_convpath(src, dst, opts = nil)
       path = __convpath_pairs(Encoding.find(__encname(src, :source)),
@@ -535,6 +541,24 @@ class Encoding
     end
     private :__repl_bytes
 
+    # __transcode flags plus the ISO-2022-JP shift state carried between calls
+    def __tflags
+      return @flags unless @jis
+      @jis_x0208 ? (@flags | 24) : (@flags | 16)
+    end
+    def __jis_track(out)
+      return unless @jis
+      a = out.b.rindex("\e$B"); r = out.b.rindex("\e(B")
+      @jis_x0208 = a > (r || -1) if a
+      @jis_x0208 = false if r && (a.nil? || r > a)
+    end
+    def __jis_reset
+      return +"" unless @jis && @jis_x0208
+      @jis_x0208 = false
+      "\e(B".b
+    end
+    private :__tflags, :__jis_track, :__jis_reset
+
     def primitive_convert(src, dst, dst_offset = nil, dst_bytesize = nil, opts = nil)
       raise FrozenError, "can't modify frozen String: #{dst.inspect}" if dst.frozen?
       off = dst_offset.nil? ? dst.bytesize : dst_offset.to_int
@@ -546,12 +570,14 @@ class Encoding
       src_enc = src.is_a?(String) ? src.encoding : nil
       input = @pending + (src.nil? ? "" : src.dup.force_encoding(@src_name))
       @pending = +""
-      r = __transcode(input, @src_name, @dst_name, @flags, __repl_bytes, max)
+      r = __transcode(input, @src_name, @dst_name, __tflags, __repl_bytes, max)
       if r.is_a?(String)
         out, code, consumed, cp, errb = r, nil, input.bytesize, nil, nil
       else
         out, code, consumed, cp, errb = r
       end
+      __jis_track(out)
+      out = out + __jis_reset if code.nil? && !partial
       dst.replace(dst.byteslice(0, off).to_s + out)
       dst.force_encoding(@dst_name)
       if src.is_a?(String) && !src.frozen? then src.replace(+""); src.force_encoding(src_enc) end
@@ -570,7 +596,8 @@ class Encoding
         if src.is_a?(String) && !src.frozen?
           src.replace(rest.byteslice(again.bytesize, rest.bytesize).to_s); src.force_encoding(src_enc)
         end
-        @pending = +"" if src.is_a?(String)
+        # the read-again bytes stay inside the converter (#putback takes them out)
+        @pending = again.dup.force_encoding(@src_name)
         :invalid_byte_sequence
       when 1
         @errinfo = [:undefined_conversion, "UTF-8".b, @dst_name.b, __err_char(errb, cp).b, +"".b]
@@ -613,6 +640,10 @@ class Encoding
     # CRuby reports the byte it had to read (and put back) to decide the
     # sequence was invalid: only when the error bytes were a lead expecting more.
     def __read_again(input, consumed, errb)
+      if errb.bytesize == 2 && @src_name.start_with?("UTF-16")   # a high surrogate reads the next unit to see it is no pair
+        hi = @src_name.end_with?("LE") ? errb.getbyte(1) : errb.getbyte(0)
+        return (hi & 0xFC) == 0xD8 ? input.byteslice(consumed + 2, 2).to_s.b : +""
+      end
       nxt = input.byteslice(consumed + errb.bytesize, 1)
       return +"" if nxt.nil? || nxt.empty?
       b = errb.getbyte(0)
@@ -653,12 +684,15 @@ class Encoding
       raise ArgumentError, "converter already finished" if @finished
       input = @pending + str.dup.force_encoding(@src_name)
       @pending = +""
-      r = __transcode(input, @src_name, @dst_name, @flags, __repl_bytes, -1)
+      r = __transcode(input, @src_name, @dst_name, __tflags, __repl_bytes, -1)
       if r.is_a?(String)
         @errinfo = [:source_buffer_empty, nil, nil, nil, nil]; @last_error = nil
+        __jis_track(r)
+        r = r.gsub("\n", "\r\n") if @crlf && @destination_encoding.ascii_compatible?
         return r.force_encoding(@dst_name)
       end
       out, code, consumed, cp, errb = r
+      __jis_track(out)
       case code
       when 0
         again = __read_again(input, consumed, errb)
@@ -691,11 +725,31 @@ class Encoding
       @finished = true
       r = @pending.empty? ? +"" : convert_finish_pending
       @pending = +""
-      r.force_encoding(@dst_name)
+      (r + __jis_reset).force_encoding(@dst_name)
     end
     def convert_finish_pending
-      r = __transcode(@pending, @src_name, @dst_name, @flags, __repl_bytes, -1)
-      r.is_a?(String) ? r : (r[0] || +"")
+      input = @pending
+      r = __transcode(input, @src_name, @dst_name, __tflags, __repl_bytes, -1)
+      return r if r.is_a?(String)
+      out, code, consumed, _cp, errb = r
+      __jis_track(out)
+      if code == 3                                    # the input ended inside a character
+        @pending = +""
+        @errinfo = [:incomplete_input, @src_name.b, __decode_stage_dst.b, errb.b, +"".b]
+        e = Encoding::InvalidByteSequenceError.new("incomplete #{errb.b.inspect} on #{@src_name}")
+              .__set_info(@src_name, __decode_stage_dst, errb.b, nil, true)
+        @last_error = e
+        raise e
+      elsif code == 0
+        again = __read_again(input, consumed, errb)
+        @pending = +""
+        @errinfo = [:invalid_byte_sequence, @src_name.b, __decode_stage_dst.b, errb.b, again.b]
+        e = Encoding::InvalidByteSequenceError.new("#{errb.b.inspect} followed by #{again.b.inspect} on #{@src_name}")
+              .__set_info(@src_name, __decode_stage_dst, errb.b, again.b, false)
+        @last_error = e
+        raise e
+      end
+      out || +""
     end
     private :convert_finish_pending
 
@@ -711,6 +765,7 @@ class Encoding
       cnt = buf.bytesize if cnt > buf.bytesize
       r = buf.byteslice(0, cnt).to_s
       @putback_buf = buf.byteslice(cnt, buf.bytesize).to_s
+      @pending = @pending.byteslice(cnt, @pending.bytesize).to_s if cnt > 0 && @pending.b.start_with?(r)
       r.force_encoding(@src_name)
     end
   end

@@ -245,6 +245,8 @@ static uint32_t korb_tc_decode(const struct korb_tc *tc, const unsigned char *p,
  * replacement, not one per byte). */
 static uint32_t korb_tc_errlen(const struct korb_tc *tc, const unsigned char *p, size_t len)
 {
+    if ((tc->kind == KTC_UTF16LE || tc->kind == KTC_UTF16BE) && len >= 2) return 2;   /* one code unit (a lone surrogate) */
+    if ((tc->kind == KTC_UTF32LE || tc->kind == KTC_UTF32BE) && len >= 4) return 4;
     if (tc->kind != KTC_UTF8) return 1;
     const unsigned char b = p[0];
     uint32_t need;
@@ -446,6 +448,8 @@ static void korb_tc_put(struct korb_tc_out *o, const void *p, size_t n)
  * primitive behind String#encode and Encoding::Converter.
  *
  *   flags bit0 invalid: :replace   bit1 undef: :replace   bit2 xml charrefs
+ *         bit3 ISO-2022-JP target starts shifted to JIS X 0208
+ *         bit4 ISO-2022-JP target keeps its shift state (Converter: reset at #finish)
  *   max_bytes: cap on the output (nil / negative = unlimited)
  *
  * Returns the converted String when the whole input converted.  Otherwise an
@@ -491,7 +495,7 @@ static RESULT korb_bi_transcode(CTX *c, korb_value *slots, korb_slice args)
 
     struct korb_tc_out out = { NULL, 0, 0 };
     size_t i = 0;
-    uint8_t smode = KTC_JIS_ASCII, dmode = KTC_JIS_ASCII;   /* ISO-2022-JP shift state */
+    uint8_t smode = KTC_JIS_ASCII, dmode = (flags & 8u) ? KTC_JIS_X0208 : KTC_JIS_ASCII;   /* ISO-2022-JP shift state */
     int errcode = -1; size_t errpos = 0; uint32_t errcp = 0, errlen = 0;
     while (i < slen) {
         uint32_t cp = 0;
@@ -557,7 +561,7 @@ static RESULT korb_bi_transcode(CTX *c, korb_value *slots, korb_slice args)
         i += used;
     }
 
-    if (errcode < 0 && to.kind == KTC_ISO2022JP && dmode != KTC_JIS_ASCII)
+    if (errcode < 0 && to.kind == KTC_ISO2022JP && dmode != KTC_JIS_ASCII && !(flags & 16u))
         korb_tc_put(&out, "\x1B(B", 3);                    /* ISO-2022-JP must end in ASCII mode */
     if (errcode < 0) {                                    /* success: one String, tagged with the target */
         RESULT r = korb_str_new(c, slots, out.b ? out.b : "", (uint32_t)out.len);
