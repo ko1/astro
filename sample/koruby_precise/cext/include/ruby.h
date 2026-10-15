@@ -354,6 +354,7 @@ ID    rb_intern3(const char *name, long len, void *enc);
     : (rb_intern)(str))
 #define rb_intern_const(s) rb_intern(s)
 #define CONST_ID(var, str) do { static ID the_id_; if (!the_id_) the_id_ = rb_intern(str); (var) = the_id_; } while (0)
+#define RUBY_CONST_ID CONST_ID
 const char *rb_id2name(ID id);
 VALUE rb_id2str(ID id);
 VALUE rb_id2sym(ID id);
@@ -464,6 +465,7 @@ VALUE rb_obj_as_string(VALUE obj);
 VALUE rb_str_inspect(VALUE str);
 VALUE rb_sprintf(const char *fmt, ...);
 VALUE rb_vsprintf(const char *fmt, va_list ap);
+VALUE rb_f_sprintf(int argc, const VALUE *argv);   /* Kernel#format */
 VALUE rb_str_catf(VALUE str, const char *fmt, ...);
 char *rb_string_ptr(VALUE str);   /* koruby: RSTRING_PTR (pins the bytes) */
 long  rb_string_len(VALUE str);
@@ -631,6 +633,7 @@ VALUE rb_check_array_type(VALUE obj);
 VALUE rb_Array(VALUE obj);
 long  rb_array_len(VALUE ary);
 #define rb_ary_new2 rb_ary_new_capa
+#define rb_ary_tmp_new rb_ary_new_capa   /* CRuby's is hidden from ObjectSpace; koruby has no hidden objects */
 #define rb_ary_new3 rb_ary_new_from_args
 #define rb_ary_new4 rb_ary_new_from_values
 #define RARRAY_LEN(a)      rb_array_len(a)
@@ -796,6 +799,7 @@ VALUE rb_const_get_at(VALUE mod, ID id);
 int   rb_const_defined(VALUE mod, ID id);
 int   rb_const_defined_at(VALUE mod, ID id);
 void  rb_const_set(VALUE mod, ID id, VALUE val);
+VALUE rb_const_remove(VALUE mod, ID id);
 VALUE rb_path2class(const char *path);
 VALUE rb_path_to_class(VALUE path);
 VALUE rb_class_new_instance(int argc, const VALUE *argv, VALUE klass);
@@ -824,6 +828,7 @@ void  rb_check_frozen(VALUE obj);
 #define RB_OBJ_FROZEN(v) OBJ_FROZEN(v)
 #define RB_OBJ_FROZEN_RAW(v) OBJ_FROZEN(v)
 #define OBJ_FROZEN_RAW(v) OBJ_FROZEN(v)
+#define OBJ_FREEZE_RAW(v) ((void)rb_obj_freeze(v))
 VALUE rb_obj_dup(VALUE obj);
 VALUE rb_obj_clone(VALUE obj);
 VALUE rb_obj_id(VALUE obj);
@@ -966,6 +971,7 @@ typedef void rb_unblock_function_t(void *);
 #define RUBY_UBF_PROCESS ((rb_unblock_function_t *)-1)
 void *rb_thread_call_without_gvl(void *(*func)(void *), void *data1, rb_unblock_function_t *ubf, void *data2);
 void *rb_thread_call_with_gvl(void *(*func)(void *), void *data1);
+int   ruby_thread_has_gvl_p(void);   /* koruby: one native thread runs Ruby, so always 1 */
 void *rb_nogvl(void *(*func)(void *), void *data1, rb_unblock_function_t *ubf, void *data2, int flags);
 void  rb_thread_check_ints(void);
 VALUE rb_thread_current(void);
@@ -983,6 +989,7 @@ void  rb_io_check_writable(rb_io_t *fptr);
 void  rb_io_check_closed(rb_io_t *fptr);
 void  rb_io_set_nonblock(rb_io_t *fptr);
 int   rb_io_descriptor(VALUE io);
+FILE *rb_io_stdio_file(rb_io_t *fptr);
 enum rb_io_event { RUBY_IO_READABLE = 1, RUBY_IO_PRIORITY = 2, RUBY_IO_WRITABLE = 4 };
 #define RUBY_IO_TIMEOUT_DEFAULT Qnil
 VALUE rb_io_wait(VALUE io, VALUE events, VALUE timeout);

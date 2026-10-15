@@ -51,6 +51,7 @@ struct korb_cext_vm {
     korb_value errinfo;                   /* rb_errinfo (a root) */
     KVALUE cblock_maker;                  /* [proc maker, lambda maker] for C-function blocks */
     struct rb_io *io; size_t io_n;        /* GetOpenFile's per-descriptor rb_io_t */
+    FILE **io_stdio; size_t io_stdio_n;   /* rb_io_stdio_file's per-descriptor stream */
     uintptr_t pending_state;              /* what rb_protect caught, for rb_jump_tag */
     uint32_t serial;
     /* set around a dmark call so rb_gc_mark can visit */
@@ -1279,6 +1280,7 @@ rb_vsprintf(const char *fmt, va_list ap)
     CTX *const c = kcx_c();
     return W(kcx_vformat_str(c, fmt, ap));
 }
+KCX_API KVALUE rb_f_sprintf(int argc, const KVALUE *argv) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(rb_mKernel), "format", argc, argv)); }
 KCX_API KVALUE rb_sprintf(const char *fmt, ...) { va_list ap; va_start(ap, fmt); const KVALUE r = rb_vsprintf(fmt, ap); va_end(ap); return r; }
 KCX_API KVALUE
 rb_str_catf(KVALUE str, const char *fmt, ...)
@@ -2220,6 +2222,7 @@ KCX_API KVALUE rb_attr_get(KVALUE o, KVALUE id) { return rb_ivar_get(o, id); }
 KCX_API void rb_define_const(KVALUE m, const char *name, KVALUE v) { CTX *const c = kcx_c(); const KVALUE a[2] = { rb_id2sym(rb_intern(name)), v }; (void)kcx_send_name(c, K(m), "const_set", 2, a); }
 KCX_API void rb_define_global_const(const char *name, KVALUE v) { rb_define_const(rb_cObject, name, v); }
 KCX_API void rb_const_set(KVALUE m, KVALUE id, KVALUE v) { rb_define_const(m, rb_id2name(id), v); }
+KCX_API KVALUE rb_const_remove(KVALUE m, KVALUE id) { CTX *const c = kcx_c(); const KVALUE s = rb_id2sym(id); return W(kcx_send_name(c, K(m), "remove_const", 1, &s)); }
 KCX_API KVALUE rb_const_get(KVALUE m, KVALUE id) { CTX *const c = kcx_c(); const KVALUE s = rb_id2sym(id); return W(kcx_send_name(c, K(m), "const_get", 1, &s)); }
 KCX_API KVALUE rb_const_get_at(KVALUE m, KVALUE id) { CTX *const c = kcx_c(); const KVALUE a[2] = { rb_id2sym(id), KQfalse }; return W(kcx_send_name(c, K(m), "const_get", 2, a)); }
 KCX_API int rb_const_defined(KVALUE m, KVALUE id) { CTX *const c = kcx_c(); const KVALUE s = rb_id2sym(id); return RTEST_K(W(kcx_send_name(c, K(m), "const_defined?", 1, &s))); }
@@ -2846,6 +2849,7 @@ rb_check_typeddata(KVALUE h, const struct rb_data_type_struct *type)
 /* ---- threads: one OS thread, so these just call ---- */
 KCX_API void *rb_thread_call_without_gvl(void *(*func)(void *), void *d1, void *ubf, void *d2) { (void)ubf; (void)d2; return func(d1); }
 KCX_API void *rb_thread_call_with_gvl(void *(*func)(void *), void *d1) { return func(d1); }
+KCX_API int ruby_thread_has_gvl_p(void) { return 1; }
 KCX_API void *rb_nogvl(void *(*func)(void *), void *d1, void *ubf, void *d2, int flags) { (void)ubf; (void)d2; (void)flags; return func(d1); }
 KCX_API void rb_thread_check_ints(void) {}
 KCX_API KVALUE rb_thread_current(void) { CTX *const c = kcx_c(); return W(kcx_send_name(c, K(rb_cThread), "current", 0, NULL)); }
@@ -3444,6 +3448,27 @@ rb_io_set_nonblock(struct rb_io *f)
     if (fl >= 0 && !(fl & O_NONBLOCK)) (void)fcntl(f->fd, F_SETFL, fl | O_NONBLOCK);
 }
 KCX_API int rb_io_descriptor(KVALUE io) { return rb_io_get_fptr(io)->fd; }
+/* A stdio stream on the IO's descriptor.  koruby's IO keeps no FILE, so this is a new one on a dup of the fd
+ * (shared file offset; closing it leaves the IO open), made once per descriptor. */
+KCX_API FILE *
+rb_io_stdio_file(struct rb_io *f)
+{
+    if (f->fd < 0) return NULL;
+    struct korb_cext_vm *const x = kcx_vm(kcx_c()->vm);
+    if ((size_t)f->fd >= x->io_stdio_n) {
+        const size_t nn = (size_t)f->fd + 16;
+        x->io_stdio = ruby_xrealloc(x->io_stdio, nn * sizeof *x->io_stdio);
+        memset(x->io_stdio + x->io_stdio_n, 0, (nn - x->io_stdio_n) * sizeof *x->io_stdio);
+        x->io_stdio_n = nn;
+    }
+    if (x->io_stdio[f->fd] != NULL) return x->io_stdio[f->fd];
+    const int fl = fcntl(f->fd, F_GETFL);
+    const int acc = fl < 0 ? O_RDWR : (fl & O_ACCMODE);
+    const int d = dup(f->fd);
+    FILE *const fp = d < 0 ? NULL : fdopen(d, acc == O_RDONLY ? "r" : acc == O_WRONLY ? ((fl & O_APPEND) ? "a" : "w") : "r+");
+    x->io_stdio[f->fd] = fp;
+    return fp;
+}
 KCX_API KVALUE rb_io_timeout(KVALUE io) { return rb_funcall(io, rb_intern("timeout"), 0); }
 KCX_API KVALUE
 rb_io_wait(KVALUE io, KVALUE events, KVALUE timeout)

@@ -69,7 +69,7 @@ CRUBY_HDR=$("$CRUBY" -e 'print RbConfig::CONFIG["rubyhdrdir"]')
 done
 # the platform's HAVE_* (libc features: localtime_r ...), SIZEOF_* and int128_t from CRuby's config.h; ruby.h includes it
 CRUBY_ARCHHDR=$("$CRUBY" -e 'print RbConfig::CONFIG["rubyarchhdrdir"]')
-awk '/^#define ((HAVE_|SIZEOF_)[A-Z0-9_]+|u?int128_t) / { print "#ifndef " $2; print; print "#endif" }' "$CRUBY_ARCHHDR/ruby/config.h" \
+awk '/^#define ((HAVE_|SIZEOF_)[A-Z0-9_]+|u?int128_t|RUBY_PLATFORM) / { print "#ifndef " $2; print; print "#endif" }' "$CRUBY_ARCHHDR/ruby/config.h" \
     > "$ROOT/include/ruby-$VER/$ARCHNAME/ruby/koruby_platform.h"
 # libkoruby.so: empty stand-ins named like every rb_* / ruby_* the koruby binary exports.
 # mkmf links its have_func("rb_...") probes and extensions against -lkoruby; at run time
