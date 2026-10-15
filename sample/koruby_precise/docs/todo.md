@@ -5,6 +5,16 @@
 
 
 
+## 未: define_method に渡した proc の中で、外のブロックの `return` がメソッドを抜けない (2026-10-15)
+- `pr = mp { return :good }; define_method(:foo, proc { |x| x.call }); foo(pr)` → CRuby は :good（pr の
+  return は pr を作ったメソッドを抜ける）、koruby は DM 呼び出しが return を飲み込み :bad。
+  DM の dispatch は「ブロックを渡された呼び出しで return_target が付いている」ときだけ通す。
+  正しく分けるには、その return が DM の本体（とその中のブロック）に字句的に書かれたものかを知る必要がある
+  （DM の定義元メソッドが pr の定義元と同じ場合もあるので、家のフレームの比較では足りない）。rubyspec 1 例。
+
+## 未: `proc { |_, _, _ = 1, *_, _:, _: 2, **_, &_| }` が "block param slot ordering" (2026-10-15)
+- def は重複 `_` に名前なしのスロットを割り当てるようにしたが、ブロック引数は未対応。rubyspec 1 例。
+
 ## 未: `for x in obj` が obj.each を先に回し切ってから本体を回す (2026-10-15)
 - node_for は each を to_enum.to_a で配列にしてから回す。CRuby は each にブロックを渡すので、
   `def o.each; yield 1; puts "after yield"; yield 2; end; for x in o; puts x; end` の出力順が違う

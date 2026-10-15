@@ -44,3 +44,14 @@ t(:aliases) { [Process.method(:waitpid) == Process.method(:wait), Process.method
                FileTest.method(:zero?) == FileTest.method(:empty?),
                MatchData.instance_method(:deconstruct) == MatchData.instance_method(:captures)] }
 t(:timeout_error) { Regexp::TimeoutError.ancestors.take(3) }
+# repeated `_` parameters keep every value for a zsuper; operator NoMethodError carries name/receiver/args
+class ZsA; def m(*a) = a; def mpd(*a) = a; end
+class ZsB < ZsA
+  def m(_, _) = super
+  def mpd(_, _, _ = :a, _ = :b, *_, _, _) = super
+end
+t(:zsuper_underscore) { [ZsB.new.m(1, 2), ZsB.new.mpd(1, 2, 3, 4, 5, 6, 7)] }
+t(:op_nomethod) { x = nil; [->{ x + 3 }, ->{ x < 1 }, ->{ -x }].map { |f| begin; f.(); rescue NoMethodError => e; [e.name, e.receiver, e.args]; end } }
+t(:safe_nav_opassign) { k = Class.new { attr_writer :foo; def foo = nil }; o = k.new; begin; o&.foo += 3; rescue NoMethodError => e; e.name; end }
+module NsForCoerce; class Raw; def to_proc = 1; end; end
+t(:qualified_coerce_name) { [1].map(&NsForCoerce::Raw.new) }

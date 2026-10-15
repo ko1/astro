@@ -667,6 +667,7 @@ RESULT korb_raise_arity(CTX *c, korb_value *slots, const struct korb_method *m, 
  * nothing has named a frame for this exception yet AND the receiver really has
  * that operator — `nil + 1` raises at the call site in CRuby too. */
 void korb_op_bt(CTX *c, RESULT r, korb_value recv, const char *op, uint32_t oplen, uint32_t line);
+RESULT korb_raise_op_nomethod(CTX *c, korb_value *slots, uint32_t line, const char *op, korb_value recv, korb_value arg);   /* arg KORB_UNDEF: unary */
 RESULT korb_raise(CTX *c, korb_value *slots, unsigned int etype, uint32_t line,
                   const char *fmt, ...) __attribute__((format(printf, 5, 6)));
 void   korb_report_uncaught(CTX *c, korb_value exc);

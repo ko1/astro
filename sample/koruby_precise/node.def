@@ -711,7 +711,7 @@ node_div(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@
         return KP_OPD(c, flink, slots, lhs, "/", korb_raise(c, slots, KORB_E_TYPE, korb_flink_line(flink), "%s can't be coerced into Integer", korb_type_name(rhs)));
     }
     { bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "/", &h); if (h) return ur; }
-    return KP_OPD(c, flink, slots, lhs, "/", korb_raise(c, slots, KORB_E_NOMETHOD, korb_flink_line(flink), "undefined method '/' for %s", korb_a_type_name(l)));
+    return KP_OPD(c, flink, slots, lhs, "/", korb_raise_op_nomethod(c, slots, korb_flink_line(flink), "/", l, rhs));
 }
 
 NODE_DEF

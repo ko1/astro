@@ -3365,7 +3365,13 @@ kp_param_first_locals(struct kp_ctx *tc, const pm_constant_id_list_t *locals,
     if (!ps || locals->size == 0) return NULL;
     pm_constant_id_t want[64];
     uint32_t n = 0, ph = 0;                 /* ph = reserved unnamed slots in want[] */
-    #define WANT(cid) do { if ((cid) == 0 || n >= 64) return NULL; want[n++] = (cid); } while (0)
+    /* a repeated `_`-prefixed parameter (`def m(_, _)`) keeps its value in an unnamed slot of its own:
+     * reads of the name see the first, a zsuper passes every one */
+    #define WANT(cid) do { if ((cid) == 0 || n >= 64) return NULL;                                        \
+                           bool dup_ = false;                                                           \
+                           for (uint32_t w_ = 0; w_ < n; w_++) if (want[w_] == (cid)) dup_ = true;       \
+                           if (dup_ && kp_cid_cstr(tc, (cid))[0] == '_') { want[n++] = 0; ph++; }        \
+                           else want[n++] = (cid); } while (0)
     for (size_t i = 0; i < ps->requireds.size; i++) {
         if (!PM_NODE_TYPE_P(ps->requireds.nodes[i], PM_REQUIRED_PARAMETER_NODE)) return NULL;
         WANT(((const pm_required_parameter_node_t *)ps->requireds.nodes[i])->name);
@@ -3520,9 +3526,14 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
     int32_t rest_slot = -1;
     if (ps && ps->rest) {
         pm_constant_id_t rn = ((const pm_rest_parameter_node_t *)ps->rest)->name;
-        rest_slot = rn                ? (int32_t)lvar_index(tc, ps->rest, rn)   /* named rest → its local slot */
-                  : anon_rest_posts   ? (int32_t)params_cnt                     /* the reserved unnamed slot, so posts land at +1 */
-                                      : (int32_t)alloc_synth_local(tc);         /* anonymous `*` → synth slot (bare `*` forwards it) */
+        if (rn) {
+            rest_slot = (int32_t)lvar_index(tc, ps->rest, rn);                  /* named rest → its local slot */
+            if ((uint32_t)rest_slot < params_cnt && !has_destructured)          /* `*_` repeating an earlier `_`: its own slot */
+                rest_slot = (int32_t)params_cnt;
+        } else {
+            rest_slot = anon_rest_posts ? (int32_t)params_cnt                   /* the reserved unnamed slot, so posts land at +1 */
+                                        : (int32_t)alloc_synth_local(tc);       /* anonymous `*` → synth slot (bare `*` forwards it) */
+        }
         if (!rn) tc->frame->anon_rest_slot = rest_slot;
         tc->frame->method_rest_slot = rest_slot;                 /* for forwarding super (`super` re-splats the rest) */
     }

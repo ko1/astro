@@ -408,7 +408,7 @@ RESULT korb_sub_slow(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, ui
     }
     if (KORB_SET_P(l)) { slots[0] = rhs; return korb_m_set_diff(c, slots + 1, lhs, KORB_SLICE_MAKE(&slots[0], 1)); }   /* Set - → difference */
     { bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "-", &h); if (h) return ur; }
-    return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '-' for %s", korb_a_type_name(l));
+    return korb_raise_op_nomethod(c, slots, line, "-", l, rhs);
 }
 static RESULT korb_m_ary_replace(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     KORB_CHECK_FROZEN(c, slots, KORB_REF_GET(self));    /* modify-check before coercing the argument */

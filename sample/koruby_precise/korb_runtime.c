@@ -1342,6 +1342,29 @@ korb_float_to_s(double d, char *buf)
     return (uint32_t)(o - buf);
 }
 
+/* An operator the receiver does not have ("undefined method '+' for nil"), with the #name / #receiver / #args
+ * a missed send carries.  `arg` is KORB_UNDEF for a unary operator. */
+RESULT
+korb_raise_op_nomethod(CTX *c, korb_value *slots, uint32_t line, const char *op, korb_value recv, korb_value arg)
+{
+    struct korb_vm *const vm = c->vm;
+    slots[0] = recv; slots[1] = arg;                   /* rooted across the raise + ivar_set allocs */
+    RESULT r = korb_raise(c, slots + 2, KORB_E_NOMETHOD, line, "undefined method '%s' for %s", op, korb_a_type_name(recv));
+    if (UNLIKELY(!KORB_EXC_P(r.value))) return r;
+    slots[2] = r.value;
+    const korb_ref eref = KORB_REF_AT(&slots[2]);
+    korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern_lit(vm, "@__name", 7)), ID2SYM(korb_intern(vm, op, (uint32_t)strlen(op))));
+    korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern_lit(vm, "@__has_recv", 11)), KORB_TRUE);
+    korb_exc_ivar_set(c, slots + 3, eref, ID2SYM(korb_intern_lit(vm, "@__receiver", 11)), slots[0]);
+    const RESULT ar = korb_ary_new(c, slots + 3, 1);
+    if (LIKELY(ar.state == KORB_NORMAL)) {
+        slots[3] = ar.value;
+        if (slots[1] != KORB_UNDEF) korb_ary_push_val(c, slots + 4, KORB_REF_AT(&slots[3]), slots[1]);
+        korb_exc_ivar_set(c, slots + 4, eref, ID2SYM(korb_intern_lit(vm, "@__args", 7)), slots[3]);
+    }
+    r.value = KORB_REF_GET(eref);
+    return r;
+}
 RESULT korb_try_coerce(CTX *c, korb_value *slots, korb_value l, korb_value *rhs, const char *op, uint32_t line, bool *handled);   /* fwd; decl in node.h for node_eval.c */
 /* numeric arithmetic with at least one Float operand.  op: 0+ 1- 2* 3/ 4% */
 RESULT
@@ -1350,7 +1373,7 @@ korb_num_arith(CTX *c, korb_value *slots, korb_value l, korb_value rhs, int op, 
     static const char *const opn[] = { "+", "-", "*", "/", "%" };
     double a = 0.0, b = 0.0;
     if (UNLIKELY(!korb_num_to_d(l, &b)))     /* l not numeric → method missing on l */
-        return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '%s' for %s", opn[op], korb_a_type_name(l));
+        return korb_raise_op_nomethod(c, slots, line, opn[op], l, rhs);
     if (UNLIKELY(!korb_num_to_d(rhs, &b))) {  /* rhs not numeric → coerce protocol, else coercion error */
         bool h; RESULT cr = korb_try_coerce(c, slots, l, &rhs, opn[op], line, &h);
         if (h) return cr;
@@ -9676,6 +9699,7 @@ korb_range_new(CTX *c, korb_value *slots, korb_ref bref, korb_value end, uint32_
 
 /* Class name for coercion errors: nil/true/false render as "nil"/"true"/"false",
  * a user instance as its actual class name (not the generic "Object"). */
+static bool korb_fprint_class_qname(CTX *c, FILE *fp, korb_value cls);   /* fwd (below) */
 const char *
 korb_coerce_name(CTX *c, korb_value v)
 {
@@ -9685,8 +9709,18 @@ korb_coerce_name(CTX *c, korb_value v)
     if (KORB_CLASS_P(v)) return VAL2CLASS(v)->is_module ? "Module" : "Class";
     if (KORB_OBJECT_P(v)) {
         const korb_value k = VAL2OBJ(v)->klass;
-        if (KORB_CLASS_P(k) && VAL2CLASS(k)->name_sym)
+        if (KORB_CLASS_P(k) && VAL2CLASS(k)->name_sym) {   /* the qualified name (A::B), interned: it outlives a dispatch */
+            char *qb = NULL; size_t qz = 0;
+            FILE *const qf = open_memstream(&qb, &qz);
+            if (qf != NULL) {
+                korb_fprint_class_qname(c, qf, k);
+                fclose(qf);
+                const uint32_t id = korb_intern(c->vm, qb ? qb : "", (uint32_t)qz);
+                free(qb);
+                return korb_sym_name(c->vm, id);
+            }
             return korb_sym_name(c->vm, VAL2CLASS(k)->name_sym);
+        }
     }
     return korb_type_name(v);                       /* builtins: String / Integer / ... */
 }
@@ -10563,9 +10597,7 @@ korb_cmp_slow(CTX *c, korb_value *slots, korb_value l, korb_value r, int op, uin
         const bool coercion = KORB_INTEGER_P(l) || KORB_FLOAT_P(l);   /* Rational compares through <=> */
         return korb_raise_cmperr(c, slots, line, l, r, coercion);
     }
-    return korb_raise(c, slots, KORB_E_NOMETHOD, line,
-                      "undefined method '%s' for %s",
-                      korb_cmp_op_name[op], korb_a_type_name(l));
+    return korb_raise_op_nomethod(c, slots, line, korb_cmp_op_name[op], l, r);
 }
 
 /* ---------------------------------------------------------------------------
@@ -10694,7 +10726,7 @@ korb_plus_slow(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint32_t
     if (KORB_OBJECT_P(l)) {                          /* a user/builtin object (Time, ...) → dispatch its own + */
         bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "+", &h);
         if (h) return ur;
-        return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '+' for %s", korb_a_type_name(l));
+        return korb_raise_op_nomethod(c, slots, line, "+", l, rhs);
     }
     if (KORB_STRING_P(l) && KORB_STRING_P(rhs)) {
         korb_ref r = SLOTS_PUSH(slots, rhs);   /* root rhs before allocating */
@@ -10752,8 +10784,7 @@ korb_plus_slow(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint32_t
         return korb_str_plus_ref(c, slots, lhs, r);
     }
     { bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "+", &h); if (h) return ur; }
-    return korb_raise(c, slots, KORB_E_NOMETHOD, line,
-                      "undefined method '+' for %s", korb_a_type_name(l));
+    return korb_raise_op_nomethod(c, slots, line, "+", l, rhs);
 }
 
 /* `@x += v` / `@x -= v` off node_ivar_arith's tagged-fixnum fast path: read the
@@ -10824,7 +10855,7 @@ korb_minus_slow(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint32_
     if (KORB_OBJECT_P(l)) {                          /* a user/builtin object (Time, ...) → dispatch its own - */
         bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "-", &h);
         if (h) return ur;
-        return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '-' for %s", korb_a_type_name(l));
+        return korb_raise_op_nomethod(c, slots, line, "-", l, rhs);
     }
     if (KORB_INTEGER_P(l) && KORB_INTEGER_P(rhs)) return korb_int_arith(c, slots, l, rhs, 1, line);   /* fixnum overflow / bignum */
     if (KORB_COMPLEX_P(l) || KORB_COMPLEX_P(rhs)) return korb_cpx_arith(c, slots, l, rhs, 1);
@@ -10837,7 +10868,7 @@ korb_minus_slow(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint32_
         return korb_raise(c, slots, KORB_E_TYPE, line, "%s can't be coerced into Integer", korb_coerce_name(c, rhs));
     }
     { bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "-", &h); if (h) return ur; }
-    return korb_raise(c, slots, KORB_E_NOMETHOD, line, "undefined method '-' for %s", korb_a_type_name(l));
+    return korb_raise_op_nomethod(c, slots, line, "-", l, rhs);
 }
 
 static RESULT korb_m_ary_join(CTX *c, korb_value *slots, korb_ref self, korb_slice a);
@@ -10909,8 +10940,7 @@ korb_mul_slow(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint32_t 
     }
     if (KORB_STRING_P(l)) return korb_raise_no_int(c, slots, rhs);
     { bool h; RESULT ur = korb_user_binop(c, slots, l, rhs, "*", &h); if (h) return ur; }
-    return korb_raise(c, slots, KORB_E_NOMETHOD, line,
-                      "undefined method '*' for %s", korb_a_type_name(l));
+    return korb_raise_op_nomethod(c, slots, line, "*", l, rhs);
 }
 
 /* ---------------------------------------------------------------------------
