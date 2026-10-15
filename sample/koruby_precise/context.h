@@ -1157,6 +1157,8 @@ struct korb_method {
     uint32_t locals_cnt;     /* ISEQ: frame size (params first, +2 if uses_block) */
     uint32_t attr_ivar;      /* ATTR_R/W: the @ivar symbol id */
     uint8_t  hidden;         /* koruby's own `__` plumbing (C builtins, prelude defs at boot): reflection skips it */
+    uint8_t  vis_clone;      /* made by `public :m` & co. for an inherited m: a redefinition in its owner
+                              * reaches it (CRuby's ZSUPER entry), see korb_vis_clone_refresh */
     uint8_t  pinned;         /* a live Method/UnboundMethod was made from this entry: a redefinition
                               * must leave it intact (korb_class_method_slot orphans it instead) */
     uint8_t  retired;        /* a top-level `def` this entry shadowed is gone: a bare-name call must
@@ -1295,6 +1297,7 @@ struct korb_vm {
     struct korb_method **orphans;
     uint32_t orphan_cnt, orphan_capa;
     uint64_t method_serial;  /* bumped by def — invalidates call caches */
+    uint32_t vis_clone_cnt;  /* korb_method.vis_clone entries made: 0 → a def need not look for them */
     uint8_t *mid_looked;     /* [mid]: some method lookup asked for it, so a cache may hold it (korb_mid_looked) */
     uint8_t *mid_undefed;    /* [mid]: an undef tombstone named mid exists somewhere (korb_method_undefed_p's fast no) */
     uint32_t mid_undefed_cap;

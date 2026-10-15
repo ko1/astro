@@ -710,6 +710,14 @@ static inline void korb_kwargs_unmark(korb_value v) {
     if (UNLIKELY(korb_kwargs_hash_p(v)))
         ((AroObjectHeader *)(uintptr_t)v)->flags &= (uint16_t)~KORB_FL_KWARGS;
 }
+RESULT korb_r2k_unmarked_copy(CTX *c, korb_value *slots, korb_value *cell);   /* korb_runtime.c: *cell → a plain copy */
+void korb_kwargs_unmark_pos_cold(CTX *c, korb_value *slots, korb_value *cell);   /* korb_runtime.c */
+/* korb_kwargs_unmark for a fixed positional parameter: a ruby2_keywords-marked Hash is
+ * also replaced by an unmarked copy (CRuby), so the caller's stays marked and distinct.
+ * The common path is korb_kwargs_unmark's one test; all else is out of line. */
+static inline void korb_kwargs_unmark_pos(CTX *c, korb_value *slots, korb_value *const cell) {
+    if (UNLIKELY(korb_kwargs_hash_p(*cell))) korb_kwargs_unmark_pos_cold(c, slots, cell);
+}
 
 /* The persistent ruby2_keywords mark (Hash.ruby2_keywords_hash?). */
 static inline bool korb_r2k_hash_p(korb_value v) {
@@ -1252,7 +1260,7 @@ korb_invoke_simple(CTX *c, korb_value *slots, struct korb_method *m, uint32_t ar
         return korb_raise_arity(c, slots, m, mid, line,
                                 "wrong number of arguments (given %u, expected %d)", argc, m->params_cnt);
     korb_value *const base = slots - argc;
-    if (argc != 0) korb_kwargs_unmark(base[argc - 1]);   /* fixed positional: the call-site kwargs mark stops here */
+    if (argc != 0) korb_kwargs_unmark_pos(c, slots, &base[argc - 1]);   /* fixed positional: the call-site kwargs mark stops here */
     KORB_AUDIT_EP(base, mid);
     const uint32_t locals_cnt = m->locals_cnt;
     char cstack_probe;

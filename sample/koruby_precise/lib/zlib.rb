@@ -5,6 +5,7 @@
 raise LoadError, "cannot load such file -- zlib" unless respond_to?(:__zlib_version, true)
 
 module Zlib
+  __korb_mark_native(self)   # stands in for CRuby's C extension (Refinement#import_methods refuses it)
   ZLIB_VERSION = __zlib_version.freeze
   VERSION      = "3.2.1"
 

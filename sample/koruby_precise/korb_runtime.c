@@ -914,11 +914,32 @@ static RESULT korb_m_cpx_to_rat_via(CTX *c, korb_value *slots, korb_ref self, ko
 static RESULT korb_m_cpx_rationalize(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { return korb_m_cpx_to_rat_via(c, slots, self, a, "rationalize", 11, true); }
 static RESULT korb_m_cpx_to_r(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { return korb_m_cpx_to_rat_via(c, slots, self, a, "to_r", 4, false); }
 static RESULT korb_m_cpx_eq(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
-    (void)slots;
     korb_value o = KORB_SLICE_GET(a, 0);
     const KorbComplex *x = SELF_CPX;
     if (KORB_COMPLEX_P(o))
         return RESULT_OK((korb_value_eq(x->re, VAL2CPX(o)->re) && korb_value_eq(x->im, VAL2CPX(o)->im)) ? KORB_TRUE : KORB_FALSE);
+    if (UNLIKELY(KORB_OBJECT_P(o)) && !KORB_RATIONAL_P(o) && !KORB_BIGNUM_P(o) && !KORB_FLOAT_P(o)) {
+        /* nucomp_eqeq_p: a real Numeric compares with the real part (if im is 0), anything else is asked other == self */
+        slots[0] = KORB_REF_GET(self); slots[1] = o;
+        const uint32_t real_p = korb_intern_lit(c->vm, "real?", 5);
+        if (korb_obj_is_numeric(c, o) && korb_responds_to(c, o, real_p)) {
+            RESULT rp = korb_send(c, slots + 2, real_p, 0, 0);
+            if (UNLIKELY(rp.state != KORB_NORMAL)) return rp;
+            if (KORB_TRUTHY(rp.value)) {
+                double im0;
+                const KorbComplex *const x2 = VAL2CPX(slots[0]);
+                if (!(korb_num_to_d(x2->im, &im0) && im0 == 0.0)) return RESULT_OK(KORB_FALSE);
+                slots[2] = x2->re; slots[3] = slots[1];
+                RESULT er = korb_send(c, slots + 4, korb_intern_lit(c->vm, "==", 2), 0, 1);
+                if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+                return RESULT_OK(KORB_TRUTHY(er.value) ? KORB_TRUE : KORB_FALSE);
+            }
+        }
+        slots[2] = slots[1]; slots[3] = slots[0];
+        RESULT er = korb_send(c, slots + 4, korb_intern_lit(c->vm, "==", 2), 0, 1);
+        if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+        return RESULT_OK(KORB_TRUTHY(er.value) ? KORB_TRUE : KORB_FALSE);
+    }
     /* complex == real iff im == 0 and re == real */
     double im;
     bool im_zero = korb_num_to_d(x->im, &im) && im == 0.0;
@@ -1042,7 +1063,7 @@ RESULT korb_cpx_arith(CTX *c, korb_value *slots, korb_value l, korb_value r, int
                     return korb_cpx_new(c, slots + 4, slots[2], slots[3]);
                 }
             }
-            bool h; RESULT cr = korb_try_coerce(c, slots, l, &r, opn[op], 0, &h);
+            bool h; RESULT cr = korb_try_coerce(c, slots, l, &r, op == 3 ? "quo" : opn[op], 0, &h);   /* nucomp_div coerces with quo */
             if (h) return cr;
         }
         return korb_raise(c, slots, KORB_E_TYPE, 0, "%s can't be coerced into Complex", korb_coerce_name(c, KORB_COMPLEX_P(l) ? r : l));
@@ -3452,7 +3473,6 @@ static inline korb_value korb_builtin_class_obj(const struct korb_vm *vm, enum k
 
 static struct korb_method *korb_class_method_slot(struct korb_vm *vm, KorbClass *k, uint32_t mid);   /* fwd (defined below) */
 static void korb_check_basic_op_redef(CTX *c, korb_value klass, uint32_t mid);        /* fwd (defined below) */
-static RESULT korb_r2k_unmarked_copy(CTX *c, korb_value *slots, korb_value *cell);          /* fwd (defined below) */
 static RESULT korb_comparable_cmp(CTX *c, korb_value *slots, korb_value self, korb_value other, int *out);   /* fwd (set.c) */
 /* CRuby forces these names PRIVATE at definition time, wherever they are
  * defined (vm_method.c): a later explicit `public :name` still wins, because
@@ -6758,9 +6778,35 @@ korb_fire_def_hook(CTX *c, korb_value *slots, korb_value mod, uint32_t mid, cons
  * singleton_method_added instead, like CRuby. */
 korb_value korb_object_class(const struct korb_vm *const vm) { return korb_builtin_class_obj(vm, KORB_C_OBJECT); }
 
+/* `definee` (re)defined mid: a descendant's visibility clone of it (`public :mid` in a subclass)
+ * runs the new body with its own visibility, as CRuby's ZSUPER entry does.  Cold: only after a clone. */
+static __attribute__((noinline, cold)) void
+korb_vis_clone_refresh(struct korb_vm *const vm, const korb_value definee, const uint32_t mid, const int depth)
+{
+    const KorbClass *const dk = VAL2CLASS(definee);
+    const int32_t ds = korb_mtab_slot(dk, mid);
+    if (ds < 0 || depth > 64) return;
+    const korb_value list = dk->subclasses;
+    if (!KORB_ARRAY_P(list)) return;
+    for (uint32_t i = 0; i < VAL2ARY(list)->len; i++) {
+        const korb_value sub = korb_ary_ptr(VAL2ARY(list))[i];
+        if (!KORB_CLASS_P(sub)) continue;
+        KorbClass *const sk = VAL2CLASS(sub);
+        const int32_t s = korb_mtab_slot(sk, mid);
+        if (s >= 0 && sk->methods[s]->vis_clone && sk->methods[s]->owner == definee) {
+            struct korb_method *const cm = sk->methods[s];
+            const struct korb_method src = *dk->methods[ds];
+            const uint8_t vis = cm->visibility;
+            *cm = src; cm->mid = mid; cm->visibility = vis; cm->vis_clone = 1; cm->pinned = 0;
+            vm->method_serial++;
+        } else if (s < 0) korb_vis_clone_refresh(vm, sub, mid, depth + 1);   /* a clone further down */
+    }
+}
+
 RESULT
 korb_fire_method_added(CTX *c, korb_value *slots, korb_value definee, uint32_t mid)
 {
+    if (UNLIKELY(c->vm->vis_clone_cnt != 0) && KORB_CLASS_P(definee)) korb_vis_clone_refresh(c->vm, definee, mid, 0);
     /* Both non-dispatching exits drop a staged link: node_def hands one over, and
      * a link nobody consumes would be picked up by an unrelated later dispatch. */
     if (!KORB_CLASS_P(definee)) { c->carry_base = NULL; return RESULT_OK(KORB_NIL); }
@@ -7577,13 +7623,13 @@ korb_invoke_method(CTX *c, korb_value *slots, struct korb_method *m, uint32_t ar
          * Hash (persistently) so re-splatting it is keywords again; the call-scoped
          * mark ends here either way.  Any other method gets an unmarked COPY of a
          * marked Hash (CRuby), so the caller's stays marked and distinct. */
+        korb_kwargs_unmark(base[argc - 1]);               /* the original too, before it is swapped for a copy */
         if (m->ruby2_kw) korb_r2k_set(base[argc - 1]);
         else if (korb_r2k_hash_p(base[argc - 1])) {
             slots[0] = self; slots[1] = captured_self;     /* bare C-locals: park them across the copy's allocs */
             CHECK(korb_r2k_unmarked_copy(c, slots + 2, &base[argc - 1]));
             self = slots[0]; captured_self = slots[1];
         }
-        korb_kwargs_unmark(base[argc - 1]);
     }
     const uint32_t min_pos = m->req_cnt + m->post_cnt;   /* posts are required too */
     const uint32_t max_pos = (uint32_t)m->params_cnt + m->post_cnt;   /* req+opt fixed slots + posts */
@@ -7680,6 +7726,7 @@ korb_invoke_method(CTX *c, korb_value *slots, struct korb_method *m, uint32_t ar
     if (UNLIKELY(opt_err.state != KORB_NORMAL)) return opt_err;
     if (kw) {
         if (kw->kwrest_slot >= 0) kwhash = base[kw->kwrest_slot];   /* re-read (GC during opt-fill) */
+        if (kwhash != KORB_NIL) korb_kwargs_unmark(kwhash);         /* consumed: the call-scoped mark ends here */
         uint64_t present = 0;
         for (uint32_t j = 0; j < kw->count; j++) {                  /* pass 1: present keywords (no alloc) */
             int32_t idx = (kwhash != KORB_NIL) ? korb_hash_find(VAL2HASH(kwhash), ID2SYM(kw->entries[j].mid)) : -1;
@@ -12477,8 +12524,16 @@ korb_bi_autoload_feature_loaded(CTX *c, korb_value *slots, korb_slice args)
     return RESULT_OK(korb_autoload_feature_loaded_p(c, pv) ? KORB_TRUE : KORB_FALSE);
 }
 
+/* korb_kwargs_unmark_pos's rare side: drop the call-scoped mark, and hand a ruby2_keywords-marked
+ * Hash over as a plain copy.  A failed allocation keeps the original (the copy is a nicety). */
+__attribute__((noinline, cold)) void
+korb_kwargs_unmark_pos_cold(CTX *c, korb_value *slots, korb_value *const cell)
+{
+    ((AroObjectHeader *)(uintptr_t)*cell)->flags &= (uint16_t)~KORB_FL_KWARGS;
+    if (((const AroObjectHeader *)(uintptr_t)*cell)->flags & KORB_FL_R2K) (void)korb_r2k_unmarked_copy(c, slots, cell);
+}
 /* *cell (a ruby2_keywords-marked Hash, rooted) → a plain copy of its pairs. */
-static RESULT
+__attribute__((noinline, cold)) RESULT
 korb_r2k_unmarked_copy(CTX *c, korb_value *slots, korb_value *const cell)
 {
     slots[0] = UNWRAP(korb_hash_new(c, slots, VAL2HASH(*cell)->len));
@@ -14758,6 +14813,7 @@ korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_en
         /* re-read the kwargs hash from argv (scanned for yield/proc.call) — a
          * positional rest/opt alloc above may have moved it. */
         const korb_value kwhash = has_kw_hash ? argv[orig_argc - 1] : KORB_NIL;
+        if (kwhash != KORB_NIL) korb_kwargs_unmark(kwhash);         /* consumed: the call-scoped mark ends here */
         korb_value *const kcur = bf + 1 + blocals;           /* default-eval scratch (block scope) */
         uint64_t present = 0;
         for (uint32_t j = 0; j < kw->count; j++) {      /* pass 1: provided keywords (no alloc) */
@@ -16661,7 +16717,11 @@ korb_invoke_opt_blk(CTX *c, korb_value *slots, struct korb_method *m, uint32_t a
     if (UNLIKELY(c->def_definee != KORB_NIL || c->cvar_cref != KORB_NIL || m->uses_backref))
         return korb_invoke_method(c, slots, m, argc, line, mid, slots[-(korb_sword_t)argc - 1], KORB_NIL, block, def_env, captured_self);
     korb_value *const base = slots - argc;
-    if (argc != 0) korb_kwargs_unmark(base[argc - 1]);   /* fixed positional: the call-site kwargs mark stops here */
+    if (argc != 0 && UNLIKELY(korb_kwargs_hash_p(base[argc - 1]))) {   /* fixed positional: the call-site kwargs mark stops here */
+        slots[0] = captured_self;                          /* the copy allocates: park the C-local */
+        korb_kwargs_unmark_pos_cold(c, slots + 1, &base[argc - 1]);
+        captured_self = slots[0];
+    }
     KORB_AUDIT_EP(base, mid);
     const uint32_t locals_cnt = m->locals_cnt;
     char cstack_probe;
@@ -19513,10 +19573,17 @@ korb_fwrite_inspected(CTX *const c, FILE *const fp, const korb_value s)
 
 /* #inspect of a string whose encoding is NOT the result's (koruby always
  * renders into UTF-8), i.e. CRuby's rb_str_inspect with enc != resenc. */
+/* The encoding an #inspect result is rendered for (CRuby's resenc). */
+static uint32_t korb_inspect_resenc(const struct korb_vm *const vm)
+{
+    const uint32_t t = vm->enc_internal != UINT32_MAX ? vm->enc_internal : vm->enc_external;
+    return korb_enc_ascii_compat_idx(vm, t) ? t : KORB_ENC_USASCII;
+}
 static void
 korb_fprint_quoted_other(const struct korb_vm *const vm, FILE *const fp,
                          const char *const bytes, const uint32_t len, const uint32_t enc)
 {
+    const bool same = enc == korb_inspect_resenc(vm) && korb_enc_ascii_compat_idx(vm, enc);   /* multibyte chars shown as they are */
     const unsigned char *const p = (const unsigned char *)bytes;
     const bool unicode = korb_enc_unicode_p(vm, enc);
     const bool acompat = korb_enc_ascii_compat_idx(vm, enc);
@@ -19559,6 +19626,7 @@ korb_fprint_quoted_other(const struct korb_vm *const vm, FILE *const fp,
         }
         if (esc) { fputs(esc, fp); i += n; continue; }
         if (acompat && cp < 0x80 && korb_ascii_print_p(cp)) { fwrite(p + i, 1, n, fp); }
+        else if (same && n > 1) { fwrite(p + i, 1, n, fp); }
         else if (unicode) {
             if (korb_ascii_print_p(cp))  fputc((int)cp, fp);
             else if (cp < 0x10000)       fprintf(fp, "\\u%04X", cp);
@@ -19589,6 +19657,27 @@ static bool korb_utf8_printable_all(const char *nm) {
         p += n + 1;
     }
     return true;
+}
+static bool korb_sym_label_bare(const char *nm);
+/* korb_sym_label_bare for a name in a multibyte encoding other than UTF-8: a
+ * multibyte character counts as an identifier character (its trail byte may be ASCII) */
+static bool
+korb_sym_label_bare_enc(const struct korb_vm *const vm, const char *const nm, const uint32_t len, const uint32_t enc)
+{
+    if (enc == KORB_ENC_UTF8 || KORB_ENC_SB(vm, enc) || !korb_enc_ascii_compat_idx(vm, enc)) return korb_sym_label_bare(nm);
+    const unsigned char *const p = (const unsigned char *)nm;
+    uint32_t i = 0;
+    while (i < len) {
+        uint32_t cp = 0;
+        const uint32_t n = korb_enc_inspect_char(vm, enc, false, p + i, len - i, &cp);
+        if (n == 0) return false;
+        const bool ok = n > 1 || (i == 0 ? korb_id_start(p[i]) : korb_id_cont(p[i]));
+        if (!ok) break;
+        i += n;
+    }
+    if (i == 0) return false;
+    if (i < len && (p[i] == '?' || p[i] == '!')) i++;
+    return i == len;
 }
 static bool
 korb_sym_label_bare(const char *nm)
@@ -19770,7 +19859,7 @@ korb_fprint_hash_d(CTX *c, korb_value *slots, FILE *fp, korb_value v, int depth)
             const uint32_t id = SYM2ID(k);
             const char *const nm = korb_sym_name(c->vm, id);
             const uint32_t len = c->vm->sym_lens[id], enc = c->vm->sym_encs[id];
-            if (korb_sym_shows_raw(c->vm, nm, len, enc) && korb_sym_label_bare(nm)) fputs(nm, fp);
+            if (korb_sym_shows_raw(c->vm, nm, len, enc) && korb_sym_label_bare_enc(c->vm, nm, len, enc)) fputs(nm, fp);
             else if (enc == KORB_ENC_UTF8 && c->vm->enc_external == KORB_ENC_UTF8) korb_fprint_quoted(fp, nm, len);
             else korb_fprint_quoted_other(c->vm, fp, nm, len, enc);   /* {"\u3042": 1} under a non-UTF-8 external */
             fputs(": ", fp);
@@ -20141,7 +20230,7 @@ korb_fprint_inspect_s(CTX *c, korb_value *slots, FILE *fp, korb_value v)
          * printed as `:` + the inspected String instead of bare. */
         const bool shows_raw = korb_sym_shows_raw(c->vm, nm, len, enc);
         fputc(':', fp);
-        if (shows_raw && korb_sym_inspect_bare(nm)) fputs(nm, fp);
+        if (shows_raw && (korb_sym_inspect_bare(nm) || korb_sym_label_bare_enc(c->vm, nm, len, enc))) fputs(nm, fp);
         else if (enc == KORB_ENC_UTF8 && c->vm->enc_external == KORB_ENC_UTF8) korb_fprint_quoted(fp, nm, len);
         else korb_fprint_quoted_other(c->vm, fp, nm, len, enc);
         return;
@@ -24022,7 +24111,9 @@ korb_exc_build_with_cause(CTX *c, korb_value *slots, korb_slice args)
         slots[1] = rr.value;                                    /* the built exception (rooted) */
         for (korb_value cc = slots[0]; KORB_EXC_P(cc); cc = VAL2EXC(cc)->cause)   /* reject a circular cause chain */
             if (cc == slots[1]) return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "circular causes");
-        ARO_STORE(c, VAL2EXC(slots[1]), &VAL2EXC(slots[1])->cause, slots[0]);   /* override (incl. explicit nil) */
+        /* nil: no chaining — but an exception object passed in keeps the cause it has (CRuby) */
+        if (slots[0] != KORB_NIL || !KORB_EXC_P(KORB_SLICE_GET(args, 0)))
+            ARO_STORE(c, VAL2EXC(slots[1]), &VAL2EXC(slots[1])->cause, slots[0]);
         return RESULT_OK(slots[1]);
     }
     /* `raise obj` inside a rescue: $! becomes the cause (as `raise Cls` does) unless
@@ -24635,6 +24726,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__set_ruby2_keywords", korb_bi_set_ruby2_keywords, -1);
     korb_mark_loaded(c->vm, "set");   /* Set is core-loaded in modern Ruby: require 'set' ⇒ false */
     korb_builtin_define(c, "__refinement_import", korb_bi_refinement_import, 2);   /* Refinement#import_methods (prelude) */
+    korb_builtin_define(c, "__korb_mark_native", korb_bi_mark_native, 1);         /* lib/zlib.rb etc.: C to CRuby */
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
     korb_builtin_define(c, "__method__", korb_bi_method_name, 0);
     korb_builtin_define(c, "block_given?", korb_bi_block_given_p, 0);

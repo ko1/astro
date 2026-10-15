@@ -352,6 +352,8 @@ end
 # #class is pinned to Refinement by the C side; the refined class is kept in
 # @__refine_target.
 class Refinement < Module
+  # the refined class's methods are visible through it (CRuby: it is the refinement's superclass)
+  def instance_methods(all = true) = all ? (super(all) | target.instance_methods) : super(all)
   def target
     instance_variable_get(:@__refine_target)
   end

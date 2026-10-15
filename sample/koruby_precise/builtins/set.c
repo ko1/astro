@@ -484,6 +484,8 @@ static RESULT korb_m_obj_to_s(CTX *c, korb_value *slots, korb_ref self, korb_sli
     return r;
 }
 static bool korb_sym_shows_raw(const struct korb_vm *vm, const char *nm, uint32_t len, uint32_t enc);   /* fwd */
+static bool korb_sym_label_bare_enc(const struct korb_vm *vm, const char *nm, uint32_t len, uint32_t enc);   /* fwd */
+static uint32_t korb_inspect_resenc(const struct korb_vm *vm);   /* fwd */
 static bool korb_sym_label_bare(const char *nm);                                                         /* fwd */
 /* CRuby gives a container's #inspect its FIRST element's result encoding (rb_enc_copy):
  * 1 = a String's (text), 0 = US-ASCII, -1 = not known here. */
@@ -501,7 +503,7 @@ static int korb_inspect_first_text(const struct korb_vm *const vm, korb_value v,
             v = korb_hash_pairs(VAL2HASH(v))[0];
             if (SYMBOL_P(v)) {                                   /* `name: ` label form, or quoted */
                 const char *const nm = korb_sym_name(vm, SYM2ID(v));
-                return korb_sym_shows_raw(vm, nm, vm->sym_lens[SYM2ID(v)], vm->sym_encs[SYM2ID(v)]) && korb_sym_label_bare(nm) ? 0 : -1;
+                return korb_sym_shows_raw(vm, nm, vm->sym_lens[SYM2ID(v)], vm->sym_encs[SYM2ID(v)]) && korb_sym_label_bare_enc(vm, nm, vm->sym_lens[SYM2ID(v)], vm->sym_encs[SYM2ID(v)]) ? 0 : -1;
             }
         } else if (KORB_RANGE_P(v)) {
             if (VAL2RANGE(v)->rbegin == KORB_NIL) return -1;
@@ -626,6 +628,8 @@ static RESULT korb_m_obj_inspect(CTX *c, korb_value *slots, korb_ref self, korb_
         if (ascii) KORB_STR_ENC_SET(r.value, (first >= 0 ? first == 1 : text) && ext_ok ? c->vm->enc_external : KORB_ENC_USASCII);
         else if (ext_ok) KORB_STR_ENC_SET(r.value, c->vm->enc_external);   /* raw bytes are in the external's encoding */
     }
+    if (LIKELY(r.state == KORB_NORMAL) && KORB_STRING_P(KORB_REF_GET(self)) && UNLIKELY(c->vm->enc_external != KORB_ENC_UTF8 || c->vm->enc_internal != UINT32_MAX))
+        KORB_STR_ENC_SET(r.value, korb_inspect_resenc(c->vm));   /* String#inspect: CRuby's resenc */
     return r;
 }
 static RESULT korb_m_obj_class(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
@@ -1039,6 +1043,7 @@ static RESULT korb_set_visibility1(CTX *c, korb_value *slots, korb_value selfv, 
     struct korb_method *dst = korb_class_method_slot(c->vm, k, mid);   /* libc alloc, no GC */
     const struct korb_method tmp = *src;                        /* snapshot (slot array may have grown) */
     *dst = tmp; dst->mid = mid; dst->visibility = vis;          /* keep tmp.owner for super */
+    dst->vis_clone = 1; dst->pinned = 0; c->vm->vis_clone_cnt++;
     slots[0] = selfv;                                           /* the hook is Ruby code: root the class */
     return korb_fire_method_added(c, slots + 1, slots[0], mid); /* cloning an ancestor method IS a definition */
 }
@@ -3687,6 +3692,15 @@ static RESULT korb_used_column(CTX *c, korb_value *slots, uint32_t col)
 /* Refinement#import_methods(*mods) — copy each module's OWN Ruby-defined methods
  * into the refinement (they then dispatch with the refinement's scope).  Reached
  * from the prelude wrapper, which passes the refinement and the module Array. */
+/* __korb_mark_native(mod) — mod stands in for a CRuby C extension: an internal (no `@`) ivar,
+ * so #instance_variables does not show it */
+static RESULT korb_bi_mark_native(CTX *c, korb_value *slots, korb_slice a)
+{
+    if (KORB_SLICE_LEN(a) != 1 || !KORB_CLASS_P(KORB_SLICE_GET(a, 0))) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong arguments");
+    slots[0] = KORB_SLICE_GET(a, 0);
+    CHECK(korb_class_ivar_set(c, slots + 1, KORB_REF_AT(&slots[0]), ID2SYM(korb_intern_lit(c->vm, "__korb_native", 13)), KORB_TRUE));
+    return RESULT_OK(KORB_NIL);
+}
 static RESULT korb_bi_refinement_import(CTX *c, korb_value *slots, korb_slice a)
 {
     struct korb_vm *const vm = c->vm;
@@ -3728,9 +3742,11 @@ static RESULT korb_bi_refinement_import(CTX *c, korb_value *slots, korb_slice a)
         /* a non-Ruby method aborts here — the modules before this one stay imported */
         { const korb_value m = korb_ary_ptr(VAL2ARY(KORB_REF_GET(mref)))[i];   /* re-read: the warn dispatched */
           const KorbClass *const mk = VAL2CLASS(m);
+          /* a module koruby writes in Ruby in place of a C extension (lib/zlib.rb) is C to CRuby */
+          const bool native = KORB_TRUTHY(korb_class_ivar_get(m, ID2SYM(korb_intern_lit(vm, "__korb_native", 13))));
           for (uint32_t j = 0; j < mk->method_cnt; j++) {
               const uint8_t k = mk->methods[j]->kind;
-              if (k != KORB_METHOD_ISEQ && k != KORB_METHOD_ATTR_R && k != KORB_METHOD_ATTR_W) {
+              if (native || (k != KORB_METHOD_ISEQ && k != KORB_METHOD_ATTR_R && k != KORB_METHOD_ATTR_W)) {
                   char nm[224]; korb_class_desc_into(c, m, nm, sizeof nm);
                   return korb_raise(c, slots, KORB_E_ARGUMENT, 0,
                                     "Can't import method which is not defined with Ruby code: %s#%s",

@@ -1039,6 +1039,11 @@ korb_eq_body(CTX *c, korb_value *slots, korb_value l, korb_value rhs, uint64_t f
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         return RESULT_OK(KORB_TRUTHY(r.value) ? KORB_TRUE : KORB_FALSE);
     }
+    /* Complex#== with a user Numeric asks its #real? first (nucomp_eqeq_p, in korb_m_cpx_eq) */
+    if (UNLIKELY(KORB_COMPLEX_P(l) && KORB_OBJECT_P(rhs))) {
+        slots[0] = l; slots[1] = rhs;
+        return KP_DEOPT(c, flink, slots, korb_send(c, slots + 2, c->vm->mid_eq, 0, 1));
+    }
     /* Numeric#== is reflexive for a non-numeric other: `5 == obj` → `obj == 5`,
      * answered as a boolean (CRuby's num_equal: RTEST of that call). */
     if (KORB_OBJECT_P(rhs) &&
@@ -1635,7 +1640,7 @@ node_simple_entry(CTX *c, NODE *n, korb_value *slots, NODE *body, uint32_t param
 {
     (void)n;
     korb_value *const base = slots - params_cnt;
-    if (params_cnt != 0) korb_kwargs_unmark(base[params_cnt - 1]);   /* fixed positional: the call-site kwargs mark stops here */
+    if (params_cnt != 0) korb_kwargs_unmark_pos(c, slots, &base[params_cnt - 1]);   /* fixed positional: the call-site kwargs mark stops here */
     char cstack_probe;
     korb_value *const resv = base + locals_cnt + KORB_FRAME_SLACK;
     if (UNLIKELY(resv > c->slots_limit || &cstack_probe < c->cstack_limit))
