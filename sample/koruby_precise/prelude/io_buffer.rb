@@ -60,11 +60,19 @@ class IO
       @parent = parent          # slice の親 Buffer (validity 追跡)
       @parent_gen = parent ? parent.__gen : nil
       @gen = 0                  # free/transfer で bump → 子 slice が invalid 化
+      # Ruby 4.1: a slice shares its root's allocation — the lock count lives on
+      # the root, and a slice is valid while the root still holds the String it
+      # was cut from and the slice's range lies inside the root.
+      @root = parent ? parent.__root : self
+      @lock_count = 0
       @addr = addr || (source ? ((object_id << 6) & 0xffff_ffff_ffff) | 0x7000_0000_0000 : 0)
       self
     end
 
     def __gen; @gen; end
+    def __root; @root; end
+    def __lock_count; @lock_count; end
+    def __lock_add(n); @lock_count += n; end
     def __source; @source; end
     def __offset; @offset; end
     def __string_backed; @string_backed; end
@@ -128,7 +136,7 @@ class IO
       begin
         yield buffer
       ensure
-        buffer.free
+        buffer.__free_internal       # even when the block froze it (CRuby's C-level cleanup)
       end
     end
 
@@ -144,7 +152,7 @@ class IO
       begin
         yield buffer
       ensure
-        buffer.free
+        buffer.__free_internal       # even when the block froze it (CRuby's C-level cleanup)
       end
       backing.force_encoding(Encoding::BINARY)
     end
@@ -224,14 +232,13 @@ class IO
     def internal?; (@flags & INTERNAL) != 0; end
     def mapped?; (@flags & MAPPED) != 0; end
     def shared?; (@flags & SHARED) != 0; end
-    def locked?; (@flags & LOCKED) != 0; end
+    def locked?; (@flags & LOCKED) != 0 || @root.__lock_count > 0; end
     def private?; (@flags & PRIVATE) != 0; end
     def readonly?; (@flags & READONLY) != 0; end
 
     def valid?
-      return true unless @parent
-      return true if @parent.__string_backed        # String がメモリを保持
-      @parent.__gen == @parent_gen && @offset + @size <= @parent.size
+      return true if @root.equal?(self)
+      @root.__source.equal?(@source) && @offset + @size <= @root.__offset + @root.size
     end
 
     # 親が free / transfer / 縮小された slice への操作は InvalidatedError。
@@ -239,17 +246,33 @@ class IO
       raise InvalidatedError, "Buffer has been invalidated!" unless valid?
     end
 
+    # Locks nest, and a slice and its root share one lock (Ruby 4.1).
     def locked
-      raise LockedError, "Buffer already locked!" if locked?
-      @flags |= LOCKED
+      __valid!
+      root = @root
+      root.__lock_add(1)
       begin
         yield self
       ensure
-        @flags &= ~LOCKED
+        root.__lock_add(-1)
       end
     end
 
+    # Freezing marks the buffer, not the object: its bookkeeping must stay
+    # writable for .for's cleanup.  Frozen, it refuses free / resize / transfer
+    # (FrozenError) but its bytes stay writable, as in CRuby.
+    def freeze; @__frozen = true; self; end
+    def frozen?; @__frozen == true; end
+    private def __frozen!
+      raise FrozenError.new("can't modify frozen IO::Buffer: #{inspect}", receiver: self) if @__frozen
+    end
+
     def free
+      __frozen!
+      __free_internal
+    end
+
+    def __free_internal
       raise LockedError, "Buffer is locked!" if locked?
       @gen += 1
       @source = nil
@@ -262,6 +285,7 @@ class IO
     end
 
     def transfer
+      __frozen!
       raise LockedError, "Cannot transfer ownership of locked buffer!" if locked?
       moved = self.class.__wrap(@source, @offset, @size, @flags, @slice, nil, @addr)
       moved.__mark_string_backed if @string_backed
@@ -275,6 +299,8 @@ class IO
     end
 
     def resize(new_size)
+      __frozen!
+      return __resize_view(new_size) unless @root.equal?(self)
       raise LockedError, "Cannot resize locked buffer!" if locked?
       raise TypeError, "not an Integer" unless new_size.is_a?(Integer)
       raise ArgumentError, "Size can't be negative!" if new_size < 0
@@ -301,6 +327,20 @@ class IO
       end
       self
     end
+
+    # A slice resizes as a view: it stays inside its root's allocation (no copy,
+    # flags and the lock untouched).
+    def __resize_view(new_size)
+      raise TypeError, "not an Integer" unless new_size.is_a?(Integer)
+      raise ArgumentError, "Size can't be negative!" if new_size < 0
+      __valid!
+      if @offset + new_size > @root.__offset + @root.size
+        raise ArgumentError, "Resized slice exceeds its source buffer!"
+      end
+      @size = new_size
+      self
+    end
+    private :__resize_view
 
     def slice(offset = 0, length = nil)
       raise ArgumentError, "Offset can't be negative!" if offset < 0

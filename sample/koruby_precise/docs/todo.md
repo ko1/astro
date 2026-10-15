@@ -38,6 +38,13 @@ korb_runtime.c の `#include <execinfo.h>`（EXPERIMENT acct45、2026-10-09 mast
 `ASTrogre.compile` が "failed to parse pattern: [\xNN]" で ArgumentError。HEAD の astrogre を別ディレクトリに
 展開しても同じなので今回の変更とは無関係。
 
+## 未: IO::Buffer.for(string) の間の元 String の一時ロック・プロセス間で共有する IO::Buffer.map (2026-10-16)
+- CRuby は block 付きの .for の間、元の String を rb_str_locktmp で守る（変更は RuntimeError
+  "can't modify string; temporarily locked"）。koruby の String に一時ロックの印が無い（FROZEN と別の
+  ビットと、frozen? / dup / バッファ自身の書き込みの扱いが要る）。
+- .map はファイル内容のコピーなので、fork した子の書き込みが親に見えない（本物の mmap(MAP_SHARED) が要る）。
+- rubyspec: core/io/buffer/for_spec 1 例、map_spec 1 例。
+
 ## 未: autoload 中の定数が他のスレッドから見える (2026-10-16)
 CRuby は autoload の読み込みが終わるまで、新しい定数を読み込み中のスレッドにだけ見せ（autoloading value）、
 他のスレッドは autoload の完了を待つ。koruby は `module ModN` を実行した時点で表に入るので、他のスレッドが
