@@ -188,6 +188,7 @@ kp_enc_comment_first_line(const char *const src, const size_t len)
         while (i < len && src[i] != '\n') i++;
         if (i < len) i++;
     }
+    while (i < len && (src[i] == ' ' || src[i] == '\t')) i++;   /* `  # encoding: x` counts too */
     if (i >= len || src[i] != '#') return false;
     size_t eol = i;
     while (eol < len && src[eol] != '\n') eol++;
@@ -421,6 +422,8 @@ static uint32_t
 kp_intern_cid(struct kp_ctx *tc, pm_constant_id_t cid)
 {
     const pm_constant_t *const ct = pm_parser_constant(tc->parser, cid);
+    if (UNLIKELY(tc->src_enc != KORB_ENC_UTF8))          /* an identifier carries the source's encoding (CRuby) */
+        return korb_intern_enc(tc->c->vm, (const char *)pm_constant_start(ct), (uint32_t)pm_constant_length(ct), tc->src_enc);
     return korb_intern(tc->c->vm, (const char *)pm_constant_start(ct), pm_constant_length(ct));
 }
 
@@ -6051,7 +6054,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
          * top level ends the file), but a class/module body is not — a `return`
          * that reaches one has nowhere to go (LocalJumpError). */
         if (mf->method_mid == 0 && (mf->class_name_sym || mf->anon_class_body)) depth = 0;
-        else if (mf->method_mid == 0 && !mf->lambda_body && depth == 0 && rn->arguments)   /* bare top-level return yields no value */
+        else if (mf->method_mid == 0 && !mf->lambda_body && depth == 0 && rn->arguments && !tc->in_eval)   /* bare top-level return yields no value */
             kp_stash_warn_line(tc->c, 'D', tc->fname, "argument of top-level return is ignored");
         if (depth == 0) {
             return ALLOC_node_return(kp_jump_args_value(tc, rn->arguments));
@@ -6267,6 +6270,14 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
         struct kp_frame *mf = tc->frame;
         uint32_t depth = 0;
         while (mf->method_mid == 0 && mf->prev) { mf = mf->prev; depth++; }
+        /* eval(str) whose binding is in no method: CRuby rejects the yield while compiling */
+        if (mf->method_mid == 0 && !mf->dm_body && tc->in_eval && tc->eval_outer != NULL && tc->eval_method_mid == 0 &&
+            tc->syntax_err == NULL) {
+            static char ybuf2[512];
+            snprintf(ybuf2, sizeof ybuf2, "%s:%u: Invalid yield", tc->fname, line);
+            tc->syntax_err = ybuf2;
+            tc->syntax_error = true;
+        }
         if (mf->method_mid == 0) { mf = tc->frame; depth = 0; }  /* yield outside a method: legacy path (raises at runtime) */
         mf->uses_block = true;                   /* the method reserves the block trio */
         if (depth > 0) {   /* the block is in an outer frame: the escape must keep it */

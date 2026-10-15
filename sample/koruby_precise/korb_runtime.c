@@ -5011,6 +5011,7 @@ RESULT korb_make_binding(CTX *c, korb_value *slots, korb_value *frame_base, cons
     ARO_STORE(c, b, (korb_value *)(uintptr_t)&b->self, slots[0]);
     ARO_STORE(c, b, (korb_value *)(uintptr_t)&b->extra, KORB_NIL);
     ARO_STORE(c, b, (korb_value *)(uintptr_t)&b->cref, slots[2]);
+    ARO_STORE(c, b, (korb_value *)(uintptr_t)&b->refine_set, c->refinements);
     if (KORB_CLASS_P(c->eval_outer_cref) && slots[2] == c->eval_cref)   /* taken right in a class_eval(String) */
         ARO_STORE(c, b, (korb_value *)(uintptr_t)&b->outer_cref, c->eval_outer_cref);
     /* Resolve the owning method NOW: a binding taken inside an eval'd string has
@@ -23031,7 +23032,10 @@ korb_eval_binding_core(CTX *c, korb_value *slots, korb_value *src_slot, korb_val
     const uint8_t saved_vis = KORB_CLASS_P(fb[-1]) ? VAL2CLASS(fb[-1])->cur_visibility : 0xffu;
     const uint32_t saved_emid = c->eval_mid;        /* `::Kernel.__method__` in the string (the bare form is baked) */
     c->eval_mid = bind_mid;
+    const bool refined = VAL2BIND(*bind_slot)->refine_set != KORB_NIL;
+    if (UNLIKELY(refined)) { korb_refine_push(c); c->refinements = VAL2BIND(*bind_slot)->refine_set; }   /* `using` where it was taken */
     RESULT er = EVAL(c, entry, cur);
+    if (UNLIKELY(refined)) korb_refine_pop(c);
     /* the eval frame goes away here: a closure over its locals needs its env
      * closed (heap-copied) first, or it reads a dead stack later.  fb stays
      * intact for the write-back below. */
@@ -23065,6 +23069,7 @@ korb_eval_binding_core(CTX *c, korb_value *slots, korb_value *src_slot, korb_val
  * [str, binding, rest...].  Kernel#eval takes it as is, in this same window; a
  * class's own #eval gets only what was written.  self sits in the window header. */
 static RESULT korb_bi_eval(CTX *c, korb_value *slots, korb_slice args);   /* fwd */
+static RESULT korb_binding_at_frame(CTX *c, korb_value *slots, korb_value *fbase, korb_value self, uint32_t bfile, uint32_t bline);   /* fwd */
 static RESULT korb_bi_eval_b(CTX *c, korb_value *slots, korb_slice args, const bool one) {
     const korb_value self = args.p[-1];
     const korb_value k = korb_dispatch_class(c, self);
@@ -23138,6 +23143,26 @@ korb_bi_eval(CTX *c, korb_value *slots, korb_slice args)
         const korb_value bcref = KORB_BINDING_P(slots[1]) ? VAL2BIND(slots[1])->cref : KORB_NIL;
         return korb_eval_binding_core(c, slots + 2, &slots[0], &slots[1], fname, eline, NULL,
                                       KORB_CLASS_P(bcref) ? bcref : KORB_UNDEF, true);   /* lexical only */
+    }
+    {   /* reached by send / Method#call (a plain `eval(str)` is lowered to one with the caller's binding):
+         * the caller's scope with the RECEIVER as self, as CRuby's rb_f_eval */
+        const korb_value *cell = args.p - 3;
+        for (int g = 0; g < 8 && cell >= c->slots && cell < c->slots_limit; g++) {   /* past C frames (Method#call) */
+            const korb_value v = *cell;
+            if ((v & 7u) != 7u) break;                     /* not a CFRAME link */
+            cell = korb_flink_ptr(v) + KORB_FLINK_OFF;
+        }
+        korb_value *const fbase = korb_link_base(c, cell);
+        if (fbase != NULL) {
+            uint32_t bfile = 0, bline = 0;
+            (void)korb_caller_pos(c, cell, &bfile, &bline);
+            slots[0] = sv;
+            slots[1] = UNWRAP(korb_binding_at_frame(c, slots + 2, fbase, args.p[-1], bfile, bline));
+            sv = slots[0] = KORB_SLICE_GET(args, 0);
+            const korb_value bcref = VAL2BIND(slots[1])->cref;
+            return korb_eval_binding_core(c, slots + 2, &slots[0], &slots[1], fname, eline, NULL,
+                                          KORB_CLASS_P(bcref) ? bcref : KORB_UNDEF, true);
+        }
     }
     const uint32_t repo_before = code_repo_count();
     NODE *ast = koruby_parse_source_at(c, korb_str_ptr(s), s->len, fname, eline, false,

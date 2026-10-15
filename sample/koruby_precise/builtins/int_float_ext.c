@@ -702,6 +702,7 @@ static RESULT korb_obj_copy_impl(CTX *c, korb_value *slots, korb_ref self, uint3
         ARO_STORE(c, nb, (korb_value *)(uintptr_t)&nb->extra, KORB_NIL);
         ARO_STORE(c, nb, (korb_value *)(uintptr_t)&nb->cref,  sb->cref);
         ARO_STORE(c, nb, (korb_value *)(uintptr_t)&nb->outer_cref, sb->outer_cref);
+        ARO_STORE(c, nb, (korb_value *)(uintptr_t)&nb->refine_set, sb->refine_set);
         nb->method_mid = sb->method_mid;
         slots[1] = (korb_value)nb;
         if (VAL2BIND(KORB_REF_GET(self))->extra != KORB_NIL) {   /* own Hash, shared boxes (korb_bind_extra_set) */

@@ -693,6 +693,7 @@ static RESULT korb_m_proc_binding(CTX *c, korb_value *slots, korb_ref self, korb
     ARO_STORE(c, b, (korb_value *)(uintptr_t)&b->env,  p->env);
     ARO_STORE(c, b, (korb_value *)(uintptr_t)&b->self, p->self);
     ARO_STORE(c, b, (korb_value *)(uintptr_t)&b->extra, KORB_NIL);
+    ARO_STORE(c, b, (korb_value *)(uintptr_t)&b->refine_set, p->refine_set);
     return RESULT_OK((korb_value)b);
 }
 static void korb_kw_arity_flags(const void *kwp, bool *req, bool *opt, bool *kwrest);   /* fwd (defined below) */

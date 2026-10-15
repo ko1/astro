@@ -436,6 +436,8 @@ typedef struct KorbBinding {
                                       * `eval(str)` lowers to eval(str, <hidden binding>), so this is what
                                       * makes `def` / `class` / a constant inside the eval'd string land in
                                       * the enclosing class instead of at top level. */
+    korb_value ARO_GC_EDGE refine_set;    /* the refinements active where it was taken (`using` scope): an eval
+                                      * through it sees them; nil = none */
     korb_value ARO_GC_EDGE outer_cref;    /* taken in a class_eval(String): the caller's cref, which CRuby's cref
                                       * chain still holds under the receiver — a later eval searches it too */
     const uint32_t *name_syms;       /* immortal: name_syms[i] = sym of local at env index i */
@@ -2309,6 +2311,7 @@ static inline void korb_scope_stacks_init(const CTX *const c, struct korb_scope_
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_b->extra);                   \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_b->cref);                    \
         ARO_GC_VISIT_EDGE((ctx), edge_visit, &_b->outer_cref);              \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, &_b->refine_set);              \
         (void)(payload_size);                                               \
         break;                                                               \
       }                                                                      \

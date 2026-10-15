@@ -5,6 +5,14 @@
 
 
 
+## 未: eval(str) の中の yield / block_given? / bare super / return が binding のメソッドに届かない (2026-10-16)
+- `def m; eval("yield"); end; m { }` が LocalJumpError（`block_given?` も false）。メソッドが字句上 yield を
+  持たないとブロックの 3 つ組を確保しないうえ、eval のフレームは binding のメソッドの組を読まない。
+- `def foo(a, b:, &blk) = eval("super")` が "super outside a method body"（引数の並びを実行時にフレームから
+  組み直す必要がある。spec: core/kernel/eval_spec）。
+- `-> { proc { eval("return :x") }.call }` で LocalJumpError（eval の先頭の return に行き先が無い。binding の
+  各段がブロックかラムダかを解析時に知る必要がある。spec: core/kernel/eval_spec の eval_return_with_lambda）。
+
 ## 未: `$_` がフレーム局所でなくグローバル（require の中の readline が main に漏れる） (2026-10-15)
 `require "json"` の後で main の `$_` が "\n" になる（rubygems の StubSpecification が gemspec を readline で読む）。
 CRuby の `$_` は `$~` と同じくメソッドのフレームごと。koruby は `$_` を大域の定数表に置いている。`$~` の仕組み
