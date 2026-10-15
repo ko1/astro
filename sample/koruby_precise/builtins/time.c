@@ -654,6 +654,7 @@ static RESULT korb_time_from_parts(CTX *c, korb_value *slots, korb_value cls, ko
                 if (UNLIKELY(r.state != KORB_NORMAL)) return r;
                 if (FIXNUM_P(r.value)) { comp[i] = FIX2LONG(r.value); cls = slots[0]; continue; }
                 if (KORB_FLOAT_P(r.value)) { comp[i] = (korb_sword_t)korb_float_val(r.value); cls = slots[0]; continue; }
+                cv = slots[1];                               /* re-read: the send can move it */
             }
             if (korb_responds_to(c, cv, korb_intern_lit(c->vm, "to_str", 6))) {
                 slots[1] = cv;

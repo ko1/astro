@@ -5,10 +5,6 @@
 
 
 
-## 未: make codeql-check が「使われていない ARO_BORROW 注釈 3 件」で落ちる (2026-10-15)
-- korb_ary_ptr / korb_str_ptr / korb_hash_pairs（context.h）が「raw payload に触れていない」と判定される。
-  master（f6f37b41）でも同じ失敗なので既存。注釈を外すか、規則（accessor の判定）を直すかは未決。
-
 ## 未: `for x in obj` が obj.each を先に回し切ってから本体を回す (2026-10-15)
 - node_for は each を to_enum.to_a で配列にしてから回す。CRuby は each にブロックを渡すので、
   `def o.each; yield 1; puts "after yield"; yield 2; end; for x in o; puts x; end` の出力順が違う

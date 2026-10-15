@@ -1691,9 +1691,10 @@ korb_str_interp(CTX *c, korb_value *slots, korb_ref aref, korb_value part, uint3
     /* ASCII text onto an owned ASCII-compatible acc keeps acc's encoding (as the copy would): no temporary String */
     if (owned == 1 && !SYMBOL_P(p) && korb_enc_ascii_compat_idx(vm, KORB_STR_ENC(KORB_REF_GET(aref))))
         return korb_str_cat(c, slots, aref, src, slen);   /* src: the stack buffer or a static literal */
+    const bool sym = SYMBOL_P(p);                       /* before the alloc: a Float `p` moves */
     const korb_value tmp = UNWRAP(korb_str_new(c, slots, src, slen));
     /* nil / true / false / Integer / Float#to_s are US-ASCII, a Symbol's is its own (US-ASCII when 7-bit) */
-    if (owned >= 2 && (!SYMBOL_P(p) || korb_str_ascii_only_p(vm, tmp))) KORB_STR_ENC_SET(tmp, KORB_ENC_USASCII);
+    if (owned >= 2 && (!sym || korb_str_ascii_only_p(vm, tmp))) KORB_STR_ENC_SET(tmp, KORB_ENC_USASCII);
     korb_ref tref = SLOTS_PUSH(slots, tmp);
     return korb_str_interp_add(c, slots, aref, tref, owned);
 }
@@ -23580,6 +23581,97 @@ korb_bi_heap_objects(CTX *c, korb_value *slots, korb_slice args)
     return RESULT_OK(slots[1]);
 }
 
+/* --- objspace: reachable_objects_from / memsize_of ------------------------------------------------------
+ * The object's own GC edges (AROH_SCAN_EDGES), with the backing stores that are not Ruby objects (an Array /
+ * Hash payload, a String buffer, a closure env) looked through: what CRuby lists is the Ruby objects.  The
+ * scan must not allocate, so the result is counted first and filled into an exactly sized Array. */
+struct korb_objspace_edges {
+    korb_value self;
+    korb_value klass;     /* listed first; skipped when an edge names it again */
+    uint32_t   count;
+    uint64_t   bytes;     /* memsize: the object and the backing stores looked through */
+    KorbArray *dst;       /* NULL: counting */
+    CTX       *c;
+    int        depth;
+};
+static void korb_objspace_scan(struct korb_objspace_edges *e, void *payload, bool top);
+static bool korb_objspace_internal_p(const void *const payload)
+{
+    switch (((const AroObjectHeader *)payload)->flags & KORB_OBJ_TYPE_MASK) {
+      case KORB_OBJ_VALUE_ARRAY: case KORB_OBJ_STR_BUF: case KORB_OBJ_ENV: return true;
+      default: return false;
+    }
+}
+static void
+korb_objspace_edge(void *ctx, void **raw)
+{
+    struct korb_objspace_edges *const e = (struct korb_objspace_edges *)ctx;
+    void *const p = *raw;
+    const korb_value v = (korb_value)(uintptr_t)p;
+    if (p == NULL || v == e->self) return;
+    if (korb_objspace_internal_p(p)) {
+        if (e->depth < 4) { e->depth++; korb_objspace_scan(e, p, false); e->depth--; }
+        return;
+    }
+    if (v == e->klass) return;
+    if (e->dst != NULL) {
+        if (e->dst->len >= e->dst->capa) return;
+        ARO_STORE(e->c, korb_ary_owner(e->dst), &korb_ary_ptr(e->dst)[e->dst->len], v);
+        e->dst->len++;
+    }
+    e->count++;
+}
+static void
+korb_objspace_scan(struct korb_objspace_edges *e, void *payload, const bool top)
+{
+    AroObjectHeader *const h = (AroObjectHeader *)payload;
+    e->bytes += h->gc_size;
+    /* an Array's elements are scanned from the Array itself: its payload's capacity holds dead slots */
+    if (!top && (h->flags & KORB_OBJ_TYPE_MASK) == KORB_OBJ_VALUE_ARRAY && e->depth == 1 &&
+        (((const AroObjectHeader *)(uintptr_t)e->self)->flags & KORB_OBJ_TYPE_MASK) == KORB_OBJ_ARRAY)
+        return;
+    AROH_SCAN_EDGES(payload, h->gc_size, e, korb_objspace_edge);
+}
+static void
+korb_objspace_run(CTX *const c, struct korb_objspace_edges *const e)
+{
+    e->c = c; e->count = 0; e->bytes = 0; e->depth = 0;
+    if (e->klass != KORB_NIL && e->dst != NULL && e->dst->len < e->dst->capa) {
+        ARO_STORE(c, korb_ary_owner(e->dst), &korb_ary_ptr(e->dst)[e->dst->len], e->klass);
+        e->dst->len++;
+    }
+    if (e->klass != KORB_NIL) e->count++;
+    korb_objspace_scan(e, (void *)(uintptr_t)e->self, true);
+}
+
+/* __objspace_reachable(obj) — ObjectSpace.reachable_objects_from: nil for an immediate */
+static RESULT
+korb_bi_objspace_reachable(CTX *c, korb_value *slots, korb_slice args)
+{
+    const korb_value obj = KORB_SLICE_GET(args, 0);
+    if (!AROH_IS_GC_OBJECT(obj)) return RESULT_OK(KORB_NIL);
+    slots[0] = obj;
+    slots[1] = korb_dispatch_class(c, obj);
+    struct korb_objspace_edges e = { .self = slots[0], .klass = slots[1] };
+    korb_objspace_run(c, &e);
+    slots[2] = UNWRAP(korb_ary_new(c, slots + 3, e.count));
+    e.self = slots[0]; e.klass = slots[1]; e.dst = VAL2ARY(slots[2]);   /* re-read: the alloc may have moved them */
+    korb_objspace_run(c, &e);
+    return RESULT_OK(slots[2]);
+}
+
+/* __objspace_memsize(obj) — ObjectSpace.memsize_of: bytes of the object and its backing stores, 0 for an immediate */
+static RESULT
+korb_bi_objspace_memsize(CTX *c, korb_value *slots, korb_slice args)
+{
+    (void)slots;
+    const korb_value obj = KORB_SLICE_GET(args, 0);
+    if (!AROH_IS_GC_OBJECT(obj)) return RESULT_OK(LONG2FIX(0));
+    struct korb_objspace_edges e = { .self = obj, .klass = KORB_NIL };
+    korb_objspace_run(c, &e);
+    return RESULT_OK(LONG2FIX((korb_sword_t)e.bytes));
+}
+
 /* __clock_gettime(id) — seconds as Float from the clock the id names (backs
  * Process.clock_gettime).  0 = REALTIME, 2 = PROCESS_CPUTIME, 3 = THREAD_CPUTIME,
  * anything else = MONOTONIC (the prelude's own numbering). */
@@ -24444,6 +24536,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__json_parse", korb_bi_json_parse, 3);   /* lib/json/ext/parser.rb fast path */
     korb_builtin_define(c, "__json_generate", korb_bi_json_generate, 9);   /* lib/json/ext/generator.rb fast path */
     korb_builtin_define(c, "__heap_objects__", korb_bi_heap_objects, -1);
+    korb_builtin_define(c, "__objspace_reachable", korb_bi_objspace_reachable, 1);   /* lib/objspace.rb */
+    korb_builtin_define(c, "__objspace_memsize", korb_bi_objspace_memsize, 1);       /* lib/objspace.rb */
     korb_builtin_define(c, "__undef_new", korb_bi_undef_new, 1);
     korb_builtin_define(c, "__byte_find", korb_bi_byte_find, 3);   /* prelude/stringio.rb #gets */
     korb_builtin_define(c, "__r2k_mark", korb_bi_r2k_mark, 1);     /* prelude/marshal.rb :K */

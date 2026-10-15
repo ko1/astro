@@ -26,6 +26,13 @@ predicate touchesInterior(Function f) {
     fa.getTarget().getName() = ["data", "data_priv"] and
     fa.getTarget().getDeclaringType().getName() = ["KorbStrBuf", "KorbArrayItems"])
   or
+  // the elements past the header of the object the payload pointer names (an embedded Array / Hash /
+  // String is its own payload, so the accessor offsets from items_priv / buf instead of reading data_priv)
+  exists(FieldAccess fa |
+    fa.getEnclosingFunction() = f and
+    fa.getTarget().getName() = ["items_priv", "buf"] and
+    fa.getTarget().getDeclaringType().getName() = ["KorbArray", "KorbHash", "KorbString"])
+  or
   exists(FunctionCall c | c.getEnclosingFunction() = f and isBorrowAccessor(c.getTarget()))
 }
 
