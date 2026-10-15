@@ -2366,6 +2366,20 @@ class Dir
     raise IOError, "closed directory" if @__dir_closed
     @__dir_fd ||= IO.sysopen(path, File::RDONLY)
   end
+
+  # Dir.for_fd(fd): the directory an open descriptor names; the Dir owns that fd from now on
+  def self.for_fd(fd)
+    fd = Integer === fd ? fd : fd.to_int
+    target = begin
+      File.readlink("/proc/self/fd/#{fd}")
+    rescue SystemCallError
+      raise Errno::EBADF, "fdopendir"
+    end
+    raise Errno::ENOTDIR, "fdopendir" unless File.directory?(target)
+    dir = open(target)
+    dir.instance_variable_set(:@__dir_fd, fd)
+    dir
+  end
 end
 
 module Process

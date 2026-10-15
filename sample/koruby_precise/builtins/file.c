@@ -88,6 +88,9 @@ static RESULT korb_raise_errno(CTX *c, korb_value *slots, int e, const char *fun
     RESULT r = korb_raise(c, slots + 1, KORB_E_RUNTIME, 0, "%s", msg);
     if (KORB_CLASS_P(slots[0]) && KORB_EXC_P(r.value))
         ARO_STORE(c, VAL2EXC(r.value), (korb_value *)(uintptr_t)&VAL2EXC(r.value)->exc_class, slots[0]);
+    if (path && KORB_EXC_P(r.value) && KORB_STRING_P(VAL2EXC(r.value)->msg) &&
+        !korb_str_enc_valid(c->vm, VAL2STR(VAL2EXC(r.value)->msg), KORB_ENC_UTF8))
+        KORB_STR_ENC_SET(VAL2EXC(r.value)->msg, KORB_ENC_BINARY);   /* a binary path's bytes: the message is binary (CRuby) */
     return r;
 }
 
@@ -234,12 +237,7 @@ static RESULT korb_file_realpath(CTX *c, korb_value *slots, korb_ref self, korb_
     char real[4096];
     /* The result keeps the path's encoding — but an all-ASCII path carries no
      * encoding of its own, so the base directory's wins (CRuby). */
-    uint32_t penc = KORB_STR_ENC(pv);
-    if (KORB_SLICE_LEN(a) >= 2 && KORB_STRING_P(KORB_SLICE_GET(a, 1))) {
-        bool ascii = true;
-        for (uint32_t i = 0; i < plen; i++) if ((unsigned char)path[i] >= 0x80) { ascii = false; break; }
-        if (ascii) penc = KORB_STR_ENC(KORB_SLICE_GET(a, 1));
-    }
+    const uint32_t penc = KORB_STR_ENC(pv);            /* rb_check_realpath_internal's origenc: the PATH's */
     if (!realpath(joined, real)) {
         const int e1 = errno;
         bool ok = false;
@@ -285,7 +283,19 @@ static RESULT korb_file_realpath(CTX *c, korb_value *slots, korb_ref self, korb_
         if (!ok) return korb_raise_errno(c, slots, e1, "realpath", joined);
     }
     RESULT rr = korb_str_new(c, slots, real, (uint32_t)strlen(real));
-    if (LIKELY(rr.state == KORB_NORMAL)) KORB_STR_ENC_SET(rr.value, penc);
+    if (LIKELY(rr.state == KORB_NORMAL) && penc != KORB_ENC_UTF8) {   /* tagged with it; broken there → fs (UTF-8) → BINARY */
+        if (dironly) {                                  /* rb_check_realpath_emulate: only an ASCII result takes it */
+            bool ascii = true;
+            for (const char *q = real; *q; q++) if ((unsigned char)*q >= 0x80) { ascii = false; break; }
+            if (ascii) KORB_STR_ENC_SET(rr.value, penc);
+            return rr;
+        }
+        KORB_STR_ENC_SET(rr.value, penc);
+        if (!korb_str_enc_valid(c->vm, VAL2STR(rr.value), penc)) {
+            KORB_STR_ENC_SET(rr.value, KORB_ENC_UTF8);
+            if (!korb_str_enc_valid(c->vm, VAL2STR(rr.value), KORB_ENC_UTF8)) KORB_STR_ENC_SET(rr.value, KORB_ENC_BINARY);
+        }
+    }
     return rr;
 }
 static RESULT korb_m_file_realpath(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
@@ -351,6 +361,8 @@ static RESULT korb_file_expand(CTX *c, korb_value *slots, korb_slice a, bool til
                 basebuf[bl++] = '/'; memcpy(basebuf + bl, base, blen); bl += blen;
             }
         } else {
+            if (UNLIKELY(!korb_enc_ascii_compat_idx(c->vm, c->vm->enc_external)))   /* the cwd is in the fs encoding */
+                return korb_raise_enc_compat(c, slots + 2, KORB_ENC_UTF8, c->vm->enc_external);
             if (getcwd(basebuf, sizeof basebuf)) bl = strlen(basebuf); else { basebuf[0] = '/'; bl = 1; }
         }
         memcpy(raw, basebuf, bl); r = bl;
@@ -2117,7 +2129,7 @@ static RESULT korb_dir_list(CTX *c, korb_value *slots, korb_slice a, bool with_d
     korb_ref arr = KORB_REF_AT(&slots[0]);
     /* names come from the OS: the `encoding:` option (or the locale) says what
      * they are, Encoding.default_internal says what they must become */
-    const uint32_t from = (enc == UINT32_MAX) ? c->vm->enc_locale : enc;
+    const uint32_t from = (enc == UINT32_MAX) ? c->vm->enc_external : enc;
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         if (!with_dots && (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)) continue;
@@ -2154,8 +2166,13 @@ static uint32_t korb_dir_closed_id(CTX *c) { return korb_intern_lit(c->vm, "@__d
 static RESULT korb_dir_mark_closed(CTX *c, korb_value *slots, korb_ref dir) {
     const korb_value fd = korb_ivar_get(c, KORB_REF_GET(dir), ID2SYM(korb_intern_lit(c->vm, "@__dir_fd", 9)));
     if (FIXNUM_P(fd)) {
-        close((int)FIX2LONG(fd));
+        const int cr = close((int)FIX2LONG(fd));
+        const int ce = errno;
         CHECK(korb_ivar_set(c, slots, dir, ID2SYM(korb_intern_lit(c->vm, "@__dir_fd", 9)), KORB_NIL));
+        if (cr != 0 && ce == EBADF) {                  /* another Dir (Dir.for_fd) closed it first */
+            CHECK(korb_ivar_set(c, slots, dir, ID2SYM(korb_dir_closed_id(c)), KORB_TRUE));
+            return korb_raise_errno(c, slots, ce, NULL, "closedir");
+        }
     }
     return korb_ivar_set(c, slots, dir, ID2SYM(korb_dir_closed_id(c)), KORB_TRUE);
 }
@@ -2170,7 +2187,7 @@ static RESULT korb_dir_fill(CTX *c, korb_value *slots, korb_ref obj, const char 
     slots[0] = UNWRAP(korb_ary_new(c, slots, 16));            /* entries (rooted) */
     /* names come from the OS: the `encoding:` option (or the locale) says what
      * they are, Encoding.default_internal says what they must become */
-    const uint32_t from = (enc == UINT32_MAX) ? c->vm->enc_locale : enc;
+    const uint32_t from = (enc == UINT32_MAX) ? c->vm->enc_external : enc;   /* rb_filesystem_encoding: the external one */
     { korb_ref arr = KORB_REF_AT(&slots[0]); struct dirent *ent;
       while ((ent = readdir(d)) != NULL) {
         if (korb_ext_str_new(c, slots + 1, ent->d_name, (uint32_t)strlen(ent->d_name), from).state != KORB_NORMAL) break;
