@@ -1766,6 +1766,10 @@ struct korb_vm {
     uint32_t cov_n, cov_cap;
     uint8_t cov_state;                 /* 0 idle, 1 set up (instrument, do not count), 2 running */
     bool cov_eval, cov_methods;
+    /* autoloads in progress: the constant a thread is loading stays undefined to the others
+     * (const_get / const_source_location), which wait in require instead */
+    struct korb_ald { uint32_t owner_serial, name, reg_fsym, reg_line; const struct korb_thread *th; bool reg_loc; } *ald;
+    uint32_t ald_n, ald_cap;
 };
 struct korb_cov_meth { uint32_t name, sl, sc, el, ec; uint64_t count; };
 struct korb_cov_file {

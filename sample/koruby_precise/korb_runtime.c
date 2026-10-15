@@ -18949,6 +18949,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_CLASS, "const_get", korb_m_class_const_get, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "const_source_location", korb_m_mod_const_source_location, -1);
     korb_def_cmethod(c, KORB_C_CLASS, "__const_reg_loc", korb_m_mod_const_reg_loc, 3);   /* prelude: Module#autoload */
+    korb_def_cmethod(c, KORB_C_CLASS, "__autoload_busy", korb_m_mod_autoload_busy, 2);
     korb_def_cmethod(c, KORB_C_CLASS, "__lexical_parent", korb_m_mod_lexical_parent, 0);
     korb_def_cmethod(c, KORB_C_CLASS, "autoload_relative", korb_m_mod_autoload_relative, 2);
     korb_def_cmethod(c, KORB_C_CLASS, "remove_const", korb_m_class_remove_const, 1);
@@ -18996,6 +18997,7 @@ korb_register_core_methods(CTX *c)
     MOD_CFN("const_get", korb_m_class_const_get, -1);
     MOD_CFN("const_source_location", korb_m_mod_const_source_location, -1);
     MOD_CFN("__const_reg_loc", korb_m_mod_const_reg_loc, 3);
+    MOD_CFN("__autoload_busy", korb_m_mod_autoload_busy, 2);
     MOD_CFN("__lexical_parent", korb_m_mod_lexical_parent, 0);
     MOD_CFN("autoload_relative", korb_m_mod_autoload_relative, 2);
     MOD_CFN("const_defined?", korb_m_class_const_defined, -1);
@@ -20541,7 +20543,12 @@ korb_eval_toplevel_wrap(CTX *c, korb_value *slots, const char *src, size_t len, 
      * backtrace taken in here shows "Kernel#require" and walks on into the
      * requirer (CRuby). */
     const uint32_t fsym = korb_intern(c->vm, fname, strlen(fname));
-    korb_reg_srcloc(c->vm, ast, fsym, 0);
+    {   /* a file that is ONE statement has that statement as its root: keep its own line
+         * (`module M ... end` alone in a file reported line 0 to const_source_location) */
+        uint32_t f0, l0;
+        if (korb_srcloc_find(c->vm, ast, &f0, &l0)) korb_bt_note_ptr(c->vm, ast);
+        else korb_reg_srcloc(c->vm, ast, fsym, 0);
+    }
     korb_id_set(fb, korb_fid_main(fsym, true));
     fb[KORB_FLINK_OFF] = korb_flink_req_frame(c, req_base);
     /* CRuby has ONE top-level `main`, so a `def self.x` here lands on the object

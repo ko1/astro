@@ -130,7 +130,13 @@ class Module
     # require が失敗したら登録は残す (CRuby と同じ: 次の参照でも LoadError。
     # 先に消すと、同じ定数を待っている別スレッドが登録を見失って NameError
     # になる)。成功したときだけ一度きりの登録を外す。
-    Module.__autoload_require(path)                 # main.require (CRuby; mockable in specs)
+    busy = owner || self                            # other threads see the constant only once this is done
+    busy.send(:__autoload_busy, name, true)
+    begin
+      Module.__autoload_require(path)               # main.require (CRuby; mockable in specs)
+    ensure
+      busy.send(:__autoload_busy, name, false)
+    end
     __autoload_drop(name)
     owner.send(:__autoload_drop, name) if owner
     ancestors.each { |m| m.send(:__autoload_drop, name) if m.respond_to?(:__autoload_drop, true) }

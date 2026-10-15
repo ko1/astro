@@ -45,12 +45,15 @@ korb_runtime.c の `#include <execinfo.h>`（EXPERIMENT acct45、2026-10-09 mast
 - .map はファイル内容のコピーなので、fork した子の書き込みが親に見えない（本物の mmap(MAP_SHARED) が要る）。
 - rubyspec: core/io/buffer/for_spec 1 例、map_spec 1 例。
 
-## 未: autoload 中の定数が他のスレッドから見える (2026-10-16)
-CRuby は autoload の読み込みが終わるまで、新しい定数を読み込み中のスレッドにだけ見せ（autoloading value）、
-他のスレッドは autoload の完了を待つ。koruby は `module ModN` を実行した時点で表に入るので、他のスレッドが
-中身の無いモジュールを掴む（rubyspec: core/module/autoload_spec の 2 例、concurrently / const_source_location）。
-読み込み中の (名前, owner) への定義を別表に置き、読み込み中のスレッドの探索だけがそれを見る仕組みが要る。
+## 未: ObjectSpace.trace_object_allocations (2026-10-16)
+割り当て位置の記録は全オブジェクトの割り当て（korb_alloc）に確認が要り、moving GC で動くオブジェクトを
+鍵にした表（GC での付け替え）も要る。無効時の負担を出さない方法が無いので未着手。
+rubyspec: library/objectspace/trace_object_allocations_spec 14 例、trace_spec 1 例。
 
+## 未: autoload 中の定数をノードのキャッシュ経由で見る他スレッド (2026-10-16)
+const_get / const_source_location は読み込み中のスレッド以外には未定義に見せて require で待たせるようにした
+（vm->ald）。`Foo::Bar` のような定数ノードは探索結果をキャッシュするので、読み込み中のスレッドが先に
+キャッシュを埋めると他スレッドが中身の無いモジュールを掴みうる（rubyspec は const_get だけで確かめる）。
 ## 未: 外の変数を使わないブロックの binding がメソッドの引数を見ない (2026-10-16)
 `def o.m(some) = -> {}; eval("some", o.m(1).binding)` が NameError（CRuby は 1）。何も捕まえないブロックは
 環境を作らない（メソッドが戻った後はフレームが無い）。直すとブロックを作るたびに環境を確保することになり遅く

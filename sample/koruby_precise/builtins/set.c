@@ -2600,6 +2600,7 @@ static RESULT korb_m_mod_lexical_parent(CTX *c, korb_value *slots, korb_ref self
 /* Module#const_source_location(name, inherit = true) — [file, line] where the
  * constant was assigned, [] for one defined in C (no position recorded), nil
  * when the constant is not defined at all. */
+static const struct korb_ald *korb_autoload_busy_other(const struct korb_vm *vm, korb_value owner, uint32_t name);   /* fwd */
 static RESULT korb_m_mod_const_source_location(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     struct korb_vm *const vm = c->vm;
     korb_value name = KORB_SLICE_GET(a, 0);
@@ -2660,7 +2661,11 @@ static RESULT korb_m_mod_const_source_location(CTX *c, korb_value *slots, korb_r
     uint32_t fsym = 0, line = 0;
     /* read the table BEFORE allocating: loc_owner is a bare C local, so the
      * array below would leave it pointing at the pre-GC copy of the module */
-    const bool have_loc = korb_const_get_loc(vm, sym, loc_owner, &fsym, &line);
+    bool have_loc = korb_const_get_loc(vm, sym, loc_owner, &fsym, &line);
+    if (UNLIKELY(vm->ald_n != 0)) {                   /* another thread is autoloading it: still the registration */
+        const struct korb_ald *const r = korb_autoload_busy_other(vm, loc_owner, sym);
+        if (r) { have_loc = r->reg_loc; fsym = r->reg_fsym; line = r->reg_line; }
+    }
     slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 2));
     if (!have_loc) return RESULT_OK(slots[0]);   /* defined in C → [] */
     const char *const f = korb_sym_name(vm, fsym);
@@ -2670,6 +2675,43 @@ static RESULT korb_m_mod_const_source_location(CTX *c, korb_value *slots, korb_r
      * widen through int32_t or it comes back as 4.29e9 (same as source_location) */
     CHECK(korb_ary_push_val(c, slots + 2, KORB_REF_AT(&slots[0]), LONG2FIX((korb_sword_t)(int32_t)line)));
     return RESULT_OK(slots[0]);
+}
+/* The autoload of owner::name being run by ANOTHER thread, or NULL. */
+static const struct korb_ald *korb_autoload_busy_other(const struct korb_vm *const vm, korb_value owner, const uint32_t name)
+{
+    if (owner == KORB_NIL) owner = korb_builtin_class_obj(vm, KORB_C_OBJECT);   /* a top-level constant is Object's */
+    if (!KORB_CLASS_P(owner)) return NULL;
+    const uint32_t ser = VAL2CLASS(owner)->serial;
+    for (uint32_t i = vm->ald_n; i-- > 0; )
+        if (vm->ald[i].owner_serial == ser && vm->ald[i].name == name)
+            return vm->ald[i].th != vm->cur_thread ? &vm->ald[i] : NULL;
+    return NULL;
+}
+/* Module#__autoload_busy(name, on) — the prelude's autoload brackets its require
+ * with it; the record keeps the registration's position for the other threads. */
+static RESULT korb_m_mod_autoload_busy(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)slots;
+    struct korb_vm *const vm = c->vm;
+    const korb_value nv = KORB_SLICE_GET(a, 0);
+    if (!KORB_CLASS_P(KORB_REF_GET(self)) || !SYMBOL_P(nv)) return RESULT_OK(KORB_NIL);
+    const uint32_t ser = VAL2CLASS(KORB_REF_GET(self))->serial, name = SYM2ID(nv);
+    if (KORB_TRUTHY(KORB_SLICE_GET(a, 1))) {
+        if (vm->ald_n == vm->ald_cap) {
+            vm->ald_cap = vm->ald_cap ? vm->ald_cap * 2 : 8;
+            vm->ald = realloc(vm->ald, sizeof *vm->ald * vm->ald_cap);
+            if (!vm->ald) abort();
+        }
+        struct korb_ald *const r = &vm->ald[vm->ald_n++];
+        *r = (struct korb_ald){ ser, name, 0, 0, vm->cur_thread, false };
+        r->reg_loc = korb_const_get_loc(vm, name, KORB_REF_GET(self), &r->reg_fsym, &r->reg_line);
+    } else {
+        for (uint32_t i = vm->ald_n; i-- > 0; )
+            if (vm->ald[i].owner_serial == ser && vm->ald[i].name == name && vm->ald[i].th == vm->cur_thread) {
+                vm->ald[i] = vm->ald[--vm->ald_n];
+                break;
+            }
+    }
+    return RESULT_OK(KORB_NIL);
 }
 /* Module#__const_reg_loc(name, file, line) — the prelude's #autoload records the
  * registration site here, because CRuby's #const_source_location answers that
@@ -2743,6 +2785,9 @@ static RESULT korb_m_class_const_get(CTX *c, korb_value *slots, korb_ref self, k
                          }
             else         idx = korb_const_index_owned(vm, cid, owner);
         }
+        /* being autoloaded by another thread: not there yet — wait in the require below */
+        if (UNLIKELY(vm->ald_n != 0) && idx != UINT32_MAX && korb_autoload_busy_other(vm, vm->const_owners[idx], cid))
+            idx = UINT32_MAX;
         /* A pending autoload on the receiver fires BEFORE the top-level
          * fallback — otherwise `Kramdown::Converter.const_get(:Kramdown)` hands
          * back the TOP-LEVEL Kramdown instead of loading the nested one. */
