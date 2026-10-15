@@ -625,6 +625,14 @@ static RESULT korb_spawn_plan_build(CTX *c, korb_value *slots, korb_slice a, str
     }
     if (UNLIKELY(hi <= lo)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments");
 
+    if (hi - lo == 1 && !KORB_STRING_P(KORB_SLICE_GET(a, lo)) && KORB_OBJECT_P(KORB_SLICE_GET(a, lo)) &&
+        !korb_responds_to(c, KORB_SLICE_GET(a, lo), korb_intern_lit(c->vm, "to_ary", 6)) &&
+        korb_responds_to(c, KORB_SLICE_GET(a, lo), korb_intern_lit(c->vm, "to_str", 6))) {
+        /* a lone #to_str command is the shell command line its String would be */
+        slots[1] = KORB_SLICE_GET(a, lo);
+        UNWRAP(korb_spawn_to_str(c, slots + 1));
+        KORB_REF_SET(KORB_SLICE_REF(a, lo), slots[1]);
+    }
     if (hi - lo == 1 && KORB_STRING_P(KORB_SLICE_GET(a, lo))) {
         uint32_t n; const char *s = korb_str_cstr_len(KORB_SLICE_GET(a, lo), &n);
         if (UNLIKELY(korb_spawn_arg_has_nul(s, n)))
@@ -969,7 +977,11 @@ static RESULT korb_m_process_exec(CTX *c, korb_value *slots, korb_ref self, korb
     (void)self;
     struct korb_spawn_plan plan;
     CHECK(korb_spawn_plan_build(c, slots, a, &plan));
-    const int probe = korb_exec_probe(korb_spawn_file(&plan));   /* before any redirect is applied */
+    /* `fd => fd` keeps that descriptor across the exec: CRuby clears its close-on-exec in this
+     * process before trying, so the change stays even when the exec fails */
+    for (uint32_t i = 0; i < plan.nredir; i++)
+        if (plan.redir[i].to >= 0 && plan.redir[i].to == plan.redir[i].from) (void)fcntl(plan.redir[i].from, F_SETFD, 0);
+    const int probe = korb_exec_probe(korb_spawn_file(&plan));   /* before any other redirect is applied */
     if (probe != 0) return korb_raise_errno(c, slots, probe, NULL, korb_spawn_file(&plan));
     korb_io_flush_std(c->vm);   /* our write buffer would otherwise die with the image */
     fflush(NULL);
@@ -1757,13 +1769,14 @@ static RESULT korb_m_signal_trap(CTX *c, korb_value *slots, korb_ref self, korb_
     if (sig == 0 || sig == SIGKILL || sig == SIGSTOP)   /* not trappable */
         return korb_str_new(c, slots, "DEFAULT", 7);
     const korb_value cmd = KORB_SLICE_LEN(a) >= 2 ? KORB_SLICE_GET(a, 1) : KORB_NIL;
-    bool dflt = false;
+    bool dflt = false, sysdflt = false;
     if (KORB_STRING_P(cmd)) {
         uint32_t n; const char *p = korb_str_cstr_len(cmd, &n);
         dflt = (n == 7 && !memcmp(p, "DEFAULT", 7)) || (n == 7 && !memcmp(p, "SIG_DFL", 7));
+        sysdflt = n == 14 && !memcmp(p, "SYSTEM_DEFAULT", 14);
     }
-    void (*prev)(int) = signal(sig, dflt ? SIG_DFL : SIG_IGN);
-    if (sig == SIGPIPE && dflt) korb_sigpipe_catch();   /* CRuby's DEFAULT here is its own no-op, not death */
+    void (*prev)(int) = signal(sig, (dflt || sysdflt) ? SIG_DFL : SIG_IGN);
+    if (sig == SIGPIPE && dflt) korb_sigpipe_catch();   /* CRuby's DEFAULT here is its own no-op, not death (SYSTEM_DEFAULT is death) */
     const char *pname = prev == SIG_DFL ? "DEFAULT" : prev == SIG_IGN ? "IGNORE" : "DEFAULT";
     return korb_str_new(c, slots, pname, (uint32_t)strlen(pname));
 }

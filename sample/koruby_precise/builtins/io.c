@@ -427,7 +427,7 @@ static RESULT korb_io_wr_checked(CTX *c, korb_value *slots, KorbIORep *const rep
     errno = 0;
     if (!korb_io_wr_p(c, slots, rep, p, n, &werr)) {
         if (UNLIKELY(werr.state != KORB_NORMAL)) return werr;
-        if (errno == EPIPE) return korb_raise_write_errno(c, slots, rep, EPIPE);
+        if (errno == EPIPE || errno == EBADF) return korb_raise_write_errno(c, slots, rep, errno);   /* EBADF: fd closed under us (spawn :err => :close) */
     }
     return RESULT_OK(KORB_NIL);
 }
@@ -441,7 +441,7 @@ static RESULT korb_io_wr_checked(CTX *c, korb_value *slots, KorbIORep *const rep
     /* Only EPIPE (a vanished reader) and EMSGSIZE (an oversized datagram):    \
        a write that fails for any other reason has always been silent          \
        here, and turning those into raises changes unrelated paths. */          \
-    if (UNLIKELY(!wok__ && (errno == EPIPE || errno == EMSGSIZE))) {            \
+    if (UNLIKELY(!wok__ && (errno == EPIPE || errno == EMSGSIZE || errno == EBADF))) { \
         (rep_)->wlen = 0;    /* a direct write keeps nothing; only #flush's buffered bytes stay */ \
         return korb_raise_write_errno((c_), (slots_), (rep_), errno);          \
     }                                                                          \

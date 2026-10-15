@@ -264,6 +264,8 @@ static struct astro_cs_state {
                                       // searched when all.so lacks a symbol
     unsigned int reload_gen;          // pathname generation counter — see
                                       // astro_cs_reload for the rationale.
+    uint64_t pending_version;         // store dir not created yet: the version file to write
+                                      // once something is stored (a plain run leaves no dir)
 } astro_cs;
 
 // Statically-linked SD table.  A build that cannot dlopen (wasm) — or one that
@@ -656,6 +658,10 @@ astro_cs_check_version(uint64_t current)
     }
 
     if (saved == current) return; // up to date
+    if (saved == 0 && access(astro_cs.store_dir, F_OK) != 0) {   // no store at all: create it on the first write
+        astro_cs.pending_version = current;
+        return;
+    }
 
     // Version mismatch: clear c/, o/, all.so
     char path[ASTRO_CS_PATH_MAX];
@@ -856,8 +862,15 @@ astro_cs_compile(NODE *entry, const char *file)
         h = horg;
     }
 
-    // Create store_dir/c/ if it doesn't exist
+    // Create store_dir/c/ if it doesn't exist (and the version deferred by astro_cs_check_version)
     mkdir(astro_cs.store_dir, 0755);
+    if (astro_cs.pending_version != 0) {
+        char vpath[ASTRO_CS_PATH_MAX];
+        astro_cs_path(vpath, sizeof(vpath), astro_cs.store_dir, "version");
+        FILE *const vf = fopen(vpath, "w");
+        if (vf) { fprintf(vf, "%" PRIx64 "\n", astro_cs.pending_version); fclose(vf); }
+        astro_cs.pending_version = 0;
+    }
     char c_dir[ASTRO_CS_PATH_MAX];
     astro_cs_path(c_dir, sizeof(c_dir), astro_cs.store_dir, "c");
     mkdir(c_dir, 0755);

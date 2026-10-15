@@ -1895,6 +1895,7 @@ module Process
   def self.getpgrp = __getpgid(0)
   def self.last_status = $?
   def self.setpgid(pid, pgid) = __setpgid(__pid_arg(pid), __pid_arg(pgid))
+  def self.setpgrp = (__setpgid(0, 0); 0)   # setpgid(0, 0), as CRuby
   def self.__pid_arg(v)          # #to_int で coerce (CRuby と同じ)
     return v if v.is_a?(Integer)
     raise TypeError, "no implicit conversion of #{v.class} into Integer" unless v.respond_to?(:to_int)
@@ -1973,6 +1974,7 @@ module Signal
     end
     h = __command_arg(command, blk)
     prev = @@handlers.key?(short) ? @@handlers[short] : (ARMED__.include?(short) ? "DEFAULT" : "SYSTEM_DEFAULT")
+    prev = nil if short == "PIPE" && prev == "DEFAULT"   # Ruby's SIGPIPE default is its own no-op handler: reported as nil
     @@handlers[short] = h
     if short == "EXIT"
       # CRuby keeps the EXIT trap in a separate list that runs before every
@@ -1989,7 +1991,7 @@ module Signal
         __signal_trap(n, "IGNORE")     # a blocked+ignored signal is discarded by the kernel
         __signal_block(n, false)
       elsif h == "SYSTEM_DEFAULT"
-        __signal_trap(n, "DEFAULT")    # hand it back to the OS (only SYSTEM_DEFAULT does)
+        __signal_trap(n, "SYSTEM_DEFAULT")   # hand it back to the OS (only SYSTEM_DEFAULT does: SIGPIPE kills)
         __signal_block(n, false)
       else                             # "DEFAULT" means *Ruby's* default: raise
                                        # SignalException/Interrupt at a check point
