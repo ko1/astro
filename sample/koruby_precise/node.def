@@ -363,6 +363,27 @@ node_seq(CTX *c, NODE *n, korb_value *slots, NODE *a, NODE *b)
     return EVAL_ARG(c, b);
 }
 
+// Coverage counters (inserted by parse.c only into files parsed while Coverage
+// is set up): a line event / a method entry.  They count only while running.
+NODE_DEF
+node_cov_line(CTX *c, NODE *n, korb_value *slots, uint32_t fi, uint32_t line)
+{
+    (void)n; (void)slots;
+    if (c->vm->cov_state == 2 && fi < c->vm->cov_n && c->vm->cov_files[fi].live && line - 1 < c->vm->cov_files[fi].nlines &&
+        c->vm->cov_files[fi].lines[line - 1]++ == 0)
+        korb_cov_first_hit(&c->vm->cov_files[fi], line);
+    return RESULT_OK(KORB_NIL);
+}
+
+NODE_DEF
+node_cov_method(CTX *c, NODE *n, korb_value *slots, uint32_t fi, uint32_t mi)
+{
+    (void)n; (void)slots;
+    if (c->vm->cov_state == 2 && fi < c->vm->cov_n && c->vm->cov_files[fi].live && mi < c->vm->cov_files[fi].nmeths)
+        c->vm->cov_files[fi].meths[mi].count++;
+    return RESULT_OK(KORB_NIL);
+}
+
 // ---- local variables (one-stack model, v2_design §7.8) ---------------------
 //
 // `off` is parse-time baked: index - locals_cnt - staging_depth, i.e. a

@@ -870,6 +870,10 @@ RESULT korb_massign_coerce(CTX *c, korb_value *slots, uint32_t line);   /* to_ar
 void korb_reg_srcloc(struct korb_vm *vm, struct Node *node, uint32_t file_sym, uint32_t line);
 RESULT korb_raise_line_fill(CTX *c, RESULT r, uint32_t line);   /* a raise that named no line gets `line` */
 void korb_note_source(struct korb_vm *vm, const char *fname, const char *src, size_t len, int32_t first_line, bool in_eval);
+int32_t korb_cov_attach(struct korb_vm *vm, const char *fname, const char *src, size_t len, int32_t first_line, bool in_eval);
+bool korb_cov_mark_line(struct korb_vm *vm, uint32_t fi, uint32_t line);
+void korb_cov_first_hit(struct korb_cov_file *f, uint32_t line);
+int32_t korb_cov_add_method(struct korb_vm *vm, uint32_t fi, uint32_t name, uint32_t sl, uint32_t sc, uint32_t el, uint32_t ec);
 bool korb_srcloc_find(const struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line);
 /* Record what `path` resolves to now (Location#absolute_path); NULL if no such file. */
 const char *korb_reg_abspath(struct korb_vm *vm, const char *path);

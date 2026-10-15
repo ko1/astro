@@ -154,6 +154,7 @@ struct kp_ctx {
     uint32_t seed_class_name;
     const uint32_t *seed_chain;
     uint32_t seed_chain_len;
+    int32_t cov_fi;           /* Coverage: this source's entry in vm->cov_files, -1 = not measured */
     bool in_eval;             /* eval(String): the program's namespace is the cref the eval
                                * installed, never the running self (it can be rebound). */
     /* eval under a binding: the binding's lexical levels, nearest first.  They sit
@@ -1048,11 +1049,26 @@ lit_nil(void)
     return ALLOC_node_lit(KORB_NIL);
 }
 
+/* Coverage: a statement CRuby drops when its value is unused, so it has no line event */
+static bool
+kp_cov_void_literal(const pm_node_t *const st)
+{
+    switch (PM_NODE_TYPE(st)) {
+      case PM_INTEGER_NODE: case PM_FLOAT_NODE: case PM_RATIONAL_NODE: case PM_IMAGINARY_NODE:
+      case PM_STRING_NODE: case PM_SYMBOL_NODE: case PM_NIL_NODE: case PM_TRUE_NODE: case PM_FALSE_NODE:
+      case PM_SELF_NODE: case PM_LOCAL_VARIABLE_READ_NODE:
+        return true;
+      default:
+        return false;
+    }
+}
+
 static NODE *
 transduce_statements(struct kp_ctx *tc, const pm_statements_node_t *stmts)
 {
     if (stmts == NULL || stmts->body.size == 0) return lit_nil();
     NODE *acc = NULL;
+    uint32_t cov_last = 0;
     for (size_t i = 0; i < stmts->body.size; i++) {
         const pm_node_t *const st = stmts->body.nodes[i];
         NODE *one;
@@ -1064,6 +1080,16 @@ transduce_statements(struct kp_ctx *tc, const pm_statements_node_t *stmts)
             tc->void_stmt = i + 1 < stmts->body.size ? st : NULL;
             one = transduce(tc, st);
             tc->void_stmt = saved_void;
+        }
+        /* Coverage: a statement starting a new line is a line event; a begin block is
+         * not one itself (its statements are) */
+        if (UNLIKELY(tc->cov_fi >= 0) && !PM_NODE_TYPE_P(st, PM_BEGIN_NODE) &&
+            !(i + 1 < stmts->body.size && kp_cov_void_literal(st))) {   /* a discarded literal compiles to nothing (CRuby) */
+            const uint32_t ln = kp_line(tc, st);
+            if (ln != cov_last && korb_cov_mark_line(tc->c->vm, (uint32_t)tc->cov_fi, ln)) {
+                cov_last = ln;
+                one = ALLOC_node_seq(ALLOC_node_cov_line((uint32_t)tc->cov_fi, ln), one);
+            }
         }
         acc = acc ? ALLOC_node_seq(acc, one) : one;
     }
@@ -3640,6 +3666,14 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         /* def-body rescue/ensure — the body is an (implicit) begin node, handled
          * by the PM_BEGIN_NODE transducer (node_begin). */
         body = transduce(tc, dn->body);
+    }
+    if (UNLIKELY(tc->cov_fi >= 0) && tc->c->vm->cov_methods) {   /* Coverage methods: count entries */
+        const pm_location_t *const loc = &dn->base.location;
+        const pm_line_column_t s0 = kp_line_column(tc->parser, loc->start);
+        const pm_line_column_t e0 = kp_line_column(tc->parser, loc->start + loc->length);
+        const int32_t mi = korb_cov_add_method(tc->c->vm, (uint32_t)tc->cov_fi, kp_intern_cid(tc, dn->name),
+                                               (uint32_t)s0.line, s0.column, (uint32_t)e0.line, e0.column);
+        if (mi >= 0) body = ALLOC_node_seq(ALLOC_node_cov_method((uint32_t)tc->cov_fi, (uint32_t)mi), body);
     }
 
     /* `def m(a, (b, c), d)` — a destructuring parameter takes one positional slot
@@ -7082,6 +7116,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
         .in_eval = in_eval,
     };
     korb_note_source(c->vm, fname, src, len, first_line, in_eval);
+    tc.cov_fi = UNLIKELY(c->vm->cov_state != 0) ? korb_cov_attach(c->vm, fname, src, len, first_line, in_eval) : -1;
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
     for (uint32_t pi = tc.pre_cnt; pi-- > 0; ) ast = ALLOC_node_seq(tc.pre_list[pi], ast);   /* BEGIN { } first */
@@ -7219,6 +7254,7 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
                          .seed_cref_is_caller = cref_is_caller,
                          .in_eval = true, .eval_outer = outer, .eval_outer_cnt = outer_levels };
     korb_note_source(c->vm, fname, src, len, first_line, true);
+    tc.cov_fi = UNLIKELY(c->vm->cov_state != 0) ? korb_cov_attach(c->vm, fname, src, len, first_line, true) : -1;
     NODE *ast = transduce(&tc, root);
     for (uint32_t lv = 0; lv < outer_levels; lv++) free(outer_lists[lv].ids);
     free(outer_lists); free(outer); free(dummy);

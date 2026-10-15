@@ -1760,6 +1760,23 @@ struct korb_vm {
     /* $LOAD_PATH dir → its realpath (korb_lp_real); malloc'd strings, open addressing */
     struct korb_lp_real_ent { char *dir; char *real; } *lpr_tab;
     uint32_t lpr_cap, lpr_n;
+    /* Coverage (lib/coverage.rb): files parsed while it is set up get counter
+     * nodes (node_cov_line / node_cov_method); they count only while running. */
+    struct korb_cov_file *cov_files;
+    uint32_t cov_n, cov_cap;
+    uint8_t cov_state;                 /* 0 idle, 1 set up (instrument, do not count), 2 running */
+    bool cov_eval, cov_methods;
+};
+struct korb_cov_meth { uint32_t name, sl, sc, el, ec; uint64_t count; };
+struct korb_cov_file {
+    char *path;
+    int64_t *lines;                    /* per line: -1 = not a line event (nil), else its count */
+    uint32_t nlines;
+    struct korb_cov_meth *meths;
+    uint32_t nmeths, meths_cap;
+    uint32_t *first;                   /* lines in the order they first ran (oneshot_lines) */
+    uint32_t nfirst, first_cap;
+    bool live;                         /* false once Coverage.result stopped / cleared it away */
 };
 
 /* builtins/cext.c — reached from the AROH_* hooks, i.e. from the GC backends' TUs */

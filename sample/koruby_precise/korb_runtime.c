@@ -24780,6 +24780,141 @@ static uint64_t korb_src_digest(const char *const restrict s, const size_t n)
 
 /* A file is remembered by digest (source_range refuses one changed since); -e and, under
  * RubyVM.keep_script_lines, eval code keep a copy, since there is no file to read back. */
+/* ---- Coverage (lib/coverage.rb drives it) ---------------------------------
+ * A source parsed while Coverage is set up gets an entry; parse.c then inserts
+ * node_cov_line / node_cov_method, which count only while it runs.  An eval'd
+ * String is measured only in eval mode, into the entry of the file it names. */
+int32_t
+korb_cov_attach(struct korb_vm *const vm, const char *const fname, const char *const src, const size_t len,
+                const int32_t first_line, const bool in_eval)
+{
+    if (fname == NULL || strcmp(fname, KORB_PRELUDE_FILE) == 0) return -1;
+    if (in_eval && !vm->cov_eval) return -1;
+    uint32_t n = 0;
+    for (size_t i = 0; i < len; i++) n += src[i] == '\n';
+    if (len > 0 && src[len - 1] != '\n') n++;
+    if (first_line > 1) n += (uint32_t)(first_line - 1);
+    for (uint32_t i = 0; i < vm->cov_n; i++) {
+        struct korb_cov_file *const f = &vm->cov_files[i];
+        if (!f->live || strcmp(f->path, fname) != 0) continue;
+        if (in_eval) return (int32_t)i;               /* eval into a measured file: its own counters */
+        f->live = false;                              /* loaded again: a fresh entry replaces it */
+    }
+    if (vm->cov_n == vm->cov_cap) {
+        vm->cov_cap = vm->cov_cap ? vm->cov_cap * 2 : 16;
+        vm->cov_files = realloc(vm->cov_files, sizeof *vm->cov_files * vm->cov_cap);
+        if (!vm->cov_files) abort();
+    }
+    struct korb_cov_file *const f = &vm->cov_files[vm->cov_n];
+    memset(f, 0, sizeof *f);
+    f->path = strdup(fname);
+    f->nlines = n;
+    f->lines = malloc(sizeof *f->lines * (n ? n : 1));
+    if (!f->path || !f->lines) abort();
+    for (uint32_t i = 0; i < n; i++) f->lines[i] = -1;
+    f->live = true;
+    return (int32_t)vm->cov_n++;
+}
+/* `line` is a line event: it reads 0 (not nil) until executed.  false = no line. */
+bool
+korb_cov_mark_line(struct korb_vm *const vm, const uint32_t fi, const uint32_t line)
+{
+    if (line == 0 || fi >= vm->cov_n) return false;
+    struct korb_cov_file *const f = &vm->cov_files[fi];
+    if (line > f->nlines) {                           /* an eval past the file's end */
+        f->lines = realloc(f->lines, sizeof *f->lines * line);
+        if (!f->lines) abort();
+        for (uint32_t i = f->nlines; i < line; i++) f->lines[i] = -1;
+        f->nlines = line;
+    }
+    if (f->lines[line - 1] < 0) f->lines[line - 1] = 0;
+    return true;
+}
+void
+korb_cov_first_hit(struct korb_cov_file *const f, const uint32_t line)
+{
+    if (f->nfirst == f->first_cap) {
+        f->first_cap = f->first_cap ? f->first_cap * 2 : 16;
+        f->first = realloc(f->first, sizeof *f->first * f->first_cap);
+        if (!f->first) abort();
+    }
+    f->first[f->nfirst++] = line;
+}
+int32_t
+korb_cov_add_method(struct korb_vm *const vm, const uint32_t fi, const uint32_t name,
+                    const uint32_t sl, const uint32_t sc, const uint32_t el, const uint32_t ec)
+{
+    if (fi >= vm->cov_n) return -1;
+    struct korb_cov_file *const f = &vm->cov_files[fi];
+    if (f->nmeths == f->meths_cap) {
+        f->meths_cap = f->meths_cap ? f->meths_cap * 2 : 8;
+        f->meths = realloc(f->meths, sizeof *f->meths * f->meths_cap);
+        if (!f->meths) abort();
+    }
+    f->meths[f->nmeths] = (struct korb_cov_meth){ name, sl, sc, el, ec, 0 };
+    return (int32_t)f->nmeths++;
+}
+/* __cov_setup(eval, methods) / __cov_set_state(0|1|2) / __cov_clear / __cov_peek */
+static RESULT korb_bi_cov_setup(CTX *c, korb_value *slots, korb_slice a) {
+    (void)slots;
+    c->vm->cov_eval = KORB_TRUTHY(KORB_SLICE_GET(a, 0));
+    c->vm->cov_methods = KORB_TRUTHY(KORB_SLICE_GET(a, 1));
+    c->vm->cov_state = 1;
+    return RESULT_OK(KORB_NIL);
+}
+static RESULT korb_bi_cov_set_state(CTX *c, korb_value *slots, korb_slice a) {
+    (void)slots;
+    const korb_value v = KORB_SLICE_GET(a, 0);
+    c->vm->cov_state = FIXNUM_P(v) ? (uint8_t)FIX2LONG(v) : 0;
+    if (c->vm->cov_state == 0)                        /* stopped: the counters go with it */
+        for (uint32_t i = 0; i < c->vm->cov_n; i++) c->vm->cov_files[i].live = false;
+    return RESULT_OK(KORB_NIL);
+}
+static RESULT korb_bi_cov_clear(CTX *c, korb_value *slots, korb_slice a) {
+    (void)slots; (void)a;
+    for (uint32_t i = 0; i < c->vm->cov_n; i++) {
+        struct korb_cov_file *const f = &c->vm->cov_files[i];
+        for (uint32_t k = 0; k < f->nlines; k++) if (f->lines[k] > 0) f->lines[k] = 0;
+        for (uint32_t k = 0; k < f->nmeths; k++) f->meths[k].count = 0;
+        f->nfirst = 0;
+    }
+    return RESULT_OK(KORB_NIL);
+}
+/* [[path, [count | nil, ...], [[name, sl, sc, el, ec, count], ...], [first-run line, ...]], ...]
+ * for the live entries */
+static RESULT korb_bi_cov_peek(CTX *c, korb_value *slots, korb_slice a) {
+    (void)a;
+    slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 4));
+    for (uint32_t i = 0; i < c->vm->cov_n; i++) {
+        if (!c->vm->cov_files[i].live) continue;
+        slots[1] = UNWRAP(korb_ary_new(c, slots + 2, 3));
+        slots[2] = UNWRAP(korb_str_new(c, slots + 3, c->vm->cov_files[i].path, (uint32_t)strlen(c->vm->cov_files[i].path)));
+        CHECK(korb_ary_push_val(c, slots + 3, KORB_REF_AT(&slots[1]), slots[2]));
+        slots[2] = UNWRAP(korb_ary_new(c, slots + 3, c->vm->cov_files[i].nlines + 1));
+        for (uint32_t k = 0; k < c->vm->cov_files[i].nlines; k++) {
+            const int64_t v = c->vm->cov_files[i].lines[k];   /* re-read: the push may GC (the table is malloc'd) */
+            CHECK(korb_ary_push_val(c, slots + 3, KORB_REF_AT(&slots[2]), v < 0 ? KORB_NIL : LONG2FIX((korb_sword_t)v)));
+        }
+        CHECK(korb_ary_push_val(c, slots + 3, KORB_REF_AT(&slots[1]), slots[2]));
+        slots[2] = UNWRAP(korb_ary_new(c, slots + 3, c->vm->cov_files[i].nmeths + 1));
+        for (uint32_t k = 0; k < c->vm->cov_files[i].nmeths; k++) {
+            const struct korb_cov_meth m = c->vm->cov_files[i].meths[k];
+            slots[3] = UNWRAP(korb_ary_new(c, slots + 4, 6));
+            const korb_value parts[6] = { ID2SYM(m.name), LONG2FIX(m.sl), LONG2FIX(m.sc), LONG2FIX(m.el), LONG2FIX(m.ec),
+                                          LONG2FIX((korb_sword_t)m.count) };   /* immediates: nothing to root */
+            for (int q = 0; q < 6; q++) CHECK(korb_ary_push_val(c, slots + 4, KORB_REF_AT(&slots[3]), parts[q]));
+            CHECK(korb_ary_push_val(c, slots + 4, KORB_REF_AT(&slots[2]), slots[3]));
+        }
+        CHECK(korb_ary_push_val(c, slots + 3, KORB_REF_AT(&slots[1]), slots[2]));
+        slots[2] = UNWRAP(korb_ary_new(c, slots + 3, c->vm->cov_files[i].nfirst + 1));
+        for (uint32_t k = 0; k < c->vm->cov_files[i].nfirst; k++)
+            CHECK(korb_ary_push_val(c, slots + 3, KORB_REF_AT(&slots[2]), LONG2FIX(c->vm->cov_files[i].first[k])));
+        CHECK(korb_ary_push_val(c, slots + 3, KORB_REF_AT(&slots[1]), slots[2]));
+        CHECK(korb_ary_push_val(c, slots + 2, KORB_REF_AT(&slots[0]), slots[1]));
+    }
+    return RESULT_OK(slots[0]);
+}
+
 void
 korb_note_source(struct korb_vm *const vm, const char *const fname, const char *const src, const size_t len,
                  const int32_t first_line, const bool in_eval)
@@ -24992,6 +25127,10 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__korb_mark_native", korb_bi_mark_native, 1);
     korb_builtin_define(c, "__syscall", korb_bi_syscall, -1);
     korb_builtin_define(c, "__trace_var_on", korb_bi_trace_var_on, 1);
+    korb_builtin_define(c, "__cov_setup", korb_bi_cov_setup, 2);
+    korb_builtin_define(c, "__cov_set_state", korb_bi_cov_set_state, 1);
+    korb_builtin_define(c, "__cov_clear", korb_bi_cov_clear, 0);
+    korb_builtin_define(c, "__cov_peek", korb_bi_cov_peek, 0);
     korb_builtin_define(c, "__setproctitle", korb_bi_setproctitle, 1);         /* lib/zlib.rb etc.: C to CRuby */
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
     korb_builtin_define(c, "__method__", korb_bi_method_name, 0);
