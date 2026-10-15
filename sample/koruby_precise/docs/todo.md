@@ -5,6 +5,39 @@
 
 
 
+## 未: `return` の行き先がパース時に決まるので、lambda かどうかを実行時に変えられない (2026-10-16)
+- `send(:lambda) { return }.call` はメソッドを抜けてしまう（CRuby は lambda からだけ抜ける）。
+- `def lambda(&b) = b` と再定義したクラスで `lambda { return 1 }.call` が 2 を返す（CRuby は proc として
+  メソッドから 1 で抜ける）。`lambda { }` 字句は lambda の本体として組まれ、return は本体の境界で止まる。
+- 直すには node_return_outer が通るフレームごとに「その Proc が lambda か」を実行時に知る必要がある
+  （ブロックのフレームは Proc を持たない）。rubyspec: core/kernel/lambda_spec の 2 例。
+
+## 未: スレッドのブロックの `break` が LocalJumpError にならない (2026-10-16)
+`Thread.new { begin; break :x; rescue LocalJumpError => e; e; end }.value` が :x（CRuby は break の位置で
+LocalJumpError を出し、ブロック内の rescue が捕まえる）。node_break は状態を返すだけで、行き先の有無を
+見ない。while の break と同じノードなので検査を足すと全ループの break が遅くなる。rubyspec 1 例。
+
+## 未: 正規表現の `\k<name-0>`（再帰の段ごとの後方参照）(2026-10-16)
+astrogre はキャプチャを段ごとに持たないので `\k<first_char-0>` を解決できない（mirror パターンが nil）。
+\g<> の呼び出しごとにキャプチャ履歴を積む必要がある。rubyspec: language/regexp/subexpression_call_spec 1 例。
+
+## 未: Onigmo は失敗した経路で付いたキャプチャを戻さない (2026-10-16)
+`/^(()|a|())*?$/.match("aaa")` は CRuby が ["aaa", "a", "", nil]（2 番目の群の "" は捨てられた反復で付いたもの）、
+astrogre は戻すので nil。Onigmo は参照されない群を backtrack で戻さない（OP_MEMORY_END の push なし版）。
+合わせると他の結果を壊しうるので見送り。rubyspec: language/regexp/empty_checks_spec の 1 期待値。
+
+## 未: 1 行目の `# Encoding::...` が CRuby は ArgumentError、koruby は SyntaxError (2026-10-16)
+マジックコメント扱いで encoding 名が不正になる。CRuby は "unknown or invalid encoding in the magic comment
+(ArgumentError)"、koruby は prism のエラーを SyntaxError で出す。
+
+## 既存: WASI ビルドが execinfo.h で止まる (2026-10-16 確認)
+korb_runtime.c の `#include <execinfo.h>`（EXPERIMENT acct45、2026-10-09 master）が wasm32-wasip1 に無い。
+正規表現部分（build/libkoruby-regex-wasm.a）だけは今回の変更後もビルドできることを確認。
+
+## 既存: astrogre の tests/regex_test.rb が `[\xNN]` の compile で止まる (2026-10-16 確認)
+`ASTrogre.compile` が "failed to parse pattern: [\xNN]" で ArgumentError。HEAD の astrogre を別ディレクトリに
+展開しても同じなので今回の変更とは無関係。
+
 ## 未: 外の変数を使わないブロックの binding がメソッドの引数を見ない (2026-10-16)
 `def o.m(some) = -> {}; eval("some", o.m(1).binding)` が NameError（CRuby は 1）。何も捕まえないブロックは
 環境を作らない（メソッドが戻った後はフレームが無い）。直すとブロックを作るたびに環境を確保することになり遅く
@@ -29,10 +62,6 @@ CRuby は展開済みの load path（realpath、キャッシュ付き）で探�
 CRuby の `$_` は `$~` と同じくメソッドのフレームごと。koruby は `$_` を大域の定数表に置いている。`$~` の仕組み
 （kp_note_backref とフレームの backref セル）に載せれば直る見込み。
 
-## 未: Enumerator#each(*args) が引数を受け手の each に渡さない (2026-10-15)
-CRuby は引数を足した Enumerator で回し直す（Lazy#force(*args) も同じ）。koruby の Enumerator は値を先に作る作りで、
-回し直しの材料（受け手・メソッド・元の引数）を持たない。spec: core/enumerator/lazy/force_spec。
-
 ## 未: define_method に渡した proc の中で、外のブロックの `return` がメソッドを抜けない (2026-10-15)
 - `pr = mp { return :good }; define_method(:foo, proc { |x| x.call }); foo(pr)` → CRuby は :good（pr の
   return は pr を作ったメソッドを抜ける）、koruby は DM 呼び出しが return を飲み込み :bad。
@@ -42,15 +71,15 @@ CRuby は引数を足した Enumerator で回し直す（Lazy#force(*args) も�
 
 ## 未: `proc { |_, _, _ = 1, *_, _:, _: 2, **_, &_| }` が "block param slot ordering" (2026-10-15)
 - def は重複 `_` に名前なしのスロットを割り当てるようにしたが、ブロック引数は未対応。rubyspec 1 例。
+- 分割代入の後の省略可能引数 `|(a, (*b, c)), d=1|` / `|a, (*b, c), d, (*e), (*), **k|` も同じ理由で
+  "block optional parameter slot ordering"（分割代入の葉が局所変数を先に取るので、省略可能引数の局所番号が
+  宣言順の位置と合わない。束縛器 korb_bind_destr_entry の spec に省略可能引数の既定値を載せる必要がある）。
+  rubyspec: core/proc/arity_spec 2 例。
 
 ## 検討: codeql の value_param.ql（引数の korb_value を may-GC 呼び出しの後に使う）を gate に入れるか (2026-10-15)
 - korb_puts_one_to が変換の呼び出しの後で引数 `v` を根に戻していた（2cab5fb8 で修正、STRESS+PURGE で SEGV）。
   value_read_after_gc は局所変数だけを見るので検出しない。value_param.ql は README で「gate 外の実験」。
   全体に流すと 20 分以上かかり、件数・誤検出率は未計測。
-
-## 未: Hash#rehash が各キーの #hash を 2 回呼ぶ (2026-10-15)
-- 作り直した表を korb_m_hash_replace で元の Hash へ移すとき korb_hash_set がもう一度 #hash を呼ぶ
-  （CRuby は 1 回）。表の構造をそのまま移す必要がある。rubyspec 1 例（mock の回数）。
 
 ## 未: `for x in obj` が obj.each を先に回し切ってから本体を回す (2026-10-15)
 - node_for は each を to_enum.to_a で配列にしてから回す。CRuby は each にブロックを渡すので、

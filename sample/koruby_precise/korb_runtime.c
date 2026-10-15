@@ -4434,6 +4434,8 @@ extern int koruby_re_name_groups(const char *, size_t, unsigned, const char *, s
 extern int koruby_re_valid(const char *, size_t, unsigned);
 extern void koruby_re_set_stack_floor(const void *);
 extern const char *koruby_re_error(void);
+extern const char *koruby_re_warning(void);
+extern void koruby_re_set_timeout(double);
 extern int koruby_re_handle(const char *, size_t, unsigned, unsigned *, unsigned *);
 extern int koruby_re_exec_h(unsigned, unsigned, const char *, size_t, size_t, void *);
 static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
@@ -4446,6 +4448,8 @@ static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
         vm->re_valid_fn = (void *)koruby_re_valid;
         vm->re_floor_fn = (void *)koruby_re_set_stack_floor;
         vm->re_err_fn   = (void *)koruby_re_error;
+        vm->re_warn_fn  = (void *)koruby_re_warning;
+        vm->re_timeout_fn = (void *)koruby_re_set_timeout;
     }
     return (korb_re_exec_fn_t)vm->re_fn;
 }
@@ -4459,6 +4463,8 @@ static korb_re_exec_fn_t korb_re_load(struct korb_vm *vm) {
         vm->re_valid_fn = h ? dlsym(h, "koruby_re_valid") : NULL;
         vm->re_floor_fn = h ? dlsym(h, "koruby_re_set_stack_floor") : NULL;
         vm->re_err_fn   = h ? dlsym(h, "koruby_re_error") : NULL;
+        vm->re_warn_fn  = h ? dlsym(h, "koruby_re_warning") : NULL;
+        vm->re_timeout_fn = h ? dlsym(h, "koruby_re_set_timeout") : NULL;
         vm->re_handle_fn = h ? dlsym(h, "koruby_re_handle") : NULL;
         vm->re_exec_h_fn = h ? dlsym(h, "koruby_re_exec_h") : NULL;
         if (vm->re_handle_fn == NULL || vm->re_exec_h_fn == NULL) vm->re_handle_fn = vm->re_exec_h_fn = NULL;

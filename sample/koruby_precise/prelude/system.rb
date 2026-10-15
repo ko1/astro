@@ -2413,7 +2413,7 @@ module Process
 end
 
 class Regexp
-  TimeoutError = Class.new(RegexpError)   # a match past Regexp.timeout (koruby does not enforce the timeout yet)
+  TimeoutError = Class.new(RegexpError)   # a match past Regexp.timeout / Regexp.new(timeout:)
   # Regexp.linear_time? — CRuby は「位置と状態のメモ化で線形時間にできるか」を
   # 答える。メモ化で潰せないのは後方参照 (\1 / \k<n>) と subexpression call
   # (\g<n>) だけで、先読み・後読みは linear。
@@ -2482,6 +2482,7 @@ class Regexp
       raise ArgumentError, "invalid timeout: #{sec}" if f <= 0
       @__timeout = f
     end
+    __set_timeout(@__timeout)
     sec
   end
   def self.try_convert(obj)

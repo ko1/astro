@@ -305,6 +305,7 @@ korb_re_run_wide(CTX *c, korb_value *slots, korb_value re, korb_value subj, size
         if (rc == -3) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "invalid byte sequence in %s", en);
         if (rc == -4) return korb_raise(c, slots, KORB_E_REGEXP, 0, "invalid multibyte character in %s regexp", en);
         if (rc == -2) return korb_raise(c, slots, KORB_E_REGEXP, 0, "regexp match stack overflow");
+        if (rc == -5) return korb_raise_nested(c, slots, "Regexp", "TimeoutError", "regexp match timeout");
         const char *const em = korb_re_error(c->vm);
         return korb_raise(c, slots, KORB_E_REGEXP, 0, "%s", em ? em : "invalid regular expression");
     }
@@ -319,6 +320,44 @@ static inline bool korb_re_pat_bytewise_p(const struct korb_vm *const vm, const 
     if (!KORB_STRING_P(src)) return false;
     const uint32_t e = KORB_STR_ENC(src);
     return (e == KORB_ENC_BINARY || (e >= KORB_ENC_OTHER_MIN && KORB_ENC_SB(vm, e))) && !korb_str_bytes_ascii(src);
+}
+/* The engine's match time limit: a Regexp.new(timeout:) one for its own matches,
+ * Regexp.timeout otherwise. */
+static __attribute__((cold, noinline)) void korb_re_timeout_set(const struct korb_vm *const vm, const korb_value secs) {
+    if (vm->re_timeout_fn == NULL) return;
+    const double d = FIXNUM_P(secs) ? (double)FIX2LONG(secs) : KORB_FLOAT_P(secs) ? korb_float_val(secs) : vm->re_timeout_sec;
+    ((void (*)(double))vm->re_timeout_fn)(d);
+}
+static __attribute__((cold, noinline)) void korb_re_timeout_restore(const struct korb_vm *const vm) {
+    if (vm->re_timeout_fn) ((void (*)(double))vm->re_timeout_fn)(vm->re_timeout_sec);
+}
+/* Regexp.__set_timeout(secs | nil) — the prelude's Regexp.timeout= */
+static RESULT korb_m_re_set_timeout(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)slots; (void)self;
+    const korb_value v = KORB_SLICE_GET(a, 0);
+    (void)korb_re_load(c->vm);
+    c->vm->re_timeout_sec = FIXNUM_P(v) ? (double)FIX2LONG(v) : KORB_FLOAT_P(v) ? korb_float_val(v) : 0.0;
+    korb_re_timeout_restore(c->vm);
+    return RESULT_OK(v);
+}
+/* korb_re_run's engine failure: -5 past the timeout, -2 the C-stack floor, else a bad pattern */
+static __attribute__((cold, noinline)) RESULT korb_re_run_raise(CTX *c, korb_value *slots, const int rc) {
+    if (rc == -5) return korb_raise_nested(c, slots, "Regexp", "TimeoutError", "regexp match timeout");
+    if (rc == -2) return korb_raise(c, slots, KORB_E_REGEXP, 0, "regexp match stack overflow");
+    const char *const m = korb_re_error(c->vm);
+    return korb_raise(c, slots, KORB_E_REGEXP, 0, "%s", m ? m : "invalid regular expression");
+}
+/* korb_re_run for a Regexp.new(timeout:): the engine runs under its own limit */
+static __attribute__((cold, noinline)) RESULT
+korb_re_run_timed(CTX *c, korb_value *slots, const KorbRegexp *const rp, const KorbString *const pat,
+                  const unsigned eff_flags, const KorbString *const s, const size_t startb, korb_re_match_t *m,
+                  const korb_re_exec_fn_t fn)
+{
+    korb_re_timeout_set(c->vm, rp->timeout);
+    const int rc = fn(korb_str_ptr(pat), pat->len, eff_flags, korb_str_ptr(s), s->len, startb, m);
+    korb_re_timeout_restore(c->vm);
+    if (UNLIKELY(rc < 0)) return korb_re_run_raise(c, slots, rc);
+    return RESULT_OK(rc == 1 ? KORB_TRUE : KORB_FALSE);
 }
 /* ---- low-level engine call (no koruby alloc inside → subject bytes stable) */
 static RESULT korb_re_run(CTX *c, korb_value *slots, korb_value re, korb_value subj, size_t startb, korb_re_match_t *m) {
@@ -354,6 +393,9 @@ static RESULT korb_re_run(CTX *c, korb_value *slots, korb_value re, korb_value s
         if (LIKELY(rp->rvalid && rp->rflags == eff_flags))
             rc = ((korb_re_exec_h_fn_t)c->vm->re_exec_h_fn)(rp->rslot, rp->rgen, korb_str_ptr(s), s->len, startb, m);
         if (rc == -3) {
+            /* a Regexp.new(timeout:) never keeps a handle, so its matches all come here */
+            if (UNLIKELY(rp->timeout != KORB_NIL))
+                return korb_re_run_timed(c, slots, rp, pat, eff_flags, s, startb, m, fn);
             unsigned slot, gen;
             if (((korb_re_handle_fn_t)c->vm->re_handle_fn)(korb_str_ptr(pat), pat->len, eff_flags, &slot, &gen) == 0) {
                 rp->rslot = slot; rp->rgen = gen; rp->rflags = eff_flags; rp->rvalid = 1;
@@ -362,11 +404,7 @@ static RESULT korb_re_run(CTX *c, korb_value *slots, korb_value re, korb_value s
         }
     }
     if (rc == -3) rc = fn(korb_str_ptr(pat), pat->len, eff_flags, korb_str_ptr(s), s->len, startb, m);
-    if (UNLIKELY(rc == -2)) return korb_raise(c, slots, KORB_E_REGEXP, 0, "regexp match stack overflow");
-    if (UNLIKELY(rc < 0)) {
-        const char *const m = korb_re_error(c->vm);
-        return korb_raise(c, slots, KORB_E_REGEXP, 0, "%s", m ? m : "invalid regular expression");
-    }
+    if (UNLIKELY(rc < 0)) return korb_re_run_raise(c, slots, rc);
     return RESULT_OK(rc == 1 ? KORB_TRUE : KORB_FALSE);
 }
 
@@ -1047,9 +1085,8 @@ static RESULT korb_m_re_case_eq(CTX *c, korb_value *slots, korb_ref self, korb_s
     return RESULT_OK(r.value == KORB_NIL ? KORB_FALSE : KORB_TRUE);
 }
 static RESULT korb_m_re_source(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)a; KORB_RE_CHECK(c, slots, self); return RESULT_OK(VAL2RE(KORB_REF_GET(self))->source); }
-/* Regexp#timeout — what Regexp.new(timeout:) was given, nil otherwise.  koruby
- * does not abort a long match on it (the Regexp.timeout global is the same);
- * astrogre's backtrack floor is what bounds a runaway pattern. */
+/* Regexp#timeout — what Regexp.new(timeout:) was given, nil otherwise (its
+ * matches run under it: korb_re_run). */
 static RESULT korb_m_re_timeout(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)a; KORB_RE_CHECK(c, slots, self); return RESULT_OK(VAL2RE(KORB_REF_GET(self))->timeout); }
 /* Regexp#~ — match against $_, like `$_ =~ self`. */
 static RESULT korb_m_re_match_lastline(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
@@ -2075,7 +2112,7 @@ static RESULT korb_m_re_new(CTX *c, korb_value *slots, korb_ref self, korb_slice
             slots[0] = r.value;
         } else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, src));
     }
-    korb_value timeout_v = KORB_NIL;                           /* Regexp.new(src, timeout:) — reported, not enforced */
+    korb_value timeout_v = KORB_NIL;                           /* Regexp.new(src, timeout:) */
     /* A Regexp first argument carries its own options; any 2nd/3rd arg is ignored (with a warning, as in CRuby). */
     if (from_regexp && KORB_SLICE_LEN(a) >= 2 && KORB_SLICE_GET(a, 1) != KORB_NIL)
         korb_warn_caller(c, slots + 1, a.p + KORB_FLINK_OFF, "flags ignored");
@@ -2413,6 +2450,7 @@ static void korb_init_regexp(CTX *c, korb_value *slots) {
     korb_class_def_cfn(c, slots[1], "compile", korb_m_re_new, -1);
     korb_class_def_cfn(c, slots[1], "union",   korb_m_re_union, -1);
     korb_class_def_cfn(c, slots[1], "last_match", korb_m_re_last_match, -1);
+    korb_class_def_cfn(c, slots[1], "__set_timeout", korb_m_re_set_timeout, 1);
 }
 
 /* Parse-time check for a Regexp LITERAL: CRuby rejects a bad pattern while
@@ -2426,4 +2464,11 @@ korb_re_literal_error(CTX *c, const char *pat, uint32_t len, uint32_t flags)
     if (vf == NULL || vf(pat, len, flags)) return NULL;
     const char *const m = korb_re_error(c->vm);
     return m ? m : "invalid regular expression";
+}
+/* Onigmo's compile-time warning for the literal korb_re_literal_error just
+ * accepted (`a{0,1}+`: nested repeat operator), NULL if none. */
+const char *
+korb_re_literal_warning(CTX *c)
+{
+    return c->vm->re_warn_fn ? ((const char *(*)(void))c->vm->re_warn_fn)() : NULL;
 }

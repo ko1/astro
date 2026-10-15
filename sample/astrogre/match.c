@@ -145,6 +145,17 @@ agre_eval_on_alt_stack(char *const alt, CTX *const c, NODE *const root)
 }
 #endif
 
+uint64_t agre_timeout_ns;   /* astrogre_set_timeout (0 = none); library-local (libastrogre.map) */
+void astrogre_set_timeout(double secs) { agre_timeout_ns = secs > 0 ? (uint64_t)(secs * 1e9) + 1u : 0; }
+
+static __attribute__((cold, noinline)) void agre_arm_deadline(CTX *c) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    c->deadline_ns = (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec + agre_timeout_ns;
+    c->timed_out = false;
+    astrogre_bt_next(c);
+}
+
 bool
 astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
                      size_t start_from, astrogre_match_t *out)
@@ -191,18 +202,21 @@ astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
     c.backtrack_count = 0;
     c.memo_threshold  = (size_t)len * (size_t)(p->n_branches > 0 ? p->n_branches : 1);
     c.memo_eligible   = p->memo_eligible;
+    c.bt_next = c.memo_threshold;   /* agre_bt_slow settles n_branches == 0 the first time */
+    if (UNLIKELY(agre_timeout_ns != 0)) agre_arm_deadline(&c);   /* else deadline_ns / timed_out stay unread */
 
     bool r = (bool)EVAL(&c, p->root);
 
     /* The floor guard cut some path, so r may be a lower-priority match (or a
      * false "no match"): redo the whole search on a big dedicated stack. */
-    if (c.stack_overflow && !agre_on_alt_stack) {
+    if (c.stack_overflow && !(agre_timeout_ns != 0 && c.timed_out) && !agre_on_alt_stack) {
         uintptr_t alt_floor;
         char *const alt = agre_alt_stack(&alt_floor);
         if (alt) {
             if (c.memo) free(c.memo);
             c.memo = NULL;
             c.backtrack_count = 0;
+            astrogre_bt_next(&c);
             c.pos = start_from;
             c.rep_top = NULL;
             c.sub_top = NULL;
@@ -232,6 +246,7 @@ astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
         /* A floor-guard abort only counts as an "overflow" outcome when no
          * other branch found a match — a successful match is the truth. */
         out->overflow = (!r && c.stack_overflow);
+        if (UNLIKELY(out->overflow)) out->timeout = agre_timeout_ns != 0 && c.timed_out;
         if (r) {
             out->n_groups = p->n_groups;
             /* Only copy slots that node_grep_search actually marked

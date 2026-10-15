@@ -146,6 +146,7 @@ typedef struct re_parser {
     struct ire_node **groups_by_idx;
     int               cap_groups;
     int               n_subcalls;   /* `\g<…>` references seen */
+    int               n_backrefs;   /* back-references seen: loops then check captures for emptiness */
 } re_parser_t;
 
 static void re_error(re_parser_t *q, const char *msg) {
@@ -1133,6 +1134,7 @@ parse_num_escape(re_parser_t *q, int first)
             if (n > q->max_num_ref) q->max_num_ref = n;
             ire_node_t *const bn = ire_new(IRE_BACKREF);
             bn->u.backref.idx = n;
+            q->n_backrefs++;
             return bn;
         }
     }
@@ -1495,7 +1497,7 @@ static ire_node_t *parse_atom(re_parser_t *q) {
             if (idx < 0) return NULL;
             ire_node_t *n = ire_new(kind == REF_CALL ? IRE_SUBROUTINE : IRE_BACKREF);
             if (kind == REF_CALL) { n->u.sub.idx = idx; q->n_subcalls++; }
-            else                  n->u.backref.idx = idx;
+            else                { n->u.backref.idx = idx; q->n_backrefs++; }
             return n;
         }
         case '0': case '1': case '2': case '3': case '4':
@@ -1676,6 +1678,31 @@ static ire_node_t *parse_atom(re_parser_t *q) {
     }
 }
 
+/* Onigmo's warning for a quantifier applied straight to another (`a{0,1}+`,
+ * `(?:a*)*`): its "popular" quantifier numbers and reduction table. */
+static char astrogre_warnmsg[256];
+static int ire_popular_q(const int32_t mn, const int32_t mx, const bool greedy) {
+    if (mn == 0 && mx == 1)  return greedy ? 0 : 3;
+    if (mn == 0 && mx == -1) return greedy ? 1 : 4;
+    if (mn == 1 && mx == -1) return greedy ? 2 : 5;
+    return -1;
+}
+static void ire_warn_nested_rep(const ire_node_t *target, const int32_t mn, const int32_t mx, const bool greedy) {
+    while (target && (target->kind == IRE_NCGROUP || (target->kind == IRE_CONCAT && target->u.cat.n == 1)))
+        target = target->kind == IRE_NCGROUP ? target->u.nc.body : target->u.cat.xs[0];
+    if (!target || target->kind != IRE_REP) return;
+    static const char *const qs[] = { "?", "*", "+", "??", "*?", "+?" };
+    static const char *const rs[] = { "", "", "*", "*?", "??", "+ and ??", "+? and ?" };
+    static const unsigned char tbl[6][6] = {   /* 0 as is, 1 delete parent, 2.. replaced (rs) */
+        {1, 2, 2, 4, 3, 0}, {1, 1, 1, 5, 5, 1}, {2, 2, 1, 0, 5, 1},
+        {1, 3, 3, 1, 3, 3}, {1, 1, 1, 1, 1, 1}, {0, 0, 0, 3, 3, 1} };
+    const int t = ire_popular_q(target->u.rep.min, target->u.rep.max, target->u.rep.greedy);
+    const int n = ire_popular_q(mn, mx, greedy);
+    if (t < 0 || n < 0 || tbl[t][n] == 0) return;
+    if (tbl[t][n] == 1) snprintf(astrogre_warnmsg, sizeof astrogre_warnmsg, "regular expression has redundant nested repeat operator '%s'", qs[t]);
+    else snprintf(astrogre_warnmsg, sizeof astrogre_warnmsg, "nested repeat operator '%s' and '%s' was replaced with '%s' in regular expression", qs[t], qs[n], rs[tbl[t][n]]);
+}
+
 /* Try to consume a quantifier *after* an atom; if found, wrap in IRE_REP. */
 static ire_node_t *parse_quantifier(re_parser_t *q, ire_node_t *atom) {
     re_skip_ws(q);
@@ -1704,6 +1731,7 @@ static ire_node_t *parse_quantifier(re_parser_t *q, ire_node_t *atom) {
      * possessive — only `*+` `++` `?+` are possessive. */
     else if (!braces && re_peek(q) == '+') { q->p++; possessive = true; }
 
+    if (!possessive) ire_warn_nested_rep(atom, mn, mx, greedy);
     ire_node_t *r = ire_new(IRE_REP);
     r->u.rep.body = atom;
     r->u.rep.min = mn;
@@ -2617,8 +2645,11 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
          * position (like a negative lookahead).  Lower with its own
          * succ tail so probe-failure doesn't leak into the outer
          * continuation. */
-        NODE *body = lower(L, n->u.nc.body, ALLOC_node_re_succ());
-        return ALLOC_node_re_absence(body, tail);
+        /* Onigmo: the matched range may contain no substring BODY matches.
+         * The probe is end-anchored (lb_check), as a variable lookbehind's. */
+        const int w = ire_fixed_len(n->u.nc.body, L->enc);
+        NODE *body = lower(L, n->u.nc.body, ALLOC_node_re_lb_check(ALLOC_node_re_succ()));
+        return ALLOC_node_re_absence(body, (int32_t)w, tail);
     }
     case IRE_KEEP:          return ALLOC_node_re_keep(tail);
     case IRE_LAST_MATCH:    return ALLOC_node_re_last_match(tail);
@@ -2725,7 +2756,7 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
         lower_push_entry(L, tail);
         return ALLOC_node_re_rep(body, tail, n->u.rep.min, n->u.rep.max,
                                  n->u.rep.greedy ? 1 : 0,
-                                 ire_must_consume(n->u.rep.body) ? 1 : 0,
+                                 ire_must_consume(n->u.rep.body) ? 1 : L->q->n_backrefs ? 2 : 0,
                                  (uint32_t)L->next_branch_id++);
     }
     }
@@ -2893,6 +2924,7 @@ static bool ire_leading_any_run(const ire_node_t *n)
  * turns it into its own exception message. */
 static char astrogre_errmsg[256];
 const char *astrogre_last_error(void) { return astrogre_errmsg[0] ? astrogre_errmsg : NULL; }
+const char *astrogre_last_warning(void) { return astrogre_warnmsg[0] ? astrogre_warnmsg : NULL; }
 static void astrogre_set_error(const char *msg) { snprintf(astrogre_errmsg, sizeof astrogre_errmsg, "%s", msg); }
 
 NODE *astrogre_rep_cont_singleton(void);  /* defined in match.c */
@@ -2901,6 +2933,7 @@ astrogre_pattern *
 astrogre_parse(const char *pat, size_t pat_len, uint32_t flags)
 {
     re_parser_t q = {0};
+    astrogre_warnmsg[0] = '\0';
     q.p   = (const uint8_t *)pat;
     q.end = q.p + pat_len;
     q.case_insensitive = (flags & PR_FLAGS_IGNORE_CASE) != 0;

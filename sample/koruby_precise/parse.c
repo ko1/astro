@@ -5066,6 +5066,14 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
                 snprintf(buf, sizeof buf, "%s:%u: %s: /%.*s/", tc->fname, kp_line(tc, at), why, (int)len, bytes);
                 tc->syntax_err = buf;
                 tc->syntax_error = true;
+            } else {
+                const char *const w = korb_re_literal_warning(tc->c);
+                if (UNLIKELY(w != NULL)) {
+                    char loc[300], msg[512];
+                    snprintf(loc, sizeof loc, "%s:%u", tc->fname, kp_line(tc, (const pm_node_t *)rn));
+                    snprintf(msg, sizeof msg, "%s: /%.*s/", w, (int)len, bytes);
+                    kp_stash_warn_line(tc->c, 'D', loc, msg);
+                }
             }
         }
         return ALLOC_node_regexp(bytes, len, flags | korb_re_literal_derived(bytes, len, flags));

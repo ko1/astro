@@ -28,7 +28,7 @@ typedef struct koruby_re_match {
 
 /* ---- compiled-pattern cache (direct-mapped, source+flags keyed) ---------- */
 #define KRE_CACHE_SLOTS 16384   /* 2-way (slot, slot ^ 1): Rails' patterns thrashed a 1024-entry direct map (recompile per request) */
-typedef struct { char *pat; size_t len; unsigned flags; astrogre_pattern *p; unsigned gen; } kre_cache_ent;   /* gen: bumped whenever the slot's pattern changes (a handle = slot + gen) */
+typedef struct { char *pat; size_t len; unsigned flags; astrogre_pattern *p; unsigned gen; char *warn; } kre_cache_ent;   /* warn: the compile's Onigmo warning (NULL: none) */   /* gen: bumped whenever the slot's pattern changes (a handle = slot + gen) */
 static kre_cache_ent g_cache[KRE_CACHE_SLOTS];
 
 static uint64_t kre_hash(const char *b, size_t n, unsigned flags) {
@@ -69,9 +69,11 @@ static kre_cache_ent *kre_get_ent(const char *pat, size_t patlen, unsigned flags
     astrogre_pattern *np = astrogre_parse(pat, patlen, flags);
     if (np == NULL) return NULL;
     if (e2->p) { astrogre_pattern_free(e2->p); free(e2->pat); }   /* evict the older → fully released (astrogre owns the AST) */
+    free(e2->warn);
     const unsigned ge = e->gen, ge2 = e2->gen;
     *e2 = *e; e2->gen = ge2 + 1;
     e->p = NULL; e->pat = NULL;
+    { const char *const w = astrogre_last_warning(); e->warn = w ? strdup(w) : NULL; }
     e->pat = (char *)malloc(patlen ? patlen : 1);
     if (patlen) memcpy(e->pat, pat, patlen);
     e->len = patlen; e->flags = flags; e->p = np; e->gen = ge + 1;
@@ -90,7 +92,7 @@ static int kre_run(astrogre_pattern *p, const char *str, size_t slen, size_t sta
     /* Honest failure: the engine bailed on a branch at the C-stack floor and
      * never found a match elsewhere.  Report -2 so the host raises RegexpError
      * rather than passing off a stack-overflow as a real "no match". */
-    if (!ok && m.overflow) return -2;
+    if (!ok && m.overflow) return m.timeout ? -5 : -2;   /* -5: past Regexp.timeout */
     if (!ok) { if (out) { out->matched = 0; out->n_groups = 0; } return 0; }
     if (out) {
         out->matched = 1;
@@ -171,15 +173,26 @@ int koruby_re_name_groups(const char *pat, size_t patlen, unsigned flags, const 
 }
 
 /* True (1) if `pat` compiles, 0 if it does not — used by Regexp.new validation. */
+static const char *g_valid_warn;   /* the warning of the pattern koruby_re_valid last accepted */
 __attribute__((visibility("default")))
 int koruby_re_valid(const char *pat, size_t patlen, unsigned flags) {
-    return kre_get(pat, patlen, flags) != NULL ? 1 : 0;
+    const kre_cache_ent *const e = kre_get_ent(pat, patlen, flags);
+    g_valid_warn = e ? e->warn : NULL;
+    return e != NULL ? 1 : 0;
 }
 
 /* Why the last koruby_re_valid/koruby_re_exec compile failed, so the caller can
  * put it in the RegexpError instead of a fixed "invalid regular expression". */
 __attribute__((visibility("default")))
 const char *koruby_re_error(void) { return astrogre_last_error(); }
+/* Regexp.timeout for every later match (secs <= 0: none). */
+__attribute__((visibility("default")))
+void koruby_re_set_timeout(double secs) { astrogre_set_timeout(secs); }
+
+/* Onigmo's compile-time warning for the pattern koruby_re_valid last accepted
+ * (NULL if none): valid only until the next bridge call. */
+__attribute__((visibility("default")))
+const char *koruby_re_warning(void) { return g_valid_warn; }
 
 /* ---- legacy whole-match entry (kept for any un-migrated caller) ----------- */
 __attribute__((visibility("default")))

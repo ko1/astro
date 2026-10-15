@@ -16,6 +16,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <time.h>
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -95,7 +96,7 @@ struct rep_frame {
      * the empty-match carve-out entirely — each body match advances
      * pos so the (last_pos == pos) test would always be false anyway.
      * Saves 4 memory ops / iteration on the hot path. */
-    uint32_t body_must_consume;
+    uint32_t body_must_consume;   /* 2: may match empty and the pattern has back-references (see last_capsig) */
     /* Per-rep id assigned at parse time.  Used together with c->pos as
      * the key into the MatchCache memo (Onigmo-style ReDoS mitigation
      * — see node_re_rep_cont). */
@@ -106,6 +107,10 @@ struct rep_frame {
      * unchanged, treat min as satisfied and stop iterating instead of
      * recursing forever — matches Ruby/PCRE semantics on `(a*)*` etc. */
     size_t last_pos;
+    /* With back-references (body_must_consume == 2), an iteration that left
+     * pos alone but changed a capture is not empty (Onigmo's memory-status
+     * empty check): a digest of the captures at the iteration's start. */
+    uint64_t last_capsig;
     struct rep_frame *prev;
 };
 
@@ -186,7 +191,23 @@ typedef struct CTX_struct {
      * silently reporting "no match" (a false negative).  Appended at the
      * struct tail to keep field offsets stable for any baked AOT SDs. */
     bool stack_overflow;
+    /* Regexp.timeout: CLOCK_MONOTONIC deadline (0 = none), checked every 1024
+     * backtracks; past it every branch fails and the search reports a timeout. */
+    bool timed_out;         /* valid only while agre_timeout_ns != 0 (armed per search) */
+    uint64_t deadline_ns;
+    size_t bt_next;     /* backtrack_count past which agre_bt_slow runs (memo / deadline) */
 } CTX;
+
+/* astrogre_set_timeout's limit (0 = none).  No Ruby runs inside a search, so it
+ * cannot change mid-search: non-zero means this search's deadline is armed. */
+extern uint64_t agre_timeout_ns __attribute__((visibility("hidden")));
+/* When the next backtrack needs agre_bt_slow: the memo threshold until the memo
+ * exists, and every 1024 backtracks while a deadline is set. */
+static inline void astrogre_bt_next(CTX *const c) {
+    size_t nx = (!c->memo && c->n_branches > 0) ? c->memo_threshold : SIZE_MAX;
+    if (agre_timeout_ns != 0 && nx > c->backtrack_count + 1024u) nx = c->backtrack_count + 1024u;
+    c->bt_next = nx;
+}
 
 /* Reset the capture flags before a match attempt.  A fixed 32-byte clear
  * compiles to two stores; only a pattern with more groups pays a memset call. */

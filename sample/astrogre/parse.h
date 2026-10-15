@@ -96,7 +96,13 @@ typedef struct astrogre_match {
      * "no match": the host should raise (RegexpError) rather than return
      * false.  Always false on a successful match. */
     bool   overflow;
+    /* Meaningful only with `overflow`: the abort was astrogre_set_timeout's
+     * limit, not the C stack. */
+    bool   timeout;
 } astrogre_match_t;
+
+/* Limit every later search to `secs` seconds (0 = none), as Regexp.timeout. */
+void astrogre_set_timeout(double secs);
 
 bool astrogre_search(astrogre_pattern *p, const char *str, size_t len, astrogre_match_t *out);
 
@@ -118,6 +124,9 @@ astrogre_pattern *astrogre_parse(const char *pat, size_t pat_len, uint32_t flags
 /* Why the last astrogre_parse returned NULL (NULL if none).  astrogre_parse does
  * not print: the caller decides (are prints it; koruby raises RegexpError). */
 const char *astrogre_last_error(void);
+/* Onigmo's compile-time warning for the last astrogre_parse (NULL if none),
+ * without the trailing ": /pattern/". */
+const char *astrogre_last_warning(void);
 
 /* Hash of the compiled pattern AST root — same value `astro_cs_load`
  * keys on, exposed for diagnostics (`-d`, `--cs-status`). */

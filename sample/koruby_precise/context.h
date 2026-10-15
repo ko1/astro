@@ -401,9 +401,8 @@ typedef struct KorbRegexp {
     korb_value ARO_GC_EDGE source;        /* the pattern as a String */
     uint8_t ci;                      /* case-insensitive flag (== flags & 4) */
     uint32_t flags;                  /* prism regex flags (IGNORE_CASE=4/EXTENDED=8/MULTI_LINE=16) */
-    /* Regexp.new(src, timeout:) — reported by #timeout, nil when unset.  koruby
-     * does not abort a long match on it (neither does the Regexp.timeout global
-     * here); astrogre's backtrack floor is what bounds a runaway pattern. */
+    /* Regexp.new(src, timeout:) — nil when unset; its matches run under it
+     * instead of Regexp.timeout (korb_re_run). */
     korb_value ARO_GC_EDGE timeout;
     korb_value ARO_GC_EDGE to_s;          /* #to_s's String, kept (a pattern never changes; each call returns a copy), 0 / nil = not yet */
     uint32_t rslot, rgen, rflags;    /* the engine's handle for (source, rflags): run without re-hashing the source; rvalid = set */
@@ -1492,7 +1491,6 @@ struct korb_vm {
     struct KorbFiberRep *root_fiber;   /* stand-in rep for the main stack (Fiber.current) */
     struct KorbFiberRep *running_fiber;
     struct KorbFiberRep *starting_fiber;
-    struct KorbFiberRep *xfer_to;      /* a transfer down to the root fiber in flight: each fiber it passes steps aside */
     korb_value *main_slots, *main_slots_top;
 
     /* green threads (Thread) — docs/io_design.md。cur_thread == NULL は
@@ -1753,6 +1751,11 @@ struct korb_vm {
      * and optcarrot AOT took +4% cycles at the same instruction count. */
     uint64_t cvar_serial;
     bool hash_aset_redefined;   /* Hash#[]= redefined: node_aset's plain-Hash store sends again (at the end: no layout shift) */
+    /* the regexp bridge, kept at the tail so the hot fields above keep their offsets */
+    void     *re_warn_fn;    /* koruby_re_warning — Onigmo's compile warning for the last compile */
+    void     *re_timeout_fn; /* koruby_re_set_timeout — the engine's match time limit */
+    double    re_timeout_sec;/* Regexp.timeout (0 = none) */
+    struct KorbFiberRep *xfer_to;      /* a transfer down to the root fiber in flight: each fiber it passes steps aside */
 };
 
 /* builtins/cext.c — reached from the AROH_* hooks, i.e. from the GC backends' TUs */

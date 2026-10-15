@@ -774,6 +774,7 @@ bool korb_const_private_p(const struct korb_vm *vm, korb_value owner, uint32_t s
 RESULT korb_check_const_path_private(CTX *c, korb_value *slots, korb_value enclosing, uint32_t sym, bool scoped);
 RESULT korb_undef_one(CTX *c, korb_value *slots, korb_value cls, uint32_t mid);   /* `undef` / undef_method, one name */
 const char *korb_re_literal_error(CTX *c, const char *pat, uint32_t len, uint32_t flags);   /* NULL = the engine accepts it */
+const char *korb_re_literal_warning(CTX *c);   /* the accepted literal's compile warning, or NULL */
 uint32_t korb_re_literal_derived(const char *bytes, uint32_t len, uint32_t flags);
 korb_value korb_exc_ivar_get_pub(korb_value exc, korb_value name_sym);   /* an Exception's side-hash ivar */
 void korb_const_set_deprecated(CTX *c, korb_value owner, uint32_t sym);

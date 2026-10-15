@@ -1226,6 +1226,29 @@ node_re_grapheme(CTX * restrict c, NODE * restrict n, NODE *next)
  * landing here doesn't re-explore the same exhausted subtree.  Cache
  * is allocated lazily — only after `c->backtrack_count` exceeds the
  * input length, so well-behaved patterns pay no memory at all. */
+/* backtrack_count passed bt_next (astrogre_bt_next): allocate the memo once
+ * the rate looks catastrophic, and look at the Regexp.timeout deadline every
+ * 1024 backtracks — past it every later branch fails at once (the floor
+ * guard's trick: no C frame is ever above UINTPTR_MAX). */
+static __attribute__((cold, noinline)) void
+agre_bt_slow(CTX *c)
+{
+    if (!c->memo && c->backtrack_count > c->memo_threshold && c->n_branches > 0) {
+        const size_t bits = (size_t)c->n_branches * (c->str_len + 1);
+        c->memo = (uint8_t *)calloc(1, (bits + 7) / 8);
+    }
+    if (agre_timeout_ns != 0) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        if ((uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec >= c->deadline_ns) {
+            c->timed_out = true;
+            c->stack_overflow = true;   /* reported through overflow (match.c) */
+            c->stack_base = UINTPTR_MAX;
+        }
+    }
+    astrogre_bt_next(c);
+}
+
 NODE_DEF
 node_re_alt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32_t id)
 {
@@ -1239,11 +1262,7 @@ node_re_alt(CTX * restrict c, NODE * restrict n, NODE *left, NODE *right, uint32
     if (EVAL_ARG(c, right)) return MR_STOP;
 
     if (c->memo_eligible) {
-        c->backtrack_count++;
-        if (!c->memo && c->backtrack_count > c->memo_threshold && c->n_branches > 0) {
-            const size_t bits = (size_t)c->n_branches * (c->str_len + 1);
-            c->memo = (uint8_t *)calloc(1, (bits + 7) / 8);
-        }
+        if (UNLIKELY(++c->backtrack_count > c->bt_next)) agre_bt_slow(c);
         if (c->memo && (memo_ok || memo_key_sound(c))) c->memo[bit >> 3] |= (uint8_t)(1u << (bit & 7));
     }
     return MR_FAIL;
@@ -1269,6 +1288,7 @@ node_re_rep(CTX * restrict c, NODE * restrict n, NODE *body, NODE *outer_next, i
     f.body_must_consume = body_must_consume;
     f.id = id;
     f.last_pos = SIZE_MAX;
+    f.last_capsig = 0;
     f.prev = c->rep_top;
     c->rep_top = &f;
 
@@ -1282,6 +1302,17 @@ node_re_rep(CTX * restrict c, NODE * restrict n, NODE *body, NODE *outer_next, i
 /* Inner helper for node_re_rep_cont — the original rep iteration
  * logic without memoize bookkeeping.  Wrapped below so the entry/exit
  * memoize check stays out of the per-iter dispatch path. */
+static uint64_t
+rep_capsig(const CTX *c)
+{
+    uint64_t h = 1469598103934665603ULL;
+    for (int g = 1; g <= c->n_groups && g < ASTROGRE_MAX_GROUPS; g++) {
+        h = (h ^ (c->valid[g] ? (uint64_t)c->starts[g] + 1 : 0)) * 1099511628211ULL;
+        h = (h ^ (c->valid[g] ? (uint64_t)c->ends[g] + 1 : 0)) * 1099511628211ULL;
+    }
+    return h;
+}
+
 static VALUE
 rep_cont_inner(CTX *c, struct rep_frame *f)
 {
@@ -1291,7 +1322,7 @@ rep_cont_inner(CTX *c, struct rep_frame *f)
      * is moot; skip the (last_pos, c->pos) check and the save/restore
      * of last_pos around body dispatch.  This is the path /\w+/,
      * /\d+/, /a.*z/ etc. take. */
-    if (f->body_must_consume) {
+    if (f->body_must_consume == 1) {
         if (f->greedy) {
             if (f->max != 0) {
                 const int32_t saved_min = f->min;
@@ -1346,7 +1377,8 @@ rep_cont_inner(CTX *c, struct rep_frame *f)
      * and writes last_pos to its own iter start; without restoring,
      * outer iterations would see a stale value and `(?:a*)*b/` style
      * patterns would recurse forever. */
-    const bool empty_iter = (f->last_pos != SIZE_MAX && f->last_pos == c->pos);
+    const bool empty_iter = (f->last_pos != SIZE_MAX && f->last_pos == c->pos) &&
+                            (f->body_must_consume != 2 || rep_capsig(c) == f->last_capsig);
 
     if (f->greedy) {
         if (f->max != 0 && !empty_iter) {
@@ -1354,15 +1386,18 @@ rep_cont_inner(CTX *c, struct rep_frame *f)
             const int32_t saved_max = f->max;
             const size_t  saved_pos = c->pos;
             const size_t  saved_last_pos = f->last_pos;
+            const uint64_t saved_capsig = f->last_capsig;
             f->min = (f->min > 0) ? f->min - 1 : 0;
             f->max = (f->max == -1) ? -1 : f->max - 1;
             f->last_pos = c->pos;
+            if (f->body_must_consume == 2) f->last_capsig = rep_capsig(c);
             const VALUE r = EVAL(c, f->body);
             if (r) return MR_STOP;
             c->pos = saved_pos;
             f->min = saved_min;
             f->max = saved_max;
             f->last_pos = saved_last_pos;
+            f->last_capsig = saved_capsig;
         }
         if (f->min == 0) {
             struct rep_frame *const prev = f->prev;
@@ -1385,15 +1420,18 @@ rep_cont_inner(CTX *c, struct rep_frame *f)
             const int32_t saved_max = f->max;
             const size_t  saved_pos = c->pos;
             const size_t  saved_last_pos = f->last_pos;
+            const uint64_t saved_capsig = f->last_capsig;
             f->min = (f->min > 0) ? f->min - 1 : 0;
             f->max = (f->max == -1) ? -1 : f->max - 1;
             f->last_pos = c->pos;
+            if (f->body_must_consume == 2) f->last_capsig = rep_capsig(c);
             const VALUE r = EVAL(c, f->body);
             if (r) return MR_STOP;
             c->pos = saved_pos;
             f->min = saved_min;
             f->max = saved_max;
             f->last_pos = saved_last_pos;
+            f->last_capsig = saved_capsig;
         }
         return MR_FAIL;
     }
@@ -1420,11 +1458,7 @@ node_re_rep_cont(CTX * restrict c, NODE * restrict n)
     const VALUE r = rep_cont_inner(c, f);
 
     if (!r && c->memo_eligible) {
-        c->backtrack_count++;
-        if (!c->memo && c->backtrack_count > c->memo_threshold && c->n_branches > 0) {
-            const size_t bits = (size_t)c->n_branches * (c->str_len + 1);
-            c->memo = (uint8_t *)calloc(1, (bits + 7) / 8);
-        }
+        if (UNLIKELY(++c->backtrack_count > c->bt_next)) agre_bt_slow(c);
         if (c->memo && (memo_ok || memo_key_sound(c))) c->memo[bit >> 3] |= (uint8_t)(1u << (bit & 7));
     }
     return r;
@@ -1781,55 +1815,49 @@ node_re_atomic(CTX * restrict c, NODE * restrict n, NODE *body, NODE *next)
     return EVAL_ARG(c, next);
 }
 
-/* `(?~BODY)` Onigmo absence operator.  Greedy match of the longest
- * prefix of the remaining input such that BODY does not match at any
- * starting position within that prefix.  Implemented as the simpler
- * `(?:(?!BODY).)*`-style greedy expansion: at each pos, probe BODY;
- * if BODY matches, stop extending; otherwise advance one byte.  Then
- * try the outer continuation, backtracking one byte at a time on
- * failure (so the absence is greedy but yieldable to the tail).
- *
- * Note: this is the standard simple semantics ("don't start a match
- * here") and matches what most users want.  It differs from Onigmo's
- * fully-precise "no contiguous substring of the matched range can
- * match BODY", which would consider e.g. /(?~aaa)/ on "aaab" to match
- * "aab" at offset 1 — here we will instead match the same length but
- * via the outer scan loop, since at offset 0 we would stop at length
- * 0 (probe-fail because BODY=aaa matches @0).  For most patterns the
- * difference is invisible. */
+/* (?~BODY) — Onigmo's absence operator: the longest range from here in which
+ * no substring matches BODY, yielding to the tail one byte at a time.  The range
+ * grows a byte at a time; each new end `e` is checked for a BODY match ending
+ * exactly there (`body` ends in node_re_lb_check), starting at e - width when
+ * BODY has a fixed width, else at every start in [start, e]. */
 NODE_DEF
-node_re_absence(CTX * restrict c, NODE * restrict n, NODE *body, NODE *next)
+node_re_absence(CTX * restrict c, NODE * restrict n, NODE *body, int32_t width, NODE *next)
 {
     const size_t start = c->pos;
-
-    /* Phase 1: greedily extend pos.  At each step, probe BODY at the
-     * current pos with captures snapshot/restore (the probe must not
-     * leak captures or move pos).  Stop on probe success. */
-    while (c->pos < c->str_len) {
-        const size_t saved_pos = c->pos;
-        const size_t ng = (size_t)c->n_groups + 1;
-        size_t st[ng], en[ng];
-        bool   vd[ng];
-        memcpy(st, c->starts, sizeof(st));
-        memcpy(en, c->ends,   sizeof(en));
-        memcpy(vd, c->valid,  sizeof(vd));
-        const VALUE probe = EVAL_ARG(c, body);
-        c->pos = saved_pos;
-        memcpy(c->starts, st, sizeof(st));
-        memcpy(c->ends,   en, sizeof(en));
-        memcpy(c->valid,  vd, sizeof(vd));
-        if (probe) break;          /* BODY would match here → can't extend */
-        c->pos++;
+    const size_t saved_target = c->lb_target;
+    const size_t ng = (size_t)c->n_groups + 1;
+    size_t st[ng], en[ng];
+    bool   vd[ng];
+    memcpy(st, c->starts, sizeof(st));
+    memcpy(en, c->ends,   sizeof(en));
+    memcpy(vd, c->valid,  sizeof(vd));
+    size_t emax = 0;
+    bool any = false;
+    for (size_t e = start; ; e++) {
+        bool hit = false;                       /* the empty range always qualifies (Onigmo) */
+        c->lb_target = e;
+        for (size_t i = e; e != start; i--) {
+            if (width < 0 || e - i == (size_t)width) {
+                c->pos = i;
+                hit = EVAL_ARG(c, body) != 0;
+                memcpy(c->starts, st, sizeof(st));
+                memcpy(c->ends,   en, sizeof(en));
+                memcpy(c->valid,  vd, sizeof(vd));
+                if (hit) break;
+            }
+            if (i == start || (width >= 0 && e - i >= (size_t)width)) break;
+        }
+        if (hit) break;
+        emax = e; any = true;
+        if (e == c->str_len) break;
     }
-
-    /* Phase 2: try the tail; on failure shrink the absence by one
-     * byte and retry, down to length 0. */
-    while (c->pos >= start) {
-        const size_t cur = c->pos;
+    c->lb_target = saved_target;
+    if (!any) { c->pos = start; return MR_FAIL; }
+    for (size_t cur = emax; ; cur--) {
+        c->pos = cur;
         const VALUE r = EVAL_ARG(c, next);
         if (r) return r;
         if (cur == start) break;
-        c->pos = cur - 1;
     }
     c->pos = start;
     return MR_FAIL;
