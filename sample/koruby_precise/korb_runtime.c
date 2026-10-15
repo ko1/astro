@@ -13317,6 +13317,7 @@ korb_call_send(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t 
     return korb_send_impl(c, slots + 1 + argc, mid, line, argc, block, def_env, captured_self);
 }
 
+static RESULT korb_public_send_arg_raise(CTX *c, korb_value *slots, uint32_t argc, uint32_t line);   /* fwd */
 static RESULT
 korb_call_impl(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
                struct korb_callcache *cc, uint32_t argc,
@@ -13334,7 +13335,9 @@ korb_call_impl(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
         !korb_send_user_p(vm, KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL ? korb_obj_dispatch_klass(vm, self)
                                                                                     : korb_dispatch_class(c, self), mid) &&
         !(UNLIKELY(vm->send_undef_cnt != 0) && korb_method_undefed_p(c->vm, korb_dispatch_class(c, self), mid))) {
-        if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
+        if (UNLIKELY(argc == 0))
+            return mid == vm->mid_public_send ? korb_public_send_arg_raise(c, slots, argc, line)
+                                              : korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
         return korb_call_send(c, slots, mid, line, argc, self, block, def_env, captured_self);
     }
 
@@ -15299,6 +15302,21 @@ korb_super_new_skip_p(CTX *c, korb_value self, korb_value sdef, const korb_value
         }                                                                             \
     } while (0)
 
+/* public_send's own argument errors come from a 'Kernel#public_send' frame (CRuby: a
+ * real C method; send / __send__ are optimized away and show none).  koruby's
+ * public_send is in no method table, so the frame is named here. */
+__attribute__((cold, noinline)) static RESULT
+korb_public_send_arg_raise(CTX *c, korb_value *slots, uint32_t argc, uint32_t line)
+{
+    const RESULT r = argc == 0 ? korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given")
+                               : korb_raise_line_fill(c, korb_raise_not_sym(c, slots, slots[-(korb_sword_t)argc]), line);
+    if (r.state == KORB_RAISE && KORB_EXC_P(r.value)) {
+        korb_bt_push(c->vm, NULL, line, "Kernel#public_send");   /* a C frame: borrows the caller's file */
+        VAL2EXC(r.value)->line = line;
+    }
+    return r;
+}
+
 static RESULT
 korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint32_t argc,
                    NODE *block, korb_value *def_env, korb_value *captured_self, const korb_value caller_self)
@@ -15334,7 +15352,9 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
         !korb_send_user_p(vm, KORB_OBJECT_P(self) && VAL2OBJ(self)->klass != KORB_NIL ? korb_obj_dispatch_klass(vm, self)
                                                                                     : korb_dispatch_class(c, self), mid) &&
         !(UNLIKELY(vm->send_undef_cnt != 0) && korb_method_undefed_p(c->vm, korb_dispatch_class(c, self), mid))) {
-        if (UNLIKELY(argc == 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
+        if (UNLIKELY(argc == 0))
+            return mid == vm->mid_public_send ? korb_public_send_arg_raise(c, slots, argc, line)
+                                              : korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given");
         {
             korb_value name = slots[-(korb_sword_t)argc];           /* arg0 */
             uint32_t rmid;
@@ -15343,7 +15363,8 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
             else {                                          /* coerce a #to_str name (scratch above the args; args/self are GC-rooted below) */
                 const uint32_t to_str = korb_intern_lit(vm, "to_str", 6);
                 if (UNLIKELY(!(KORB_OBJECT_P(name) && korb_responds_to_coerce_p(c, slots, &name, to_str))))
-                    return korb_raise_not_sym(c, slots, slots[-(korb_sword_t)argc]);
+                    return mid == vm->mid_public_send ? korb_public_send_arg_raise(c, slots, argc, line)
+                                                      : korb_raise_not_sym(c, slots, slots[-(korb_sword_t)argc]);
                 slots[0] = name;
                 RESULT sr = korb_send_impl(c, slots + 1, to_str, line, 0, NULL, NULL, NULL);
                 if (UNLIKELY(sr.state != KORB_NORMAL)) return sr;

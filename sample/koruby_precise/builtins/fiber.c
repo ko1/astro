@@ -134,6 +134,7 @@ static bool korb_fiber_foreign(CTX *c, const KorbFiberRep *rep) {
  * Fiber#resume and Fiber#raise.  With deliver_raise, the fiber's Fiber.yield
  * raises xfer instead of returning it.  Returns the value the fiber next
  * yields (or its block's result when it finishes; RAISE if it died raising). */
+static RESULT korb_fiber_suspend(CTX *c, korb_value *slots, KorbFiberRep *const rep);   /* fwd */
 static RESULT
 korb_fiber_switch_in(CTX *c, korb_value *slots, KorbFiberRep *const rep, korb_value xfer, int deliver_raise)
 {
@@ -197,6 +198,11 @@ korb_fiber_switch_in(CTX *c, korb_value *slots, KorbFiberRep *const rep, korb_va
     korb_re_sync_floor(c);   /* restore the outer stack's floor */
     if (prev == NULL) c->vm->main_slots = NULL;
 
+    if (UNLIKELY(c->vm->xfer_to != NULL)) {            /* a transfer to the root is passing through */
+        if (prev == NULL) c->vm->xfer_to = NULL;       /* arrived: the root takes the value */
+        else { prev->transfer = rep->transfer; return korb_fiber_suspend(c, slots, prev); }   /* step aside too */
+    }
+
     /* While we were away, someone may have killed US (a child fiber calling
      * parent.kill).  We are the one at a switch point, so unwind here. */
     if (prev != NULL && prev->killing) { prev->killing = 0; return RESULT_RAISE_(korb_fiber_kill_sentinel(c)); }
@@ -253,14 +259,35 @@ korb_m_fiber_transfer(CTX *c, korb_value *slots, korb_ref self, korb_slice a)
     KorbFiberRep *const rep = VAL2FIBER(KORB_REF_GET(self))->rep;
     if (UNLIKELY(korb_fiber_foreign(c, rep)))
         return korb_raise_fiber_error(c, slots, "fiber called across threads");
+    KorbFiberRep *const self_rep = c->vm->running_fiber;
+    if (UNLIKELY(rep == self_rep || (self_rep == NULL && rep == c->vm->root_fiber)))
+        return korb_fiber_pack(c, slots + 1, a);       /* to itself: hands the values straight back (CRuby) */
+    if (UNLIKELY(rep == c->vm->root_fiber)) {          /* down to the root, which sits at the bottom of the C stack */
+        self_rep->transfer = UNWRAP(korb_fiber_pack(c, slots + 1, a));
+        self_rep->transferred = 1;
+        c->vm->xfer_to = rep;
+        return korb_fiber_suspend(c, slots + 1, self_rep);
+    }
     if (UNLIKELY(rep->fstate == 3)) return korb_raise_fiber_error(c, slots, "attempt to resume a terminated fiber");
-    if (UNLIKELY(rep == c->vm->running_fiber)) return korb_raise_fiber_error(c, slots, "attempt to transfer to self");
     if (UNLIKELY(rep->fstate == 2 && !rep->transferred))
         return korb_raise_fiber_error(c, slots, "attempt to transfer to a yielding fiber");
     rep->transferred = 1;
     if (rep->fstate == 0) rep->start_splat = KORB_SLICE_LEN(a) == 0 ? 2 : KORB_SLICE_LEN(a) > 1;
     const korb_value xfer = UNWRAP(korb_fiber_pack(c, slots + 1, a));
-    return korb_fiber_switch_in(c, slots + 1, VAL2FIBER(KORB_REF_GET(self))->rep, xfer, 0);
+    const RESULT r = korb_fiber_switch_in(c, slots + 1, rep, xfer, 0);
+    /* A finished transferred fiber hands control to the fiber that was RESUMED,
+     * not to whoever transferred to it (CRuby).  If we were ourselves entered by
+     * a transfer, step aside to our own resumer with its result; a later
+     * transfer back to us returns from here. */
+    KorbFiberRep *const cur = c->vm->running_fiber;
+    if (UNLIKELY(rep->fstate == 3 && cur != NULL && cur->transferred && (r.state == KORB_NORMAL || r.state == KORB_RAISE))) {
+        cur->transfer = r.value;
+        cur->raised = r.state == KORB_RAISE ? 1u : 0u;
+        const RESULT sr = korb_fiber_suspend(c, slots + 1, cur);
+        cur->raised = 0;
+        return sr;
+    }
+    return r;
 }
 
 /* Fiber#kill — terminate the fiber at its suspension point (ensure blocks run).
@@ -521,15 +548,11 @@ korb_m_fiber_inspect(CTX *c, korb_value *slots, korb_ref self, korb_slice a)
     return korb_str_new(c, slots, buf, (uint32_t)(n < 0 ? 0 : (n < (int)sizeof buf ? n : (int)sizeof buf - 1)));
 }
 
-/* Fiber.yield([v]) — suspend the running fiber, hand `v` to its resumer. */
+/* Suspend the running fiber `rep`, handing rep->transfer to its resumer; returns
+ * what the next resume / transfer brings. */
 static RESULT
-korb_m_fiber_yield(CTX *c, korb_value *slots, korb_ref self, korb_slice a)
+korb_fiber_suspend(CTX *c, korb_value *slots, KorbFiberRep *const rep)
 {
-    (void)self;
-    KorbFiberRep *const rep = c->vm->running_fiber;
-    if (UNLIKELY(rep == NULL))
-        return korb_raise_fiber_error(c, slots, "can't yield from root fiber");
-    rep->transfer = UNWRAP(korb_fiber_pack(c, slots, a));   /* several values → an Array */
     rep->fstate = 2;                                   /* suspended */
     /* Capture the TRUE live stack top, not c->slots_top: the latter is only
      * republished by korb_alloc, so between the fiber's last allocation and this
@@ -557,4 +580,16 @@ korb_m_fiber_yield(CTX *c, korb_value *slots, korb_ref self, korb_slice a)
         return RESULT_RAISE_(rep->transfer);
     }
     return RESULT_OK(rep->transfer);                   /* value from the next resume */
+}
+
+/* Fiber.yield([v]) — suspend the running fiber, hand `v` to its resumer. */
+static RESULT
+korb_m_fiber_yield(CTX *c, korb_value *slots, korb_ref self, korb_slice a)
+{
+    (void)self;
+    KorbFiberRep *const rep = c->vm->running_fiber;
+    if (UNLIKELY(rep == NULL))
+        return korb_raise_fiber_error(c, slots, "can't yield from root fiber");
+    rep->transfer = UNWRAP(korb_fiber_pack(c, slots, a));   /* several values → an Array */
+    return korb_fiber_suspend(c, slots, rep);
 }

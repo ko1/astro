@@ -1492,6 +1492,7 @@ struct korb_vm {
     struct KorbFiberRep *root_fiber;   /* stand-in rep for the main stack (Fiber.current) */
     struct KorbFiberRep *running_fiber;
     struct KorbFiberRep *starting_fiber;
+    struct KorbFiberRep *xfer_to;      /* a transfer down to the root fiber in flight: each fiber it passes steps aside */
     korb_value *main_slots, *main_slots_top;
 
     /* green threads (Thread) — docs/io_design.md。cur_thread == NULL は
