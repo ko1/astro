@@ -79,13 +79,6 @@ CRuby の `$_` は `$~` と同じくメソッドのフレームごと。koruby �
   正しく分けるには、その return が DM の本体（とその中のブロック）に字句的に書かれたものかを知る必要がある
   （DM の定義元メソッドが pr の定義元と同じ場合もあるので、家のフレームの比較では足りない）。rubyspec 1 例。
 
-## 未: `proc { |_, _, _ = 1, *_, _:, _: 2, **_, &_| }` が "block param slot ordering" (2026-10-15)
-- def は重複 `_` に名前なしのスロットを割り当てるようにしたが、ブロック引数は未対応。rubyspec 1 例。
-- 分割代入の後の省略可能引数 `|(a, (*b, c)), d=1|` / `|a, (*b, c), d, (*e), (*), **k|` も同じ理由で
-  "block optional parameter slot ordering"（分割代入の葉が局所変数を先に取るので、省略可能引数の局所番号が
-  宣言順の位置と合わない。束縛器 korb_bind_destr_entry の spec に省略可能引数の既定値を載せる必要がある）。
-  rubyspec: core/proc/arity_spec 2 例。
-
 ## 検討: codeql の value_param.ql（引数の korb_value を may-GC 呼び出しの後に使う）を gate に入れるか (2026-10-15)
 - korb_puts_one_to が変換の呼び出しの後で引数 `v` を根に戻していた（2cab5fb8 で修正、STRESS+PURGE で SEGV）。
   value_read_after_gc は局所変数だけを見るので検出しない。value_param.ql は README で「gate 外の実験」。

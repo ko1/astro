@@ -2046,10 +2046,73 @@ kp_numbered_first_locals(struct kp_ctx *tc, const pm_constant_id_list_t *const l
     return out;
 }
 
+static const pm_constant_id_list_t *kp_param_first_locals(struct kp_ctx *tc, const pm_constant_id_list_t *locals,
+                                                          const pm_parameters_node_t *ps);   /* fwd */
+/* the name of a plain positional / keyword / rest / block param, 0 if none */
+static pm_constant_id_t
+kp_param_cid(const pm_node_t *const p)
+{
+    if (!p) return 0;
+    switch (PM_NODE_TYPE(p)) {
+      case PM_REQUIRED_PARAMETER_NODE: return ((const pm_required_parameter_node_t *)p)->name;
+      case PM_OPTIONAL_PARAMETER_NODE: return ((const pm_optional_parameter_node_t *)p)->name;
+      case PM_REST_PARAMETER_NODE: return ((const pm_rest_parameter_node_t *)p)->name;
+      case PM_REQUIRED_KEYWORD_PARAMETER_NODE: return ((const pm_required_keyword_parameter_node_t *)p)->name;
+      case PM_OPTIONAL_KEYWORD_PARAMETER_NODE: return ((const pm_optional_keyword_parameter_node_t *)p)->name;
+      case PM_KEYWORD_REST_PARAMETER_NODE: return ((const pm_keyword_rest_parameter_node_t *)p)->name;
+      case PM_BLOCK_PARAMETER_NODE: return ((const pm_block_parameter_node_t *)p)->name;
+      default: return 0;
+    }
+}
+/* Is `cid` (a `_`-prefixed name) the name of an earlier param in `ps` than `upto`? */
+static bool
+kp_param_repeated_before(struct kp_ctx *tc, const pm_parameters_node_t *const ps, const pm_node_t *const upto, const pm_constant_id_t cid)
+{
+    if (cid == 0 || kp_cid_cstr(tc, cid)[0] != '_') return false;
+    const pm_node_list_t *const lists[] = { &ps->requireds, &ps->optionals, NULL, &ps->posts, &ps->keywords };
+    for (int li = 0; li < 5; li++) {
+        if (li == 2) {                                       /* the rest param sits between optionals and posts */
+            if (ps->rest == upto) return false;
+            if (kp_param_cid(ps->rest) == cid) return true;
+            continue;
+        }
+        for (size_t i = 0; i < lists[li]->size; i++) {
+            if (lists[li]->nodes[i] == upto) return false;
+            if (kp_param_cid(lists[li]->nodes[i]) == cid) return true;
+        }
+    }
+    if ((const pm_node_t *)ps->keyword_rest == upto) return false;
+    return kp_param_cid(ps->keyword_rest) == cid;
+}
+static bool
+kp_params_repeat_underscore(struct kp_ctx *tc, const pm_parameters_node_t *const ps)
+{
+    const pm_node_list_t *const lists[] = { &ps->requireds, &ps->optionals, &ps->posts, &ps->keywords };
+    for (int li = 0; li < 4; li++)
+        for (size_t i = 0; i < lists[li]->size; i++)
+            if (kp_param_repeated_before(tc, ps, lists[li]->nodes[i], kp_param_cid(lists[li]->nodes[i]))) return true;
+    if (ps->rest && kp_param_repeated_before(tc, ps, ps->rest, kp_param_cid(ps->rest))) return true;
+    if (ps->keyword_rest && kp_param_repeated_before(tc, ps, ps->keyword_rest, kp_param_cid(ps->keyword_rest))) return true;
+    return ps->block && kp_param_repeated_before(tc, ps, (const pm_node_t *)ps->block, kp_param_cid((const pm_node_t *)ps->block));
+}
+
 static NODE *
 transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals,
                       const pm_node_t *blk_params, const pm_node_t *blk_body)
 {
+    /* `|_, _|`: a repeated `_`-prefixed param gets an unnamed slot of its own at its
+     * position (kp_param_first_locals, as for def); a name read sees the first */
+    bool dup_us = false;
+    {
+        const pm_parameters_node_t *const ps0 =
+            !blk_params ? NULL
+          : PM_NODE_TYPE_P(blk_params, PM_BLOCK_PARAMETERS_NODE) ? ((const pm_block_parameters_node_t *)blk_params)->parameters
+          : PM_NODE_TYPE_P(blk_params, PM_PARAMETERS_NODE) ? (const pm_parameters_node_t *)blk_params : NULL;
+        if (ps0 && kp_params_repeat_underscore(tc, ps0)) {
+            const pm_constant_id_list_t *const ro = kp_param_first_locals(tc, blk_locals, ps0);
+            if (ro) { blk_locals = ro; dup_us = true; }
+        }
+    }
     if (blk_params && PM_NODE_TYPE_P(blk_params, PM_NUMBERED_PARAMETERS_NODE)) {
         const pm_constant_id_list_t *const ro = kp_numbered_first_locals(
             tc, blk_locals, ((const pm_numbered_parameters_node_t *)blk_params)->maximum);
@@ -2104,8 +2167,9 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
             if (ps->block && !kp_no_block_param(ps->block)) {   /* `|&blk|`: bind the forwarded block into its local (`&nil` binds nothing) */
                 const pm_node_t *const bpn = (const pm_node_t *)ps->block;
                 if (((const pm_block_parameter_node_t *)bpn)->name)   /* `|&|` names nothing (the block cannot forward it): bind nothing */
-                    blk_param_slot = (int32_t)lvar_index(tc, bpn,
-                        ((const pm_block_parameter_node_t *)bpn)->name);
+                    blk_param_slot = dup_us && kp_param_repeated_before(tc, ps, bpn, kp_param_cid(bpn))
+                                   ? (int32_t)alloc_synth_local(tc)   /* a repeated `_`: a slot nobody reads */
+                                   : (int32_t)lvar_index(tc, bpn, ((const pm_block_parameter_node_t *)bpn)->name);
             }
             if (ps->keywords.size || ps->keyword_rest) {   /* keyword params (built after positional) */
                 kw_info = malloc(sizeof(*kw_info));
@@ -2123,12 +2187,14 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                         name = ok->name; deflt = transduce(tc, ok->value);
                     } else { pop_frame(tc); return kp_unsupported(tc, kp, "block keyword parameter form"); }
                     kw_info->entries[j].mid  = kp_intern_cid(tc, name);
-                    kw_info->entries[j].slot = lvar_index(tc, kp, name);
+                    kw_info->entries[j].slot = dup_us && kp_param_repeated_before(tc, ps, kp, name)
+                                             ? alloc_synth_local(tc) : lvar_index(tc, kp, name);
                     kw_info->entries[j].deflt = deflt;
                 }
                 if (ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_KEYWORD_REST_PARAMETER_NODE)) {
                     pm_constant_id_t kr = ((const pm_keyword_rest_parameter_node_t *)ps->keyword_rest)->name;
-                    if (kr) kw_info->kwrest_slot = (int32_t)lvar_index(tc, ps->keyword_rest, kr);
+                    if (kr && dup_us && kp_param_repeated_before(tc, ps, ps->keyword_rest, kr)) kw_info->kwrest_slot = (int32_t)alloc_synth_local(tc);
+                    else if (kr) kw_info->kwrest_slot = (int32_t)lvar_index(tc, ps->keyword_rest, kr);
                     else    kw_info->kwrest_slot = -2;   /* anonymous `**` : accept & discard all keywords */
                 } else if (ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_NO_KEYWORDS_PARAMETER_NODE))
                     kw_info->kwrest_slot = -3;           /* `**nil` : no keywords accepted */
@@ -2142,7 +2208,8 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                     const pm_node_t *p = ps->requireds.nodes[i];
                     if (PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) { needs_spec = true; continue; }   /* |(a,b), *rest| → spec path */
                     if (!PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) { pop_frame(tc); return kp_unsupported(tc, p, "destructuring block param with opt/rest"); }
-                    if (lvar_index(tc, p, ((const pm_required_parameter_node_t *)p)->name) != loc)
+                    if (lvar_index(tc, p, ((const pm_required_parameter_node_t *)p)->name) != loc &&
+                        !(dup_us && kp_param_repeated_before(tc, ps, p, kp_param_cid(p))))   /* a repeated `_` owns slot `loc` */
                         { pop_frame(tc); return kp_unsupported(tc, p, "block param slot ordering"); }   /* skip this block, don't abort the file */
                     loc++;
                 }
@@ -2152,7 +2219,10 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                     if (!opt_defaults) abort();
                     for (uint32_t j = 0; j < ps->optionals.size; j++) {
                         const pm_optional_parameter_node_t *op = (const pm_optional_parameter_node_t *)ps->optionals.nodes[j];
-                        if (lvar_index(tc, (const pm_node_t *)op, op->name) != loc)
+                        /* after a destructured param the locals run ahead of the positions: the
+                         * spec below names each optional's own local (0x01 <local> <default>) */
+                        if (!needs_spec && lvar_index(tc, (const pm_node_t *)op, op->name) != loc &&
+                            !(dup_us && kp_param_repeated_before(tc, ps, (const pm_node_t *)op, op->name)))
                             { free(opt_defaults); pop_frame(tc);   /* skip this block, don't abort the file */
                               return kp_unsupported(tc, (const pm_node_t *)op, "block optional parameter slot ordering"); }
                         opt_defaults[j] = transduce(tc, op->value);   /* default runs in block scope */
@@ -2178,7 +2248,9 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                     } else {
                     if (!PM_NODE_TYPE_P(ps->rest, PM_REST_PARAMETER_NODE)) { pop_frame(tc); return kp_unsupported(tc, ps->rest, "block splat parameter"); }
                     const pm_rest_parameter_node_t *rp = (const pm_rest_parameter_node_t *)ps->rest;
-                    rest_slot = (int32_t)lvar_index(tc, ps->rest, rp->name);   /* destructured params shift the count */
+                    rest_slot = dup_us && kp_param_repeated_before(tc, ps, ps->rest, rp->name)
+                              ? (int32_t)loc                                         /* a repeated `_`: its own slot */
+                              : (int32_t)lvar_index(tc, ps->rest, rp->name);   /* destructured params shift the count */
                     if (!needs_spec && rest_slot != (int32_t)loc)
                         kp_failf(tc, ps->rest, "koruby_precise: block rest not locals[%u]", loc);
                     loc++;
@@ -2189,7 +2261,8 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                     const pm_node_t *p = ps->posts.nodes[i];
                     if (PM_NODE_TYPE_P(p, PM_MULTI_TARGET_NODE)) { needs_spec = true; continue; }
                     if (!PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) { pop_frame(tc); return kp_unsupported(tc, p, "destructuring block post"); }
-                    if (lvar_index(tc, p, ((const pm_required_parameter_node_t *)p)->name) != loc)
+                    if (!needs_spec && lvar_index(tc, p, ((const pm_required_parameter_node_t *)p)->name) != loc &&
+                        !(dup_us && kp_param_repeated_before(tc, ps, p, kp_param_cid(p))))
                         kp_failf(tc, p, "koruby_precise: block post not locals[%u]", loc);
                     loc++;
                 }
@@ -2207,10 +2280,10 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                                                   : pass == 1 ? &ps->optionals : &ps->posts;
                         for (uint32_t i = 0; i < lst->size && !e2.bad; i++) {
                             const pm_node_t *p = lst->nodes[i];
-                            if (PM_NODE_TYPE_P(p, PM_OPTIONAL_PARAMETER_NODE)) {   /* an optional is a plain leaf here */
+                            if (PM_NODE_TYPE_P(p, PM_OPTIONAL_PARAMETER_NODE)) {   /* 0x01 <local> <default index> */
                                 const uint32_t li = lvar_index(tc, p, ((const pm_optional_parameter_node_t *)p)->name);
-                                if (li > 254) { e2.bad = true; break; }
-                                kp_destr_put(&e2, 0x00); kp_destr_put(&e2, li); e2.loc++;
+                                if (li > 254 || i > 254) { e2.bad = true; break; }
+                                kp_destr_put(&e2, 0x01); kp_destr_put(&e2, li); kp_destr_put(&e2, i); e2.loc++;
                             } else kp_encode_destr(tc, p, &e2);
                         }
                         if (pass == 1 && rest_slot >= 0)          /* the rest param's own leaf */
@@ -2219,6 +2292,11 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                     if (e2.bad) { free(e2.buf); pop_frame(tc); return kp_unsupported(tc, (const pm_node_t *)ps, "destructuring block param with opt/rest"); }
                     destructure_spec = e2.buf;
                     destr_len = e2.len;
+                    req_cnt = (uint32_t)ps->requireds.size;   /* logical: the binder places posts and a lambda checks arity by it */
+                    if (rest_slot == -1) {                 /* no rest: still the general binder (front + optionals + posts) */
+                        rest_slot = -4;
+                        bparams = (uint32_t)(ps->requireds.size + ps->optionals.size + ps->posts.size);
+                    }
                 }
             }
             /* single |(a, b, ...)| → destructure the one array arg into N locals
@@ -2306,8 +2384,16 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
                      * entries = a group with a splat.  Groups nest freely; the
                      * binder's korb_bind_destr_entry decodes the same shape. */
                     struct kp_destr enc = { NULL, 0, 0, 0, false };
-                    for (uint32_t i = 0; i < bparams; i++)
-                        kp_encode_destr(tc, ps->requireds.nodes[i], &enc);
+                    for (uint32_t i = 0; i < bparams; i++) {
+                        const pm_node_t *const p = ps->requireds.nodes[i];
+                        if (PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE) && kp_param_repeated_before(tc, ps, p, kp_param_cid(p))) {
+                            const uint32_t li = alloc_synth_local(tc);   /* a repeated `_`: the first keeps the name */
+                            if (li > 254) { enc.bad = true; break; }
+                            kp_destr_put(&enc, 0x00); kp_destr_put(&enc, li); enc.loc++;
+                            continue;
+                        }
+                        kp_encode_destr(tc, p, &enc);
+                    }
                     if (enc.bad) { free(enc.buf); pop_frame(tc); return kp_unsupported(tc, (const pm_node_t *)ps, "destructuring block parameter"); }
                     destructure_spec = enc.buf;
                     destr_len = enc.len;

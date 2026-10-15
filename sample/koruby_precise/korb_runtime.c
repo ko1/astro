@@ -14103,9 +14103,12 @@ korb_symproc_yield(CTX *c, korb_value *const slots, const uint32_t mid,
     return korb_send_vis(c, slots + argc, mid, 0, argc - 1, KORB_VIS_OUTSIDE);   /* public methods only */
 }
 /* Bind one destructuring-spec entry (see parse.c): 0x00 = scalar leaf,
+ * 0x01 <local> <default> = an optional param's leaf (given its arg here),
  * 0xFF <k> = a group of k nested entries.  Returns the next entry. */
-static const uint8_t *korb_bind_destr_entry(CTX *c, korb_value *bf, uint32_t nlocals, uint32_t *loc, const uint8_t *sp, korb_value pv)
+static const uint8_t *korb_bind_destr_entry(CTX *c, korb_value *bf, korb_value *scratch, uint32_t *loc, const uint8_t *sp, korb_value pv)
 {
+    /* `scratch`: free (GC-scanned) cells above everything the caller still holds —
+     * a nested split group stages its items there */
     if (*sp == 0xFE) {                                  /* |(a, *b, c)| — split group */
         const uint32_t nl = sp[1], rest_named = sp[2], nr = sp[3];
         const uint8_t *cur = sp + 4;
@@ -14118,10 +14121,10 @@ static const uint8_t *korb_bind_destr_entry(CTX *c, korb_value *bf, uint32_t nlo
         /* Stage the source values in the (scanned) block frame before the rest
          * array is allocated: `items` points into the source Array, which the
          * alloc's GC would move. */
-        korb_value *const stage = bf + 1 + nlocals;
+        korb_value *const stage = scratch;
         for (uint32_t j = 0; j < n; j++) stage[j] = items[j];
         for (uint32_t j = 0; j < nl; j++)
-            cur = korb_bind_destr_entry(c, bf, nlocals, loc, cur, (j < n) ? stage[j] : KORB_NIL);
+            cur = korb_bind_destr_entry(c, bf, stage + n, loc, cur, (j < n) ? stage[j] : KORB_NIL);
         if (rest_named) {                               /* the middle slice as an Array */
             const uint32_t rloc = *cur++;               /* the rest leaf's local index */
             korb_value *const acur = stage + n;
@@ -14137,10 +14140,11 @@ static const uint8_t *korb_bind_destr_entry(CTX *c, korb_value *bf, uint32_t nlo
         }
         for (uint32_t j = 0; j < nr; j++) {
             const uint32_t idx = nl + surplus + j;
-            cur = korb_bind_destr_entry(c, bf, nlocals, loc, cur, (idx < n) ? stage[idx] : KORB_NIL);
+            cur = korb_bind_destr_entry(c, bf, stage + n, loc, cur, (idx < n) ? stage[idx] : KORB_NIL);
         }
         return cur;
     }
+    if (*sp == 0x01) { (*loc)++; bf[1 + sp[1]] = pv; return sp + 3; }   /* 0x01 <local> <default> */
     if (*sp != 0xFF) { (*loc)++; bf[1 + sp[1]] = pv; return sp + 2; }   /* 0x00 <local> */
     const uint32_t k = sp[1];
     const uint8_t *cur = sp + 2;
@@ -14148,7 +14152,7 @@ static const uint8_t *korb_bind_destr_entry(CTX *c, korb_value *bf, uint32_t nlo
     for (uint32_t j = 0; j < k; j++) {
         const korb_value sub = ar ? (j < ar->len ? korb_ary_ptr(ar)[j] : KORB_NIL)
                              : (j == 0 ? pv : KORB_NIL);   /* non-Array → first leaf, rest nil */
-        cur = korb_bind_destr_entry(c, bf, nlocals, loc, cur, sub);
+        cur = korb_bind_destr_entry(c, bf, scratch, loc, cur, sub);
     }
     return cur;
 }
@@ -14658,8 +14662,10 @@ korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_en
         const uint32_t pc = korb_entry_params_cnt(block);
         const bool has_rest = korb_entry_has_rest(block);
         const uint32_t rs = korb_entry_rest_slot(block) >= 0 ? (uint32_t)korb_entry_rest_slot(block) : pc;
-        const uint32_t npost = (has_rest && korb_entry_rest_slot(block) >= 0) ? ((pc > rs + 1) ? (pc - rs - 1) : 0)
-                                        : korb_entry_post_cnt(block);   /* |a, b=1, c| / |*, c| — posts are required too */
+        /* (with a destructured param the rest's local index is no position: take the count) */
+        const uint32_t npost = (has_rest && korb_entry_rest_slot(block) >= 0 && korb_entry_destructure_spec(block) == NULL)
+                                   ? ((pc > rs + 1) ? (pc - rs - 1) : 0)
+                                   : korb_entry_post_cnt(block);   /* |a, b=1, c| / |*, c| — posts are required too */
         const bool variable = korb_entry_opt_defaults(block) != NULL || has_rest;   /* same basis as Proc#arity */
         const uint32_t lo = variable ? korb_entry_req_cnt(block) + npost : pc;   /* required front + required post */
         if (UNLIKELY(argc < lo || (!has_rest && argc > pc))) {
@@ -14719,7 +14725,7 @@ korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_en
     if (splat_conv != KORB_UNDEF) { conv_buf[0] = splat_conv; argv = conv_buf; }
     const uint8_t *spec = korb_entry_destructure_spec(block);
     uint32_t dn = korb_entry_destructure_n(block);
-    if (spec != NULL && korb_entry_rest_slot(block) < 0) {   /* mixed scalar + destructuring params, e.g. |a, (k, v)| or |(a, (b, c))| */
+    if (spec != NULL && korb_entry_rest_slot(block) < 0 && korb_entry_rest_slot(block) != -4) {   /* mixed scalar + destructuring params, e.g. |a, (k, v)| or |(a, (b, c))| */
         const uint32_t np = korb_entry_params_cnt(block);   /* logical param count */
         const korb_value *src = argv; uint32_t srcn = argc;
         if (!is_lambda && np > 1 && argc == 1 && KORB_ARRAY_P(argv[0])) {  /* auto-splat one yielded Array across params */
@@ -14729,7 +14735,7 @@ korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_en
         uint32_t loc = 0;
         const uint8_t *sp = spec;
         for (uint32_t p = 0; p < np; p++)
-            sp = korb_bind_destr_entry(c, bf, blocals, &loc, sp, (p < srcn) ? src[p] : KORB_NIL);
+            sp = korb_bind_destr_entry(c, bf, bf + 1 + blocals, &loc, sp, (p < srcn) ? src[p] : KORB_NIL);
     } else if (dn > 0) {                                /* |(a, b, ...)| — splat the array arg */
         korb_value arr = (argc >= 1) ? argv[0] : KORB_NIL;
         if (KORB_ARRAY_P(arr)) {
@@ -14740,7 +14746,7 @@ korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_en
             for (uint32_t i = 1; i < dn; i++) bf[1 + i] = KORB_NIL;
         }
         for (uint32_t i = dn; i < blocals; i++) bf[1 + i] = KORB_NIL;
-    } else if (korb_entry_rest_slot(block) >= 0 ||
+    } else if (korb_entry_rest_slot(block) >= 0 || korb_entry_rest_slot(block) == -4 ||   /* -4: destructuring + optionals, no rest */
                (korb_entry_rest_slot(block) == -2 && korb_entry_post_cnt(block) > 0)) {   /* |front..., *rest[, post...]| (front may include optionals) */
         const uint32_t np = korb_entry_params_cnt(block);
         const bool anon_rest = korb_entry_rest_slot(block) < 0;              /* `|a, *, b|`: no local for the rest */
@@ -14780,7 +14786,15 @@ korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_en
         uint32_t sploc = 0;
         for (uint32_t i = 0; i < nfront; i++) {
             if (fsp) {                                                       /* |(a,b), *rest| etc. */
-                fsp = korb_bind_destr_entry(c, bf, blocals, &sploc, fsp, (i < srcn) ? stage[i] : KORB_NIL);
+                if (*fsp == 0x01 && opts != NULL && !((int32_t)i < (int32_t)srcn - (int32_t)npost)) {   /* an optional with no arg left */
+                    const uint32_t dl = fsp[1], di = fsp[2];
+                    RESULT dr = EVAL(c, opts[di], rcur + 1);
+                    if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
+                    bf[1 + dl] = dr.value;
+                    fsp += 3; sploc++;
+                    continue;
+                }
+                fsp = korb_bind_destr_entry(c, bf, rcur + 1, &sploc, fsp, (i < srcn) ? stage[i] : KORB_NIL);
                 continue;
             }
             if (i < reqc) bf[1 + i] = (i < srcn) ? stage[i] : KORB_NIL;      /* required: first args */
@@ -14792,7 +14806,7 @@ korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_en
                 bf[1 + i] = dr.value;
             } else bf[1 + i] = KORB_NIL;
         }
-        if (fsp) {                          /* the rest param's own entry is 0x00 <local> */
+        if (fsp && korb_entry_rest_slot(block) != -4) {   /* the rest param's own entry is 0x00 <local> */
             bf[1 + fsp[1]] = KORB_REF_GET(rarr);
             fsp += 2; sploc++;
         } else if (!anon_rest) {
@@ -14806,7 +14820,7 @@ korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_en
         for (uint32_t j = 0; j < npost; j++) {
             const uint32_t pidx = pbase + j;
             const korb_value pv = (pidx < srcn) ? stage[pidx] : KORB_NIL;
-            if (fsp) fsp = korb_bind_destr_entry(c, bf, blocals, &sploc, fsp, pv);
+            if (fsp) fsp = korb_bind_destr_entry(c, bf, rcur + 1, &sploc, fsp, pv);
             else     bf[1 + rs + 1 + j] = pv;
         }
         if (!spec) for (uint32_t i = np; i < blocals; i++) bf[1 + i] = KORB_NIL;
