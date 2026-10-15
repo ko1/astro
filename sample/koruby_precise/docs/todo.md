@@ -9,9 +9,12 @@
 - korb_ary_ptr / korb_str_ptr / korb_hash_pairs（context.h）が「raw payload に触れていない」と判定される。
   master（f6f37b41）でも同じ失敗なので既存。注釈を外すか、規則（accessor の判定）を直すかは未決。
 
-## 未: `nil::X += 1` の名前空間が false のとき (2026-10-15)
-- 名前空間 nil は CRuby どおり字句的に X を読む（NameError）。false も同じ扱いにしているが、CRuby は
-  "false is not a class/module"（TypeError）のはず（未確認）。
+## 未: `for x in obj` が obj.each を先に回し切ってから本体を回す (2026-10-15)
+- node_for は each を to_enum.to_a で配列にしてから回す。CRuby は each にブロックを渡すので、
+  `def o.each; yield 1; puts "after yield"; yield 2; end; for x in o; puts x; end` の出力順が違う
+  （CRuby: 1 / after yield / 2、koruby: after yield / 1 / 2）。無限の each も止まらない。
+  each に渡るブロックの Proc#source_range / #syntax_tree（ForNode）も prelude を指す（rubyspec 2 例）。
+  直すには for 本体をブロックとして組む（本体の局所変数は外側のフレームのまま）必要がある。
 
 ## 未: `--compiled-only` の DOOM が master でも compile-miss (2026-10-14)
 - 合併前の確認で見つけた既存の差。原因未調査。

@@ -1676,12 +1676,15 @@ kp_const_set_on(struct kp_ctx *tc, uint32_t line, uint32_t name, NODE *owner, NO
 }
 
 static NODE *build_const_read(struct kp_ctx *tc, uint32_t name_cid, uint32_t line);
-/* The read of `mod::N op= v` / `&&= v` (mod in synth local mtmp): CRuby reads N lexically when mod is nil */
+/* The read of `mod::N op= v` / `&&= v` (mod in synth local mtmp): CRuby reads N lexically when mod is nil
+ * (only nil: `false::N` is the TypeError) */
 static NODE *
 kp_dyn_const_opread(struct kp_ctx *tc, uint32_t mtmp, uint32_t name, uint32_t line)
 {
-    return ALLOC_node_if(bake_lget(tc, mtmp), KP_CONST_PATH(tc, name, line, bake_lget(tc, mtmp)),
-                         build_const_read(tc, name, line));
+    NODE *r;
+    WITH_CHAIN(tc, KP_SEND0_SC, (r = bake_lget(tc, mtmp)));
+    return ALLOC_node_if(kp_send0(tc, korb_intern(tc->c->vm, "nil?", 4), line, r), build_const_read(tc, name, line),
+                         KP_CONST_PATH(tc, name, line, bake_lget(tc, mtmp)));
 }
 
 /* `mod::N &&= v` / `||= v` with a runtime owner, evaluated once into a synth local: read and write through

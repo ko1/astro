@@ -65,6 +65,8 @@ show(:cpath_or) { ns::NotDefined ||= 1 }
 show(:cpath_and) { ns::NotDefined &&= 1 }
 show(:cpath_write) { ns::NotDefined = 1 }
 show(:cpath_massign) { ns::NotDefined, x = 1, 2 }
+fns = false
+show(:cpath_false_opassign) { fns::NotDefined += 1 }
 module CpathM; end
 m = CpathM
 show(:cpath_read_missing) { m::NotDefined += 1 }

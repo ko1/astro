@@ -40,12 +40,43 @@ module Koruby
       to_s: [Prism::InterpolatedStringNode, Prism::InterpolatedSymbolNode], to_sym: [Prism::InterpolatedSymbolNode],
     }.freeze
 
-    # [path, start_line, start_column, end_line, end_column] or nil
-    def self.range_for(loc, source = nil, first_line = 1)
-      node = find(loc, source, first_line)
-      return nil unless node
-      l = node.location
-      [loc.path, l.start_line, l.start_column, l.end_line, l.end_column]
+    # [source, first line] of the code at `path`: the copy kept for eval / -e, else the file read back, which
+    # must be what was parsed (CRuby compares a digest).  nil: no source.
+    def self.source_of(path, abs)
+      kind, kept, first_line, = __source_record(path, nil)
+      if kind == 1 || kind == 2
+        raise ArgumentError, "cannot get source range for location in eval" unless kept
+        return [kept, first_line]
+      end
+      return nil unless abs
+      src = File.binread(abs)
+      raise RuntimeError, "source has been modified" if kind == 0 && __source_record(path, src)[3] == false
+      [src, 1]
+    end
+
+    def self.eval_path?(path)
+      kind, = __source_record(path, nil)
+      kind == 1 || kind == 2
+    end
+
+    # #syntax_tree of a Proc / Method: the node at its #source_range — a block's is the call it is passed to
+    # (CRuby's iseq node), never an implicit-parameter node of the same extent
+    def self.node_of_range(range)
+      return nil unless range
+      src, first_line = source_of(range.path, range.absolute_path)
+      return nil unless src
+      key = [range.start_line, range.start_column, range.end_line, range.end_column]
+      stack = [[Prism.parse(src, line: first_line).value, nil]]
+      until stack.empty?
+        n, parent = stack.pop
+        l = n.location
+        if [l.start_line, l.start_column, l.end_line, l.end_column] == key
+          return parent if n.is_a?(Prism::BlockNode) && parent.is_a?(Prism::CallNode)
+          return n if n.is_a?(Prism::DefNode) || n.is_a?(Prism::LambdaNode) || n.is_a?(Prism::ForNode)
+        end
+        n.compact_child_nodes.each { |ch| stack << [ch, n] }
+      end
+      nil
     end
 
     def self.find(loc, source = nil, first_line = 1)
@@ -80,7 +111,11 @@ module Koruby
       # the innermost scope of the label's kind, the kinds tried in order (a method label: its def, else the
       # block a define_method made it from)
       scope = nil
-      kind.each { |k| break if (scope = chain.reverse.find { |s| s.is_a?(k) }) }
+      if kind.include?(Prism::LambdaNode)                 # a block label: the innermost block or lambda
+        scope = chain.reverse.find { |s| kind.any? { |k| s.is_a?(k) } }
+      else
+        kind.each { |k| break if (scope = chain.reverse.find { |s| s.is_a?(k) }) }
+      end
       scope ||= chain.last
       # candidates: raisers covering the line in the scope's own code (nested scopes are
       # candidates themselves but are not entered)

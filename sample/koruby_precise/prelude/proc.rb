@@ -50,6 +50,10 @@ class Proc
   # no Ruby source of its own (a C method turned into a proc).
   def source_range = Ruby::SourceRange.__send__(:__build, __source_range_info)
   private :__source_range_info
+  def syntax_tree
+    require "koruby/backtrace_node"
+    Koruby::BacktraceNode.node_of_range(source_range)
+  end
 
   # Function composition: (f >> g).(x) == g(f(x)); (f << g).(x) == f(g(x)).
   # The result is a lambda iff the first-executed proc is (matches CRuby):
@@ -63,6 +67,10 @@ end
 class Method
   def source_range = Ruby::SourceRange.__send__(:__build, __source_range_info)
   private :__source_range_info
+  def syntax_tree
+    require "koruby/backtrace_node"
+    Koruby::BacktraceNode.node_of_range(source_range)
+  end
 
   def >>(g); raise TypeError, "callable object is expected" unless g.respond_to?(:call); m = self; ->(*a, &b) { g.call(m.call(*a, &b)) }; end
   def <<(g); raise TypeError, "callable object is expected" unless g.respond_to?(:call); m = self; (g.respond_to?(:lambda?) ? g.lambda? : true) ? ->(*a, &b) { m.call(g.call(*a, &b)) } : proc { |*a, &b| m.call(g.call(*a, &b)) }; end
@@ -92,4 +100,8 @@ end
 class UnboundMethod
   def source_range = Ruby::SourceRange.__send__(:__build, __source_range_info)
   private :__source_range_info
+  def syntax_tree
+    require "koruby/backtrace_node"
+    Koruby::BacktraceNode.node_of_range(source_range)
+  end
 end
