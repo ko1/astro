@@ -424,7 +424,7 @@ korb_hash_fetch_miss(CTX *c, korb_value *slots, korb_ref self, const korb_value 
 }
 static RESULT korb_m_hash_fetch(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
     if (UNLIKELY(KORB_SLICE_LEN(a) < 1 || KORB_SLICE_LEN(a) > 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)", (unsigned)KORB_SLICE_LEN(a));
-    if (UNLIKELY(KORB_SLICE_LEN(a) == 2 && block != NULL)) korb_warn(c, slots, "block supersedes default value argument");
+    if (UNLIKELY(KORB_SLICE_LEN(a) == 2 && block != NULL)) korb_warn_caller(c, slots, a.p + KORB_FLINK_OFF, "block supersedes default value argument");
     RESULT ferr; int32_t idx = korb_hash_find_ctx(c, slots, self, KORB_SLICE_GET(a, 0), &ferr);
     if (UNLIKELY(ferr.state != KORB_NORMAL)) return ferr;
     const KorbHash *h = SELF_HASH;                        /* re-read after possible eql? dispatch */

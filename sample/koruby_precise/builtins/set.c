@@ -1321,7 +1321,8 @@ static RESULT korb_m_class_attr1(CTX *c, korb_value *slots, korb_ref self, korb_
         const korb_value last = KORB_SLICE_GET(a, n - 1);
         if (last == KORB_TRUE || last == KORB_FALSE) {
             writer = (last == KORB_TRUE) ? 1 : 0; n--;
-            korb_warn(c, slots, "optional boolean argument is obsoleted");
+            if (korb_const_get(c->vm, korb_intern_lit(c->vm, "$VERBOSE", 8)) == KORB_TRUE && korb_warn_deprecated_p(c->vm))   /* rb_category_warning */
+                korb_warn_caller(c, slots, a.p + KORB_FLINK_OFF, "optional boolean argument is obsoleted");
         }
     }
     return korb_m_class_attr_n(c, slots, self, a, n, 1, writer);
@@ -1333,8 +1334,11 @@ static RESULT korb_m_class_case_eq(CTX *c, korb_value *slots, korb_ref self, kor
 }
 /* Class#superclass — the immediate superclass (nil at the top). */
 static RESULT korb_m_class_superclass(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
-    (void)c;(void)slots;(void)a;
-    return RESULT_OK(VAL2CLASS(KORB_REF_GET(self))->superclass);
+    (void)a;
+    const korb_value sup = VAL2CLASS(KORB_REF_GET(self))->superclass;
+    if (UNLIKELY(sup == KORB_NIL) && KORB_REF_GET(self) != korb_const_get(c->vm, korb_intern_lit(c->vm, "BasicObject", 11)))
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "uninitialized class");   /* Class.allocate */
+    return RESULT_OK(sup);
 }
 /* Class#allocate — a bare instance with no #initialize call. */
 /* An Object-based user class's allocate is a generic object — none of the checks below
@@ -3718,7 +3722,7 @@ static RESULT korb_bi_refinement_import(CTX *c, korb_value *slots, korb_slice a)
           const KorbClass *const mk = VAL2CLASS(m);
           if (mk->included != KORB_NIL || mk->prepended != KORB_NIL) {
               char nm[224]; korb_class_desc_into(c, m, nm, sizeof nm);
-              korb_warn(c, slots, "%s has ancestors, but Refinement#import_methods doesn't import their methods", nm);
+              korb_warn_caller(c, slots, a.p + KORB_FLINK_OFF, "%s has ancestors, but Refinement#import_methods doesn't import their methods", nm);
           } }
         /* a non-Ruby method aborts here — the modules before this one stay imported */
         { const korb_value m = korb_ary_ptr(VAL2ARY(KORB_REF_GET(mref)))[i];   /* re-read: the warn dispatched */

@@ -1145,7 +1145,7 @@ static RESULT korb_m_ary_delete_at(CTX *c, korb_value *slots, korb_ref self, kor
     return RESULT_OK(removed);
 }
 static RESULT korb_m_ary_rindex(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
-    if (block != NULL && KORB_SLICE_LEN(a) > 0) korb_warn(c, slots, "given block not used");   /* arg wins */
+    if (block != NULL && KORB_SLICE_LEN(a) > 0) korb_warn_caller(c, slots, a.p + KORB_FLINK_OFF, "given block not used");   /* arg wins */
     if (block == NULL && KORB_SLICE_LEN(a) == 0)     /* no needle, no block → Enumerator (no size fn) */
         return korb_ary_to_enum_unsized(c, slots, self, "rindex", a);
     if (block != NULL && KORB_SLICE_LEN(a) == 0) {   /* block form (arg, if given, wins per CRuby) */

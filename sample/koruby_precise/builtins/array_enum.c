@@ -8,7 +8,7 @@ static RESULT korb_arithseq_new(CTX *c, korb_value *slots, korb_value recv, korb
 /* Array#index is a true alias of #find_index (registered to the same CFUNC). */
 
 static RESULT korb_m_ary_count(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
-    if (block != NULL && KORB_SLICE_LEN(a) > 0) korb_warn(c, slots, "given block not used");   /* arg wins */
+    if (block != NULL && KORB_SLICE_LEN(a) > 0) korb_warn_caller(c, slots, a.p + KORB_FLINK_OFF, "given block not used");   /* arg wins */
     if (block != NULL && KORB_SLICE_LEN(a) == 0) {  /* block form: count truthy yields */
         korb_sword_t n = 0;
         for (uint32_t i = 0; ; i++) {
@@ -936,7 +936,7 @@ static RESULT korb_m_ary_join(CTX *c, korb_value *slots, korb_ref self, korb_sli
     /* CRuby warns about a non-nil $, before it looks at self, so `[].join` warns too */
     if ((KORB_SLICE_LEN(a) == 0 || KORB_SLICE_GET(a, 0) == KORB_NIL) &&
         KORB_STRING_P(korb_const_get(c->vm, korb_intern_lit(c->vm, "$,", 2))))
-        korb_warn(c, slots, "$, is set to non-nil value");
+        korb_warn_caller(c, slots, a.p + KORB_FLINK_OFF, "$, is set to non-nil value");
     if (SELF_ARY->len == 0) {                                       /* [].join(anything) → "" (sep not validated) */
         RESULT e = korb_str_new(c, slots, "", 0);
         if (LIKELY(e.state == KORB_NORMAL)) KORB_STR_ENC_SET(e.value, KORB_ENC_USASCII);   /* CRuby starts at US-ASCII */
@@ -1585,7 +1585,7 @@ static RESULT korb_m_ary_rfind(CTX *c, korb_value *slots, korb_ref self, korb_sl
 }
 static RESULT korb_m_ary_find_index(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *captured_self) {
     if (KORB_SLICE_LEN(a) >= 1) {                    /* find_index(obj): first index == obj */
-        if (block != NULL) korb_warn(c, slots, "given block not used");   /* arg wins */
+        if (block != NULL) korb_warn_caller(c, slots, a.p + KORB_FLINK_OFF, "given block not used");   /* arg wins */
         slots[0] = KORB_SLICE_GET(a, 0);            /* needle (root across element == dispatch) */
         const uint32_t n = VAL2ARY(KORB_REF_GET(self))->len;
         const bool eqr = KORB_EQ_REDEF(c);   /* read once: the loop calls out of line */
@@ -1899,7 +1899,7 @@ static RESULT korb_m_num_step(CTX *c, korb_value *slots, korb_ref self, korb_sli
 static RESULT korb_ary_quant(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *captured_self, int mode) {
     if (UNLIKELY(KORB_SLICE_LEN(a) > 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 0..1)", (unsigned)KORB_SLICE_LEN(a));
     const bool has_pat = KORB_SLICE_LEN(a) >= 1;
-    if (has_pat && block != NULL) korb_warn(c, slots, "given block not used");   /* pattern arg wins */
+    if (has_pat && block != NULL) korb_warn_caller(c, slots, a.p + KORB_FLINK_OFF, "given block not used");   /* pattern arg wins */
     slots[0] = has_pat ? KORB_SLICE_GET(a, 0) : KORB_NIL;           /* pattern (rooted across dispatch) */
     struct korb_yseq ys = { 0 };                                    /* set up only for the block form (the only one that calls it) */
     if (!has_pat && block != NULL) CHECK(korb_yseq_init(c, slots + 2, &ys, block, def_env, captured_self));

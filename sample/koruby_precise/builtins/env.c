@@ -85,7 +85,7 @@ static RESULT korb_m_env_fetch(CTX *c, korb_value *slots, korb_ref self, korb_sl
     const char *v = getenv(name);
     if (v) return korb_env_str_new(c, slots, v, (uint32_t)strlen(v));
     if (block != NULL) {
-        if (KORB_SLICE_LEN(a) >= 2) korb_warn(c, slots + 1, "block supersedes default value argument");
+        if (KORB_SLICE_LEN(a) >= 2) korb_warn_caller(c, slots + 1, a.p + KORB_FLINK_OFF, "block supersedes default value argument");
         slots[0] = KORB_SLICE_GET(a, 0); return korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, captured_self);
     }
     if (KORB_SLICE_LEN(a) >= 2) return RESULT_OK(KORB_SLICE_GET(a, 1));

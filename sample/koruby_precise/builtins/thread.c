@@ -1397,7 +1397,7 @@ korb_m_thread_fetch(CTX *c, korb_value *slots, korb_ref self, korb_slice a,
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)",
                           (unsigned)KORB_SLICE_LEN(a));
     if (UNLIKELY(block != NULL && KORB_SLICE_LEN(a) >= 2))
-        korb_warn(c, slots, "block supersedes default value argument");
+        korb_warn_caller(c, slots, a.p + KORB_FLINK_OFF, "block supersedes default value argument");
     korb_value k; CHECK(korb_thread_tls_key(c, slots, KORB_SLICE_GET(a, 0), &k));
     const korb_value *const hp = korb_thread_tls_slot(c, KORB_REF_GET(self));
     if (*hp != KORB_NIL) {

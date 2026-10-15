@@ -85,7 +85,7 @@ static RESULT korb_m_ary_rassoc(CTX *c, korb_value *slots, korb_ref self, korb_s
 static RESULT korb_m_ary_fetch(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
     if (UNLIKELY(KORB_SLICE_LEN(a) < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
     const bool have_default = KORB_SLICE_LEN(a) >= 2;
-    if (UNLIKELY(have_default && block != NULL)) korb_warn(c, slots, "block supersedes default value argument");
+    if (UNLIKELY(have_default && block != NULL)) korb_warn_caller(c, slots, a.p + KORB_FLINK_OFF, "block supersedes default value argument");
     slots[0] = KORB_SLICE_GET(a, 0);                     /* original index arg (rooted; yielded to the block as-is) */
     slots[1] = have_default ? KORB_SLICE_GET(a, 1) : KORB_NIL;
     korb_sword_t i;

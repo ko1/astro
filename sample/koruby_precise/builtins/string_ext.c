@@ -696,7 +696,7 @@ static RESULT korb_str_format_at(CTX *c, korb_value *slots, korb_ref self, korb_
         if (korb_cur_pos(c, slots + 1, link, carry, carry_lb, &wf, &wl))
             korb_warn_at(c, slots + 1, korb_sym_name(vm, wf), wl, "too many arguments for format string");
         else
-            korb_warn(c, slots + 1, "too many arguments for format string");
+            korb_warn_caller(c, slots + 1, link, "too many arguments for format string");
     }
     RESULT r = korb_str_new(c, slots, out ? out : "", (uint32_t)outlen);
     if (shared) vm->fmt_busy = false; else free(buf);

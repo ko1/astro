@@ -2484,6 +2484,7 @@ struct koruby_option {
     bool loop_print;     /* -p: also print $_ each iteration */
     bool auto_split;     /* -a: $F = $_.split each iteration */
     bool chomp_lines;    /* -l: chomp $_ and set $\ = $/ */
+    const char *inplace; /* -i[ext]: ARGF edits its files in place ("" = no backup); NULL = off */
     bool skip_to_ruby;   /* -x: ignore everything before the first #!...ruby line */
     bool search_path;    /* -S: look the script up in $RUBYPATH, then $PATH */
     bool syntax_check;   /* -c: parse only, print "Syntax OK" */

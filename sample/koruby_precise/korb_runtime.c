@@ -15983,7 +15983,7 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
             }
             /* same rb_warn pair as Array#initialize (the fast path skips it) */
             if (UNLIKELY(block != NULL && argc != 1))
-                korb_warn(c, slots, argc == 0 ? "given block not used" : "block supersedes default value argument");
+                korb_warn_caller(c, slots, slots - argc + KORB_FLINK_OFF, argc == 0 ? "given block not used" : "block supersedes default value argument");
             slots[0] = UNWRAP(korb_ary_new(c, slots, (uint32_t)n));
             korb_ref dst = KORB_REF_AT(&slots[0]);
             for (korb_sword_t i = 0; i < n; i++) {
@@ -21842,7 +21842,12 @@ static RESULT korb_out_emit(CTX *c, korb_value *slots, korb_value out, uint32_t 
  * sep/limit).  CRuby reads ARGF; koruby has no ARGV-file stream, so $stdin is
  * what ARGF would be with no file arguments. */
 static RESULT korb_bi_gets_impl(CTX *c, korb_value *slots, korb_slice args, const char *meth, uint32_t mlen) {
-    const korb_value in = korb_const_get(c->vm, korb_intern_lit(c->vm, "$stdin", 6));
+    korb_value in = korb_const_get(c->vm, korb_intern_lit(c->vm, "$stdin", 6));
+    const korb_value argf = korb_const_get(c->vm, korb_intern_lit(c->vm, "ARGF", 4));
+    if (KORB_OBJECT_P(argf)) {                 /* files named in ARGV: Kernel#gets reads ARGF (else $stdin as it is now) */
+        slots[0] = argf;
+        in = UNWRAP(korb_send(c, slots + 1, korb_intern_lit(c->vm, "__kernel_io", 11), 0, 0));
+    }
     if (UNLIKELY(!KORB_OBJECT_P(in))) return RESULT_OK(KORB_NIL);
     const uint32_t n = KORB_SLICE_LEN(args);
     slots[0] = in;
@@ -22034,6 +22039,19 @@ void korb_warn_at(CTX *c, korb_value *slots, const char *file, uint32_t line, co
                         : snprintf(msg, sizeof msg, "warning: %s\n", body);
     if (ml < 0) return;
     korb_warn_emit(c, slots, msg, (size_t)(ml < (int)sizeof msg ? ml : (int)sizeof msg - 1));
+}
+static bool korb_caller_pos(CTX *c, const korb_value *link, uint32_t *file_sym, uint32_t *line);
+/* rb_warn from a C method: positioned at the Ruby code that called it (`link` = its base[-3], or NULL) */
+void korb_warn_caller(CTX *c, korb_value *slots, const korb_value *link, const char *fmt, ...) {
+    if (korb_const_get(c->vm, korb_intern_lit(c->vm, "$VERBOSE", 8)) == KORB_NIL) return;
+    char body[240];
+    va_list ap; va_start(ap, fmt);
+    const int bl = vsnprintf(body, sizeof body, fmt, ap);
+    va_end(ap);
+    if (bl < 0) return;
+    uint32_t fs = 0, ln = 0;
+    const char *const file = link != NULL && korb_caller_pos(c, link, &fs, &ln) ? korb_sym_name(c->vm, fs) : NULL;
+    korb_warn_at(c, slots, file, ln, "%s", body);
 }
 /* like korb_warn, but for category warnings whose own flag is the gate */
 void korb_warn_ignore_verbose(CTX *c, korb_value *slots, const char *fmt, ...) {

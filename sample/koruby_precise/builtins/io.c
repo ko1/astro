@@ -2313,7 +2313,7 @@ static RESULT korb_m_io_syswrite(CTX *c, korb_value *slots, korb_ref self, korb_
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         slots[0] = r.value;
     }
-    if (rep->wlen > 0) korb_warn(c, slots + 1, "syswrite for buffered IO");   /* CRuby warns, then flushes */
+    if (rep->wlen > 0) korb_warn_caller(c, slots + 1, a.p + KORB_FLINK_OFF, "syswrite for buffered IO");   /* CRuby warns, then flushes */
     (void)korb_io_flush_rep(rep);
     ssize_t w;
     for (;;) {
@@ -2863,7 +2863,7 @@ static RESULT korb_m_io_s_new_fd(CTX *c, korb_value *slots, korb_ref self, korb_
                                  struct Node *block, korb_value *def_env, korb_value *cself) {
     (void)def_env; (void)cself;
     if (UNLIKELY(block != NULL))                        /* IO.new ignores a block; IO.open is the one that takes it */
-        korb_warn(c, slots, "IO::new() does not take block; use IO::open() instead");
+        korb_warn_caller(c, slots, a.p + KORB_FLINK_OFF, "IO::new() does not take block; use IO::open() instead");
     uint32_t n = KORB_SLICE_LEN(a);
     korb_value opts = KORB_NIL;
     if (n >= 1 && KORB_HASH_P(KORB_SLICE_GET(a, n - 1)) && korb_kwargs_hash_p(KORB_SLICE_GET(a, n - 1)))
@@ -3186,7 +3186,7 @@ static RESULT korb_m_file_new(CTX *c, korb_value *slots, korb_ref self, korb_sli
         if (KORB_CLASS_P(KORB_REF_GET(self))) korb_class_qname_into(c, KORB_REF_GET(self), cls, sizeof cls);
         char msg[256];
         snprintf(msg, sizeof msg, "%s::new() does not take block; use %s::open() instead", cls, cls);
-        korb_warn(c, slots, msg);
+        korb_warn_caller(c, slots, a.p, msg);
     }
     return korb_m_file_open(c, slots, self, a, NULL, NULL, NULL);
 }

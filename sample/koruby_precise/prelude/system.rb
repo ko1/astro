@@ -1023,13 +1023,14 @@ class ARGFClass
   # --- stream plumbing -----------------------------------------------------
 
   def __next_file
+    __inplace_close
     if @argv.empty?
       return false if @opened_any            # ARGV exhausted (or stdin already used)
       @current = $stdin
       @current_name = "-"
     else
       @current_name = @argv.shift.to_s
-      @current = @current_name == "-" ? $stdin : File.open(@current_name, @binmode ? "rb" : "r")
+      @current = @current_name == "-" ? $stdin : @inplace ? __inplace_open(@current_name) : File.open(@current_name, @binmode ? "rb" : "r")
     end
     @opened_any = true
     @advance = false
@@ -1038,6 +1039,38 @@ class ARGFClass
     true
   end
   private :__next_file
+
+  # what Kernel#gets reads: ARGF once it reads files, else $stdin (whatever it is now)
+  def __kernel_io = (@argv.empty? && (@current.nil? || @current_name == "-")) ? $stdin : self
+  private :__kernel_io
+
+  # -i: read the original (renamed to name+ext, or unlinked) while $stdout writes the new file
+  def __inplace_open(name)
+    mode = File.stat(name).mode
+    if @inplace.empty?
+      io = File.open(name, @binmode ? "rb" : "r")
+      File.unlink(name)
+    else
+      File.rename(name, name + @inplace)
+      io = File.open(name + @inplace, @binmode ? "rb" : "r")
+    end
+    @inplace_out = File.open(name, "w", mode & 0o7777)
+    $stdout = @inplace_out
+    unless @inplace_hooked
+      @inplace_hooked = true
+      at_exit { __inplace_close }
+    end
+    io
+  end
+  private :__inplace_open
+
+  def __inplace_close
+    return unless @inplace_out
+    @inplace_out.close unless @inplace_out.closed?
+    $stdout = STDOUT if $stdout.equal?(@inplace_out)
+    @inplace_out = nil
+  end
+  private :__inplace_close
 
   def __finish_current
     @current.close if @current && !@current.equal?(STDIN) && !@current.closed?
@@ -1105,7 +1138,7 @@ class ARGFClass
   alias_method :eof, :eof?
 
   def rewind
-    io = file
+    io = @advance ? (__next_file ? @current : nil) : file   # past the last file: nothing to rewind
     raise ArgumentError, "no stream to rewind" if io.nil?
     @lineno -= @file_lineno
     @file_lineno = 0
@@ -1121,7 +1154,7 @@ class ARGFClass
   alias_method :tell, :pos
 
   def pos=(n); file.pos = n; end
-  def seek(*args); file.seek(*args); end
+  def seek(amount, whence = IO::SEEK_SET); file.seek(amount, whence); end
 
   def binmode; @binmode = true; @current.binmode if @current && !@current.closed?; self; end
   def binmode?; @binmode; end
@@ -1213,7 +1246,10 @@ class ARGFClass
   def __partial(meth, maxlen, buffer, **kw)
     had = @current
     io = __stream(false)
-    raise EOFError, "end of file reached" if io.nil?
+    if io.nil?
+      buffer&.replace("")
+      raise EOFError, "end of file reached"
+    end
     # __stream silently skips a file that is already at EOF; that seam is what
     # the caller must see as one empty read before the next file's bytes.
     return(buffer ? buffer.replace("") : "") if had && !had.equal?(io)
@@ -1300,8 +1336,12 @@ class ARGFClass
   def putc(c); STDOUT.putc(c); end
   def puts(*args); STDOUT.puts(*args); end
 
-  def inplace_mode; nil; end
-  def inplace_mode=(_ext); self; end
+  def inplace_mode; @inplace; end
+  def inplace_mode=(ext)
+    @inplace = ext ? ext.to_str.dup : nil
+    __set_gvar("$-i", @inplace)
+    self
+  end
 end
 # CRuby names this class "ARGF.class" (it is not reachable as a constant there).
 class << ARGFClass
@@ -1309,7 +1349,8 @@ class << ARGFClass
   alias_method :to_s, :name
   alias_method :inspect, :name
 end
-ARGF = ARGFClass.new(*ARGV)
+ARGF = ARGFClass.new
+ARGF.instance_variable_set(:@argv, ARGV)   # the very ARGV (ARGF.argv.equal?(ARGV)), so ARGV.replace steers it
 ARGF.instance_variable_set(:@argv, ARGV)    # ARGF.argv IS ARGV (CRuby)
 __set_gvar("$<", ARGF)   # the default input stream (read-only for user code)
 __set_gvar("$*", ARGV)   # $* is ARGV

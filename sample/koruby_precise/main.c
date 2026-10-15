@@ -198,6 +198,7 @@ koruby_apply_flag(const char *a, const char *next_arg,
     }
     if (strcmp(a, "-U") == 0) { OPTION.intenc = "UTF-8"; return 1; }
     if (strcmp(a, "-s") == 0) { OPTION.switch_args = true; return 1; }
+    if (a[0] == '-' && a[1] == 'i') { OPTION.inplace = a + 2; return 1; }
     if (strcmp(a, "-n") == 0) { OPTION.loop_gets = true; return 1; }
     if (strcmp(a, "-p") == 0) { OPTION.loop_gets = OPTION.loop_print = true; return 1; }
     if (strcmp(a, "-a") == 0) { OPTION.auto_split = true; return 1; }
@@ -1869,6 +1870,11 @@ main(int argc, char *argv[])
             }
             korb_const_define(c, korb_intern(c->vm, "$/", 2), sep);
             korb_const_define(c, korb_intern(c->vm, "$-0", 3), sep);
+        }
+        if (OPTION.inplace) {                   /* -i[ext]: ARGF.inplace_mode = ext */
+            toplevel_cursor[0] = korb_const_get(c->vm, korb_intern(c->vm, "ARGF", 4));
+            toplevel_cursor[1] = korb_str_new(c, toplevel_cursor + 1, OPTION.inplace, (uint32_t)strlen(OPTION.inplace)).value;
+            (void)korb_send(c, toplevel_cursor + 2, korb_intern(c->vm, "inplace_mode=", 13), 0, 1);
         }
         if (data_offset >= 0) {                 /* DATA = the script itself, seeked past __END__ */
             toplevel_cursor[0] = korb_const_get(c->vm, korb_intern(c->vm, "File", 4));

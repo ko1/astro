@@ -3278,7 +3278,7 @@ static RESULT korb_m_str_split(CTX *c, korb_value *slots, korb_ref self, korb_sl
         const uint32_t fs = korb_const_index(c->vm, korb_intern_lit(c->vm, "$;", 2));
         if (fs != UINT32_MAX && c->vm->const_vals[fs] != KORB_NIL) {
             sepv = c->vm->const_vals[fs];
-            if (korb_warn_deprecated_p(c->vm)) korb_warn(c, slots, "$; is set to non-nil value");
+            if (korb_warn_deprecated_p(c->vm)) korb_warn_caller(c, slots, a.p + KORB_FLINK_OFF, "$; is set to non-nil value");
         }
     }
     {   /* an invalid self can't be split (CRuby) */

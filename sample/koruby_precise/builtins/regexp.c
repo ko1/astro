@@ -2056,7 +2056,7 @@ static RESULT korb_m_re_new(CTX *c, korb_value *slots, korb_ref self, korb_slice
     korb_value timeout_v = KORB_NIL;                           /* Regexp.new(src, timeout:) — reported, not enforced */
     /* A Regexp first argument carries its own options; any 2nd/3rd arg is ignored (with a warning, as in CRuby). */
     if (from_regexp && KORB_SLICE_LEN(a) >= 2 && KORB_SLICE_GET(a, 1) != KORB_NIL)
-        korb_warn(c, slots + 1, "flags ignored");
+        korb_warn_caller(c, slots + 1, a.p + KORB_FLINK_OFF, "flags ignored");
     if (!from_regexp && KORB_SLICE_LEN(a) >= 2) {
         korb_value opt = KORB_SLICE_GET(a, 1);
         if (opt == KORB_NIL || opt == KORB_FALSE) {}
@@ -2100,7 +2100,7 @@ static RESULT korb_m_re_new(CTX *c, korb_value *slots, korb_ref self, korb_slice
             char *ib = NULL; size_t iz = 0;
             FILE *const ims = open_memstream(&ib, &iz);
             if (ims) { korb_fprint_inspect_s(c, slots + 2, ims, slots[1]); fclose(ims); }
-            korb_warn(c, slots + 2, "expected true or false as ignorecase: %s", ib ? ib : "");
+            korb_warn_caller(c, slots + 2, a.p + KORB_FLINK_OFF, "expected true or false as ignorecase: %s", ib ? ib : "");
             free(ib);
         }
     }

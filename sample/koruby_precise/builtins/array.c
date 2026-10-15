@@ -11,7 +11,7 @@ static RESULT korb_m_ary_initialize(CTX *c, korb_value *slots, korb_ref self, ko
     KORB_CHECK_FROZEN(c, slots, KORB_REF_GET(self));
     VAL2ARY(KORB_REF_GET(self))->len = 0;               /* reset */
     if (argc == 0) {
-        if (UNLIKELY(block != NULL)) korb_warn(c, slots, "given block not used");
+        if (UNLIKELY(block != NULL)) korb_warn_caller(c, slots, a.p + KORB_FLINK_OFF, "given block not used");
         return RESULT_OK(KORB_REF_GET(self));
     }
     slots[0] = KORB_SLICE_GET(a, 0);                    /* a0 (rooted across #to_ary/#to_int dispatch) */
@@ -44,7 +44,7 @@ static RESULT korb_m_ary_initialize(CTX *c, korb_value *slots, korb_ref self, ko
     }
     if (UNLIKELY(n < 0)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "negative array size");
     if (UNLIKELY(n > (korb_sword_t)UINT32_MAX)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "array size too big");   /* koruby's array length is 32-bit */
-    if (block != NULL && argc >= 2) korb_warn(c, slots, "block supersedes default value argument");
+    if (block != NULL && argc >= 2) korb_warn_caller(c, slots, a.p + KORB_FLINK_OFF, "block supersedes default value argument");
     slots[0] = (!block && argc >= 2) ? KORB_SLICE_GET(a, 1) : KORB_NIL;   /* default (rooted) */
     for (korb_sword_t i = 0; i < n; i++) {
         korb_value el = slots[0];
