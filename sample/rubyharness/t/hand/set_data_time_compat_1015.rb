@@ -42,3 +42,22 @@ t(:kernel_eqq_truthy) { o = Object.new; def o.==(x) = 1; Kernel.instance_method(
 t(:offset_float) { Time.new(2010, 4, 4, 1, 59, 59, 7245.5).utc_offset }
 t(:offset_round) { [Time.new(2012, 1, 1, 0, 0, 0, Rational(36645, 10)).strftime("%::z"),
                     Time.new(2012, 1, 1, 0, 0, 0, -3664.5).strftime("%::z")] }
+# Hash#map with a Method of arity 2, Enumerable#map hands #each a block of the caller's arity,
+# Array#hash combines the elements' #hash (an element's non-Integer #hash goes through #to_int),
+# IO#puts asks #method_missing for #to_ary
+def pair_reg(a, b) = [a, b]
+def one_reg(a) = a
+t(:hash_map_method2) { { 1 => "a", 2 => "b" }.map(&method(:pair_reg)) }
+t(:hash_map_method1) { { 1 => "a" }.map(&method(:one_reg)) }
+ArityEach = Object.new
+def ArityEach.each(&b) = ($arities << b.arity; yield 1; yield [2, 3])
+ArityEach.extend(Enumerable)
+$arities = []
+t(:enum_map_arity) { [ArityEach.map { |a, b| [a, b] }, ArityEach.map { |a| a }, ArityEach.map { 1 }, $arities] }
+t(:ary_hash_to_int) { h = Object.new; def h.to_int = 1.hash; o = Object.new; o.instance_variable_set(:@h, h); def o.hash = @h; [o].hash == [1].hash }
+t(:ary_hash_nested) { [[1, [2]], "x"].hash == [[1, [2]], "x"].hash && [1, 2].hash != [2, 1].hash }
+PutsMm = Object.new
+def PutsMm.method_missing(n, *a) = ($mm << n; nil)
+def PutsMm.to_s = "MM"
+$mm = []
+t(:puts_mm_to_ary) { $stdout.puts(PutsMm); $mm }

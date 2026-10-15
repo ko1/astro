@@ -12,7 +12,18 @@ module Enumerable
     raise TypeError, "no implicit conversion of #{n.class} into Integer" unless n.respond_to?(:to_int)
     n.to_int
   end
-  def map(&blk); return __to_enum_sized(:map) unless blk; r = []; each { |*a| r << blk.call(*a) }; r; end
+  # the block `each` gets has the caller's block's arity (CRuby: an #each may look at it)
+  def map(&blk)
+    return __to_enum_sized(:map) unless blk
+    r = []
+    case blk.arity
+    when 1 then each { |a| r << blk.call(a) }
+    when 2 then each { |a, b| r << blk.call(a, b) }
+    when 0 then each { r << blk.call }
+    else        each { |*a| r << blk.call(*a) }
+    end
+    r
+  end
   alias collect map
   # filter methods pass the GATHERED element (a single Array when each yields
   # multiple) to the block; the block auto-splats by its arity. (map/flat_map

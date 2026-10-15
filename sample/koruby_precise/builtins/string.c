@@ -1450,6 +1450,15 @@ static RESULT korb_coerce_to_int(CTX *c, korb_value *slots, korb_value *v) { ret
 static RESULT korb_coerce_to_ary_x(CTX *c, korb_value *slots, korb_value *v, bool nil_ok) {
     if (KORB_ARRAY_P(*v)) return RESULT_OK(KORB_TRUE);
     const uint32_t to_ary = korb_intern_lit(c->vm, "to_ary", 6);
+    if (nil_ok) {                                     /* rb_check_array_type: a #method_missing may answer too */
+        const RESULT cr = korb_check_funcall(c, slots, v, to_ary);   /* roots the receiver at slots[0] */
+        if (UNLIKELY(cr.state != KORB_NORMAL) || cr.value == KORB_FALSE) return cr;
+        if (KORB_ARRAY_P(*v)) return RESULT_OK(KORB_TRUE);
+        const korb_value got = *v;
+        *v = slots[0];                                /* the (moved) receiver */
+        if (got == KORB_NIL) return RESULT_OK(KORB_FALSE);
+        return korb_raise_conv_mismatch(c, slots + 1, slots[0], got, "Array", "to_ary");
+    }
     slots[0] = *v;
     if (!korb_responds_to_coerce(c, slots + 1, slots[0], to_ary)) { *v = slots[0]; return RESULT_OK(KORB_FALSE); }
     RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);

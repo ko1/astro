@@ -15,6 +15,10 @@
 ## 未: `proc { |_, _, _ = 1, *_, _:, _: 2, **_, &_| }` が "block param slot ordering" (2026-10-15)
 - def は重複 `_` に名前なしのスロットを割り当てるようにしたが、ブロック引数は未対応。rubyspec 1 例。
 
+## 未: Hash#rehash が各キーの #hash を 2 回呼ぶ (2026-10-15)
+- 作り直した表を korb_m_hash_replace で元の Hash へ移すとき korb_hash_set がもう一度 #hash を呼ぶ
+  （CRuby は 1 回）。表の構造をそのまま移す必要がある。rubyspec 1 例（mock の回数）。
+
 ## 未: `for x in obj` が obj.each を先に回し切ってから本体を回す (2026-10-15)
 - node_for は each を to_enum.to_a で配列にしてから回す。CRuby は each にブロックを渡すので、
   `def o.each; yield 1; puts "after yield"; yield 2; end; for x in o; puts x; end` の出力順が違う

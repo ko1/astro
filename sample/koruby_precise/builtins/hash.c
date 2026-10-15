@@ -10,6 +10,15 @@
  * recurses the same path each call, so the result stays deterministic and two
  * structurally-equal recursive containers still hash alike. */
 #define KORB_DEEP_HASH_MAX 96u
+/* What #hash answers for a value whose internal hash is `h` (korb_m_obj_hash's last step): a container
+ * combines its elements' #hash values, as CRuby does, so an element with a user #hash (or one answering an
+ * Integer's own #hash) hashes the container like that element would */
+static uint64_t korb_hash_salt(void);   /* below */
+static inline uint64_t korb_hash_vis(uint64_t h) {
+    h ^= korb_hash_salt();
+    h ^= h >> 33; h *= 0xff51afd7ed558ccdULL; h ^= h >> 29;
+    return (uint64_t)(korb_sword_t)FIX2LONG(LONG2FIX((korb_sword_t)(h >> 2)));
+}
 static uint64_t korb_deep_hash_d(CTX *c, korb_value v, uint32_t depth, bool *cycle) {
     if (FIXNUM_P(v) || SYMBOL_P(v) || KORB_STRING_P(v) || v == KORB_NIL || v == KORB_TRUE || v == KORB_FALSE)
         return korb_value_hash(v);
@@ -25,7 +34,7 @@ static uint64_t korb_deep_hash_d(CTX *c, korb_value v, uint32_t depth, bool *cyc
         if (a->head.flags & KORB_FL_JOIN_VISITING) { *cycle = true; return 0xC0FFEEULL; }   /* recursive → constant (no exponential blowup) */
         a->head.flags |= KORB_FL_JOIN_VISITING;
         uint64_t h = 0x345678ULL + a->len;
-        for (uint32_t i = 0; i < a->len; i++) h = h * 31u + korb_deep_hash_d(c, korb_ary_ptr(a)[i], depth + 1, cycle);
+        for (uint32_t i = 0; i < a->len; i++) h = h * 31u + korb_hash_vis(korb_deep_hash_d(c, korb_ary_ptr(a)[i], depth + 1, cycle));
         a->head.flags &= ~KORB_FL_JOIN_VISITING;         /* pure computation: no GC, `a` stays valid */
         return h;
     }
@@ -120,8 +129,16 @@ static RESULT korb_deep_hash_r(CTX *c, korb_value *slots, korb_value v, uint32_t
     if (depth >= KORB_DEEP_HASH_MAX) { *out = 0xC0FFEEULL; return RESULT_OK(KORB_NIL); }
     if (depth > 0 && korb_has_user_hash(c, v)) {
         slots[0] = v;
-        const RESULT r = korb_send(c, slots + 1, korb_intern_lit(c->vm, "hash", 4), 0, 0);
+        RESULT r = korb_send(c, slots + 1, korb_intern_lit(c->vm, "hash", 4), 0, 0);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        if (!KORB_INTEGER_P(r.value)) {                   /* a non-Integer #hash goes through #to_int (CRuby rb_hash) */
+            slots[0] = r.value;
+            const uint32_t to_int = korb_intern_lit(c->vm, "to_int", 6);
+            if (!korb_responds_to(c, slots[0], to_int))
+                return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, slots[0]));
+            r = korb_send(c, slots + 1, to_int, 0, 0);
+            if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        }
         *out = FIXNUM_P(r.value) ? (uint64_t)FIX2LONG(r.value) : korb_deep_hash_d(c, r.value, depth, cycle);
         return RESULT_OK(KORB_NIL);
     }
@@ -135,9 +152,10 @@ static RESULT korb_deep_hash_r(CTX *c, korb_value *slots, korb_value v, uint32_t
         RESULT err = RESULT_OK(KORB_NIL);
         for (uint32_t i = 0; i < VAL2ARY(slots[0])->len; i++) {
             uint64_t eh;
+            const bool user = !set && korb_has_user_hash(c, korb_ary_ptr(VAL2ARY(slots[0]))[i]);   /* its #hash is the value already */
             err = korb_deep_hash_r(c, slots + 1, korb_ary_ptr(VAL2ARY(slots[0]))[i], depth + 1, cycle, &eh);
             if (UNLIKELY(err.state != KORB_NORMAL)) break;
-            h = set ? (h ^ eh) : (h * 31u + eh);
+            h = set ? (h ^ eh) : (h * 31u + (user ? eh : korb_hash_vis(eh)));
         }
         VAL2ARY(slots[0])->head.flags &= ~KORB_FL_JOIN_VISITING;   /* re-read: a dispatch may have moved it */
         if (UNLIKELY(err.state != KORB_NORMAL)) return err;

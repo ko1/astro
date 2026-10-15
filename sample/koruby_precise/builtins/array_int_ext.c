@@ -1123,6 +1123,12 @@ static RESULT korb_m_hash_flat_map(CTX *c, korb_value *slots, korb_ref self, kor
 static RESULT korb_m_hash_map(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *captured_self) {
     HASH_REQ_BLOCK("map");
     uint32_t np = korb_entry_params_cnt(block);
+    if (block == KORB_BLK_CPROC && KORB_PROC_P(KORB_CSELF_VAL(captured_self))) {   /* &method(:m): m's arity decides (CRuby) */
+        slots[0] = KORB_CSELF_VAL(captured_self);
+        const RESULT ar = korb_send(c, slots + 1, korb_intern_lit(c->vm, "arity", 5), 0, 0);
+        if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+        if (FIXNUM_P(ar.value) && (FIX2LONG(ar.value) >= 2 || FIX2LONG(ar.value) <= -3)) np = 2;
+    }
     korb_ref dst = SLOTS_PUSH(slots, UNWRAP(korb_ary_new(c, slots, 4)));
     struct korb_yseq ys = { 0 };                       /* set up only for |k, v| */
     if (np >= 2) CHECK(korb_yseq_init(c, slots + 1, &ys, block, def_env, captured_self));

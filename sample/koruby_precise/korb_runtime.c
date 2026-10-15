@@ -20293,7 +20293,7 @@ korb_puts_one_to(CTX *c, korb_value *slots, korb_value v, struct KorbIORep *rep)
         RESULT ar = korb_coerce_to_ary_x(c, slots + 1, &av, true);   /* rb_check_array_type: nil → print #to_s */
         if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
         if (ar.value == KORB_TRUE) return korb_puts_one_to(c, slots + 1, av, rep);
-        slots[0] = v;
+        /* slots[0] still roots the receiver: the coercion may have run Ruby and moved it (`v` is stale) */
         RESULT r = korb_send(c, slots + 1, korb_intern_lit(c->vm, "to_s", 4), 0, 0);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
         if (!KORB_STRING_P(r.value)) {                  /* a #to_s that is not a String → the default "#<Class:0x…>" */
