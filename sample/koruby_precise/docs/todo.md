@@ -5,6 +5,17 @@
 
 
 
+## 未: make codeql-check が「使われていない ARO_BORROW 注釈 3 件」で落ちる (2026-10-15)
+- korb_ary_ptr / korb_str_ptr / korb_hash_pairs（context.h）が「raw payload に触れていない」と判定される。
+  master（f6f37b41）でも同じ失敗なので既存。注釈を外すか、規則（accessor の判定）を直すかは未決。
+
+## 未: `nil::X += 1` の名前空間が false のとき (2026-10-15)
+- 名前空間 nil は CRuby どおり字句的に X を読む（NameError）。false も同じ扱いにしているが、CRuby は
+  "false is not a class/module"（TypeError）のはず（未確認）。
+
+## 未: `--compiled-only` の DOOM が master でも compile-miss (2026-10-14)
+- 合併前の確認で見つけた既存の差。原因未調査。
+
 ## 未: 挿入後に特異メソッドで #hash を変えたクラスのキーが Hash で引けてしまう (2026-10-06)
 - `h = { K => 1 }; class << K; def hash = 7; end; h[K]` → CRuby は nil（挿入時のバケットと違う）、koruby は 1。挿入時に hint を記録しない経路で入ったキーは、後の #hash を比べずに eql? で見つかる。master でも同じ。
 
