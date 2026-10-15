@@ -2505,6 +2505,12 @@ end
 # predicates exist.  AbstractSyntaxTree is CRuby's prism-mode face: .of refuses
 # (as CRuby does for prism-compiled code), .parse has no parse.y to give.
 module RubyVM
+  # eval keeps its source while set (Thread::Backtrace::Location#source_range reads it)
+  def self.keep_script_lines = __keep_script_lines
+  def self.keep_script_lines=(v)
+    __keep_script_lines(v)
+  end
+
   module AbstractSyntaxTree
     class Node; end   # never made: pp reopens it when AbstractSyntaxTree is defined
     def self.of(_body, keep_script_lines: false, error_tolerant: false, keep_tokens: false)
@@ -2650,8 +2656,8 @@ module Ruby
       # nil for a name no file was ever read under (an eval filename, -e), which
       # is the same rule Thread::Backtrace::Location#absolute_path follows.
       @absolute_path =
-        if @path.empty? || @path.start_with?('<') || @path == '-e'
-          nil
+        if info.size > 5 || @path.empty? || @path.start_with?('<') || @path == '-e'   # [5]: given (an eval's is nil)
+          info[5]
         else
           __source_abs_path(@path)
         end

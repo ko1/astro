@@ -4201,7 +4201,7 @@ build_fwd_kwargs(struct kp_ctx *tc, struct korb_kw_info *kw, uint32_t n, uint32_
     WITH_CHAIN(tc, sc, (acc = build_fwd_kwargs(tc, kw, n - 1, depth),
                         key = ALLOC_node_lit(ID2SYM(kw->entries[n - 1].mid)),
                         val = bake_lget_at(tc, depth, kw->entries[n - 1].slot)));
-    return ALLOC_node_hash_set(acc, key, val);
+    return KP_LINK(tc, node_hash_set, acc, key, val, kp_flink_at(tc, tc->cur_line, kind_node_hash_set.slot_count));
 }
 
 /* Build [pos0..pos_{np-1}, *rest, post0..post_{pc-1}(, {kwargs})] as an Array NODE — the
@@ -4675,7 +4675,7 @@ build_hash(struct kp_ctx *tc, struct pm_node **assocs, size_t n, uint32_t capa)
     WITH_CHAIN(tc, sc, (acc = build_hash(tc, assocs, n - 1, capa),
                         key = transduce(tc, as->key),
                         val = transduce(tc, as->value)));
-    return ALLOC_node_hash_set(acc, key, val);
+    return KP_LINK(tc, node_hash_set, acc, key, val, kp_flink_at(tc, tc->cur_line, kind_node_hash_set.slot_count));
 }
 
 /* The encoding a literal ends up in: prism marks a literal whose escapes force
@@ -7023,6 +7023,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
         .seed_chain_len = cref_chain_len,
         .in_eval = in_eval,
     };
+    korb_note_source(c->vm, fname, src, len, first_line, in_eval);
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
     for (uint32_t pi = tc.pre_cnt; pi-- > 0; ) ast = ALLOC_node_seq(tc.pre_list[pi], ast);   /* BEGIN { } first */
@@ -7158,6 +7159,7 @@ koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname
                          .seed_class_name = cref_name, .seed_chain = cref_chain, .seed_chain_len = cref_chain_len,
                          .seed_cref_is_caller = cref_is_caller,
                          .in_eval = true, .eval_outer = outer, .eval_outer_cnt = outer_levels };
+    korb_note_source(c->vm, fname, src, len, first_line, true);
     NODE *ast = transduce(&tc, root);
     for (uint32_t lv = 0; lv < outer_levels; lv++) free(outer_lists[lv].ids);
     free(outer_lists); free(outer); free(dummy);

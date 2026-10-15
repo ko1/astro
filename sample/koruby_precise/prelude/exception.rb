@@ -216,10 +216,22 @@ class Thread
       def inspect = @str.inspect
 
       # Ruby 4.1: the precise extent of the operation this frame was running (lib/koruby/backtrace_node.rb)
+      # eval / -e code is read from the copy kept when it was parsed; a file is read back, and must be what
+      # was parsed (CRuby compares a digest: "source has been modified")
       def source_range
-        return nil unless absolute_path && File.file?(absolute_path)
+        kind, kept, first_line, = __source_record(path, nil)
+        if kind == 1 || kind == 2
+          raise ArgumentError, "cannot get source range for location in eval" unless kept
+          require "koruby/backtrace_node"
+          info = Koruby::BacktraceNode.range_for(self, kept, first_line)
+          return Ruby::SourceRange.__send__(:__build, info && (info + [nil]))
+        end
+        ap = absolute_path
+        return nil unless ap
+        src = File.binread(ap)
+        raise RuntimeError, "source has been modified" if kind == 0 && __source_record(path, src)[3] == false
         require "koruby/backtrace_node"
-        Ruby::SourceRange.__send__(:__build, Koruby::BacktraceNode.range_for(self))
+        Ruby::SourceRange.__send__(:__build, Koruby::BacktraceNode.range_for(self, src))
       end
     end
   end

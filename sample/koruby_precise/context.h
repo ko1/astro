@@ -1350,6 +1350,10 @@ struct korb_vm {
      * from basic_op_redefined so it costs one cold branch, not the arithmetic
      * fast paths. */
     bool value_eq_redefined;
+    /* every source parsed, newest last (korb_note_source): Location#source_range */
+    struct korb_srcrec { uint32_t fsym; uint8_t kind; int32_t first_line; uint64_t digest; char *src; uint32_t len; } *srcrecs;
+    uint32_t srcrec_cnt, srcrec_cap;
+    bool keep_script_lines;      /* RubyVM.keep_script_lines: eval keeps its source */
     /* `===` reopened on a builtin whose values case/when and `in` compare without a send (Symbol, String, nil, …) */
     bool eqq_redefined;
     /* set the first time a `using` activates a refinement (docs/refinements.md).

@@ -24177,6 +24177,82 @@ korb_bi_source_abs_path(CTX *c, korb_value *slots, korb_slice args)
     return abs ? korb_str_new(c, slots, abs, (uint32_t)strlen(abs)) : RESULT_OK(KORB_NIL);
 }
 
+__attribute__((noinline)) RESULT
+korb_raise_line_fill(CTX *const c, const RESULT r, const uint32_t line)
+{
+    (void)c;
+    if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value) && VAL2EXC(r.value)->line == 0) VAL2EXC(r.value)->line = line;
+    return r;
+}
+
+enum { KORB_SRC_FILE, KORB_SRC_EVAL, KORB_SRC_E };
+static uint64_t korb_src_digest(const char *const restrict s, const size_t n)
+{
+    uint64_t h = 1469598103934665603ULL;                 /* FNV-1a */
+    for (size_t i = 0; i < n; i++) h = (h ^ (uint8_t)s[i]) * 1099511628211ULL;
+    return h ^ n;
+}
+
+/* A file is remembered by digest (source_range refuses one changed since); -e and, under
+ * RubyVM.keep_script_lines, eval code keep a copy, since there is no file to read back. */
+void
+korb_note_source(struct korb_vm *const vm, const char *const fname, const char *const src, const size_t len,
+                 const int32_t first_line, const bool in_eval)
+{
+    if (fname == NULL || len > UINT32_MAX) return;
+    const uint8_t kind = in_eval ? KORB_SRC_EVAL : strcmp(fname, "-e") == 0 ? KORB_SRC_E : KORB_SRC_FILE;
+    if (vm->srcrec_cnt == vm->srcrec_cap) {
+        vm->srcrec_cap = vm->srcrec_cap ? vm->srcrec_cap * 2 : 64;
+        vm->srcrecs = realloc(vm->srcrecs, sizeof(*vm->srcrecs) * vm->srcrec_cap);
+        if (!vm->srcrecs) abort();
+    }
+    char *copy = NULL;
+    if (kind == KORB_SRC_E || (kind == KORB_SRC_EVAL && vm->keep_script_lines)) {
+        copy = malloc(len + 1);
+        if (!copy) abort();
+        memcpy(copy, src, len); copy[len] = 0;
+    }
+    vm->srcrecs[vm->srcrec_cnt++] = (struct korb_srcrec){ korb_intern(vm, fname, (uint32_t)strlen(fname)), kind, first_line,
+                                                          korb_src_digest(src, len), copy, (uint32_t)len };
+}
+
+/* __source_record(path, current) — the newest parse under `path`: [kind (0 file / 1 eval / 2 -e), kept
+ * source or nil, first line, whether `current` (a String) is what was parsed], or nil. */
+static RESULT
+korb_bi_source_record(CTX *c, korb_value *slots, korb_slice args)
+{
+    const korb_value pv = KORB_SLICE_GET(args, 0);
+    if (!KORB_STRING_P(pv)) return RESULT_OK(KORB_NIL);
+    struct korb_vm *const vm = c->vm;
+    const uint32_t fsym = korb_intern(vm, korb_str_ptr(VAL2STR(pv)), VAL2STR(pv)->len);
+    const struct korb_srcrec *r = NULL;
+    for (uint32_t i = vm->srcrec_cnt; i-- > 0; ) if (vm->srcrecs[i].fsym == fsym) { r = &vm->srcrecs[i]; break; }
+    if (r == NULL) return RESULT_OK(KORB_NIL);
+    const korb_value cur = KORB_SLICE_GET(args, 1);
+    const korb_value same = !KORB_STRING_P(cur) ? KORB_NIL
+        : korb_src_digest(korb_str_ptr(VAL2STR(cur)), VAL2STR(cur)->len) == r->digest ? KORB_TRUE : KORB_FALSE;
+    const uint8_t kind = r->kind;
+    const int32_t first_line = r->first_line;
+    slots[0] = KORB_NIL;
+    if (r->src != NULL) slots[0] = UNWRAP(korb_str_new(c, slots + 1, r->src, r->len));
+    slots[1] = UNWRAP(korb_ary_new(c, slots + 2, 4));
+    korb_ref a = KORB_REF_AT(&slots[1]);
+    CHECK(korb_ary_push_val(c, slots + 2, a, LONG2FIX(kind)));
+    CHECK(korb_ary_push_val(c, slots + 2, a, slots[0]));
+    CHECK(korb_ary_push_val(c, slots + 2, a, LONG2FIX(first_line)));
+    CHECK(korb_ary_push_val(c, slots + 2, a, same));
+    return RESULT_OK(KORB_REF_GET(a));
+}
+
+/* __keep_script_lines(v) — RubyVM.keep_script_lines; with an argument, sets it. */
+static RESULT
+korb_bi_keep_script_lines(CTX *c, korb_value *slots, korb_slice args)
+{
+    (void)slots;
+    if (KORB_SLICE_LEN(args) > 0) c->vm->keep_script_lines = KORB_TRUTHY(KORB_SLICE_GET(args, 0));
+    return RESULT_OK(c->vm->keep_script_lines ? KORB_TRUE : KORB_FALSE);
+}
+
 /* __backtrace_limit — Thread::Backtrace.limit: --backtrace-limit=N, else -1. */
 static RESULT
 korb_bi_backtrace_limit(CTX *c, korb_value *slots, korb_slice args)
@@ -24306,6 +24382,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "caller", korb_bi_caller, -1);
     korb_builtin_define(c, "__caller_strings", korb_bi_caller_strings, -1);   /* the prelude's caller_locations reads this */
     korb_builtin_define(c, "__source_abs_path", korb_bi_source_abs_path, 1);   /* Location#absolute_path (prelude) */
+    korb_builtin_define(c, "__source_record", korb_bi_source_record, 2);       /* Location#source_range (prelude) */
+    korb_builtin_define(c, "__keep_script_lines", korb_bi_keep_script_lines, -1);   /* RubyVM.keep_script_lines */
     korb_builtin_define(c, "__backtrace_limit", korb_bi_backtrace_limit, 0);   /* Thread::Backtrace.limit (prelude) */
     /* frame locals by name — the debugger C API, exposed for its tests */
     korb_builtin_define(c, "__frame_local_get", korb_bi_frame_local_get, -1);

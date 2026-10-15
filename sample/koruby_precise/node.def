@@ -3651,12 +3651,14 @@ node_hash_new(CTX *c, NODE *n, korb_value *slots, uint32_t capa)
 }
 
 NODE_DEF
-node_hash_set(CTX *c, NODE *n, korb_value *slots, korb_ref hash@child, korb_ref key@child, korb_value val@child)
+node_hash_set(CTX *c, NODE *n, korb_value *slots, korb_ref hash@child, korb_ref key@child, korb_value val@child, uint64_t flink)
 {
     (void)n;
     /* The frozen private copy of a mutable String key is korb_hash_set's job —
      * every other insert path (#store, #merge, #to_h, Hash[...]) needs it too. */
-    return korb_hash_set(c, slots, hash, key, val);
+    if (LIKELY(!KORB_OBJECT_P(KORB_REF_GET(key)))) return korb_hash_set(c, slots, hash, key, val);
+    /* a user #hash / #eql?: its frame links here, and a raise from its answer is at this line */
+    return korb_raise_line_fill(c, KP_DEOPT(c, flink, slots, korb_hash_set(c, slots, hash, key, val)), korb_flink_line(flink));
 }
 
 // `{a: v, ...}` whose keys are all distinct Symbol literals (the parser checked): append the pair
