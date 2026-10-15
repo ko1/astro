@@ -559,7 +559,6 @@ static RESULT korb_eval_binding_core(CTX *c, korb_value *slots, korb_value *src_
                                      bool soft_definee);   /* eval with caller binding (set.c uses it too) */
 /* SyntaxError from a parse: the parser leaves a detail message on the vm when it
  * has one (e.g. "Can't set variable $&"); otherwise the generic text is used. */
-static RESULT korb_raise_syntax(CTX *c, korb_value *slots, const char *generic);
 static RESULT korb_raise_syntax_at(CTX *c, korb_value *slots, const char *generic, const char *fname);   /* + SyntaxError#path */
 static RESULT korb_alias_argsym(CTX *c, korb_value *slots, korb_value v, uint32_t *out);   /* name arg → mid: Symbol/String/#to_str (defined below) */
 /* div(n) = (self / n).floor → Integer (any numeric n; via runtime dispatch). */
@@ -5039,6 +5038,31 @@ static korb_value korb_env_chain_method_owner(const struct korb_vm *const vm, ko
     }
     return KORB_NIL;
 }
+/* A frame that is a method body, or a block written in one (through its env chain): CRuby's
+ * "in methods" for Module#using */
+static bool korb_frame_in_method_p(const CTX *const c, const korb_value *const base)
+{
+    korb_value id = korb_id_get(base);
+    korb_value ev = korb_ep_get(base);
+    const korb_value *limit = base;                         /* definers sit strictly lower (as korb_bt_block_label) */
+    for (uint32_t d = 0; d < 64; d++) {
+        if ((id & 7u) == KORB_FID_METHOD) return true;
+        if ((id & 7u) != KORB_FID_BLOCK) return false;      /* a class body / file top */
+        if (ev == 0) return false;
+        if (ev & 1u) {                                      /* a live frame — or the stale base a capture-free proc keeps */
+            const korb_value *const fb = (const korb_value *)(uintptr_t)(ev & ~(korb_value)1u);
+            if (fb < c->slots || fb >= limit) return false;
+            limit = fb;
+            id = korb_id_get(fb); ev = korb_ep_get(fb);
+        } else if ((ev & 7u) == 0) {                        /* a materialized env */
+            id = VAL2ENV(ev)->id; ev = VAL2ENV(ev)->prev;
+        } else {
+            return false;
+        }
+    }
+    return false;
+}
+
 /* Taken right in a method body (not a block in one): that method's cref owns
  * the eval's `def`, whatever class_eval encloses the call. */
 static bool korb_bind_in_method_body(const KorbBinding *const b)
@@ -5988,7 +6012,13 @@ RESULT korb_do_alias(CTX *c, korb_value *slots, korb_value klass, uint32_t newm,
 }
 /* Resolve an alias_method name arg → mid: Symbol/String, or #to_str-coercible
  * (a #to_str that raises — e.g. NoMethodError — propagates); else TypeError. */
+static bool korb_str_enc_valid(const struct korb_vm *vm, const KorbString *s, uint32_t enc);   /* fwd (builtins/string.c) */
+static RESULT korb_m_str_to_sym(CTX *c, korb_value *slots, korb_ref self, korb_slice a);     /* fwd (builtins/string.c) */
 static RESULT korb_alias_argsym(CTX *c, korb_value *slots, korb_value v, uint32_t *out) {
+    if (KORB_STRING_P(v) && UNLIKELY(!korb_str_enc_valid(c->vm, VAL2STR(v), KORB_STR_ENC(v)))) {   /* String#to_sym's EncodingError */
+        slots[0] = v;
+        return korb_m_str_to_sym(c, slots + 1, KORB_REF_AT(&slots[0]), KORB_SLICE_MAKE(NULL, 0));
+    }
     if (SYMBOL_P(v) || KORB_STRING_P(v)) { *out = korb_bind_argsym(c, v); return RESULT_OK(KORB_NIL); }
     const uint32_t to_str = korb_intern_lit(c->vm, "to_str", 6);
     if (KORB_OBJECT_P(v) && korb_responds_to_coerce_p(c, slots, &v, to_str)) {
@@ -5996,7 +6026,7 @@ static RESULT korb_alias_argsym(CTX *c, korb_value *slots, korb_value v, uint32_
         slots[0] = v;
         RESULT r = korb_send_impl(c, slots + 1, to_str, 0, 0, NULL, NULL, NULL);
         if (UNLIKELY(r.state != KORB_NORMAL)) return r;
-        if (KORB_STRING_P(r.value)) { *out = korb_bind_argsym(c, r.value); return RESULT_OK(KORB_NIL); }
+        if (KORB_STRING_P(r.value)) return korb_alias_argsym(c, slots, r.value, out);   /* the String's own checks */
         /* it answered #to_str but gave the wrong type: CRuby names the converter */
         return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into String (%s#to_str gives %s)",
                           vnm, vnm, korb_coerce_name(c, r.value));
@@ -22715,11 +22745,6 @@ korb_raise_syntax_at(CTX *c, korb_value *slots, const char *generic, const char 
     }
     return r;
 }
-static RESULT
-korb_raise_syntax(CTX *c, korb_value *slots, const char *generic)
-{
-    return korb_raise_syntax_at(c, slots, generic, NULL);
-}
 
 /* Eval `*src_slot` under the binding at `*bind_slot`: declared-scope parse,
  * seed locals from the binding, run, write back new/changed locals.  Both
@@ -22832,7 +22857,7 @@ korb_eval_binding_core(CTX *c, korb_value *slots, korb_value *src_slot, korb_val
                                             cref_name, nencl ? encl : NULL, nencl, cref_is_caller);
     c->vm->parse_anon_cref = false;
     free(decl); free(outer_names); free(outer_cnt);
-    if (UNLIKELY(entry == NULL)) return korb_raise_syntax(c, slots, "syntax error in eval string");
+    if (UNLIKELY(entry == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
     const uint32_t L = koruby_toplevel_locals_cnt;
     const uint32_t ncnt = koruby_toplevel_local_cnt;
     const uint32_t *const nsyms = koruby_toplevel_local_syms;   /* stable malloc'd array; capture before EVAL */
@@ -23754,6 +23779,13 @@ static RESULT
 korb_bi_print(CTX *c, korb_value *slots, korb_slice args)
 {
     uint32_t n = KORB_SLICE_LEN(args);
+    if (n == 0) {                                        /* no arguments: the last line read ($_) */
+        slots[0] = korb_const_get(c->vm, korb_intern_lit(c->vm, "$_", 2));
+        if (slots[0] == KORB_NIL) return RESULT_OK(KORB_NIL);
+        args = KORB_SLICE_MAKE(&slots[0], 1);
+        slots++;
+        n = 1;
+    }
     bool def; (void)korb_out_target(c, "$stdout", 7, &def);
     /* Rendering goes through the FILE*-based printer into memory (no descriptor
      * involved); the bytes then make one trip to the sink. */

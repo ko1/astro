@@ -3579,6 +3579,19 @@ static RESULT korb_m_mod_using(CTX *c, korb_value *slots, korb_ref self, korb_sl
      * scope, so `using` there is refused (CRuby raises the same for a method). */
     if (UNLIKELY(c->refine_sealed != KORB_NIL && c->refinements == c->refine_sealed))
         return korb_raise(c, slots, KORB_E_RUNTIME, 0, "Module#using is not permitted in methods");
+    {   /* called from a method (or a block in one): CRuby refuses — the scope is the method's, not a file / class body */
+        const korb_value fl = c->cfunc_link;
+        const korb_value *const cf = fl != 0 ? korb_flink_ptr(fl) : NULL;
+        const korb_value *const caller = (cf != NULL && cf > c->slots && cf < c->slots_limit) ? korb_link_base(c, cf + KORB_FLINK_OFF) : NULL;
+        if (caller != NULL && korb_frame_in_method_p(c, caller))
+            return korb_raise(c, slots, KORB_E_RUNTIME, 0, KORB_CLASS_P(KORB_REF_GET(self)) ? "Module#using is not permitted in methods"
+                                                                                       : "main.using is permitted only at toplevel");
+        if (caller != NULL && !KORB_CLASS_P(KORB_REF_GET(self)) && (korb_id_get(caller) & 7u) == KORB_FID_BLOCK) {
+            const NODE *const e = (const NODE *)(uintptr_t)(korb_id_get(caller) & ~(korb_value)7u);
+            if (korb_bt_known_ptr(c->vm, (uintptr_t)e) && e->head.kind == &kind_node_entry && e->u.node_entry.body_label != 0)
+                return korb_raise(c, slots, KORB_E_RUNTIME, 0, "main.using is permitted only at toplevel");   /* a class / module body */
+        }
+    }
     korb_ref mref = SLOTS_PUSH(slots, mod);
     slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 8));
     korb_ref dst = KORB_REF_AT(&slots[0]);

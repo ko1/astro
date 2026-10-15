@@ -309,7 +309,7 @@ class Module
     if !(nil.equal?(obj) || true.equal?(obj) || false.equal?(obj)) && k.instance_method(:frozen?).bind_call(obj)
       raise FrozenError.new("can't modify frozen #{k.instance_method(:class).bind_call(obj)}: #{obj.inspect}", receiver: obj)
     end
-    append_features(sc)
+    ::Module.instance_method(:append_features).bind_call(self, sc)   # the primitive: an overridden #append_features is not called (CRuby)
     obj
   end
 end

@@ -480,7 +480,7 @@ end
 # dispatch-time raises use, so the existing C getters keep working.
 class SyntaxError
   # The file the parser was reading (eval's 3rd argument), or nil.
-  def path; defined?(@__path) ? @__path : nil; end
+  def path = @__path   # an exception's ivars live beside it: defined? does not see them
 end
 class NameError
   UNSET__ = Object.new

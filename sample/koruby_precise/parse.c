@@ -53,6 +53,7 @@ struct kp_frame {
     bool anon_cref_method;    /* a method defined in such a body: its cref is that unnamed class, which only
                                * the frame's method-entry cell can name at runtime */
     bool anon_class_block;    /* a block written in such a body: self (the class) names the cref */
+    bool sclass_of_self;      /* `class << self`: Module.nesting shows the enclosing class's singleton (node_nesting) */
     uint32_t method_params;   /* enclosing def's positional param count — for forwarding super */
     bool depth_shift;         /* END { } body: prism resolved its locals against the ENCLOSING scope
                                * (depth 0), but the body runs as a closure, so every reference is one
@@ -601,6 +602,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->block_body = false;
     f->anon_cref_method = false;
     f->anon_class_block = false;
+    f->sclass_of_self = false;
     f->max_ref_depth = 0;
     f->yield_depth = 0;
     f->add_cells = NULL;
@@ -2937,8 +2939,10 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
           ((const pm_constant_path_node_t *)cn->receiver)->parent == NULL &&
           strcmp(kp_cid_cstr(tc, ((const pm_constant_path_node_t *)cn->receiver)->name), "Module") == 0))) {
         uint32_t syms[64]; uint32_t n = 0;
-        for (struct kp_frame *f = tc->frame; f && n < 64; f = f->prev)
+        for (struct kp_frame *f = tc->frame; f && n < 64; f = f->prev) {
             if (f->class_name_sym != 0) syms[n++] = f->class_name_sym;
+            else if (f->sclass_of_self) syms[n++] = UINT32_MAX;   /* the next outer class's singleton (node_nesting) */
+        }
         for (uint32_t k = tc->seed_chain_len; k-- > 0 && n < 64; ) syms[n++] = tc->seed_chain[k];   /* eval(String) cref */
         /* calloc, not malloc: the operand is typed `const char *`, so the node
          * hash runs hash_cstr over these bytes.  At top level n == 0 and the
@@ -6433,6 +6437,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
         WITH_CHAIN(tc, 1, (recv_node = transduce(tc, sc->expression)));
         push_frame(tc, &sc->locals);
         tc->frame->anon_class_body = true;        /* self IS the (unnamed) singleton class here */
+        tc->frame->sclass_of_self = PM_NODE_TYPE_P(sc->expression, PM_SELF_NODE);
         const uint32_t blabel = tc->frame->body_label = kp_body_label(tc, 's', 0);
         NODE *body;
         if (sc->body == NULL)

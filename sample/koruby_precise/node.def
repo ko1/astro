@@ -3832,17 +3832,31 @@ NODE_DEF
 node_nesting(CTX *c, NODE *n, korb_value *slots, const char *name_syms, uint32_t name_cnt)
 {
     (void)n;
-    const uint32_t *const ids = (const uint32_t *)(const void *)name_syms;   /* innermost first */
+    const uint32_t *const ids = (const uint32_t *)(const void *)name_syms;   /* innermost first; UINT32_MAX = `class << self` */
     slots[0] = UNWRAP(korb_ary_new(c, slots, name_cnt));
     korb_ref arr = KORB_REF_AT(&slots[0]);
     /* each level is the chain from the outermost down to it, as the constant
      * lookup resolves it (a bare `T` must not find some other namespace's T) */
-    uint32_t chain[64];
+    uint32_t chain[64], prefix[64];
     const uint32_t cnt = name_cnt < 64 ? name_cnt : 64;
-    for (uint32_t i = 0; i < cnt; i++) chain[i] = ids[cnt - 1 - i];         /* outermost first */
+    uint32_t nn = 0;
+    for (uint32_t i = 0; i < cnt; i++) {                                      /* outermost first, the names only */
+        const uint32_t id = ids[cnt - 1 - i];
+        if (id != UINT32_MAX) chain[nn++] = id;
+        prefix[cnt - 1 - i] = nn;                                             /* names up to and including level ids[cnt-1-i] */
+    }
     korb_value prev = KORB_NIL;
     for (uint32_t i = 0; i < cnt; i++) {
-        const korb_value cls = korb_cref_resolve(c->vm, chain, cnt - i, 0);      /* the level ids[i] */
+        if (ids[i] == UINT32_MAX) {                                           /* `class << self` in the class one level out */
+            const korb_value outer = prefix[i] ? korb_cref_resolve(c->vm, chain, prefix[i], 0) : KORB_NIL;
+            if (!KORB_CLASS_P(outer)) continue;
+            slots[1] = outer;
+            slots[2] = UNWRAP(korb_obj_singleton(c, slots + 3, slots[1]));
+            CHECK(korb_ary_push_val(c, slots + 3, arr, slots[2]));
+            prev = KORB_NIL;
+            continue;
+        }
+        const korb_value cls = korb_cref_resolve(c->vm, chain, prefix[i], 0);   /* the level ids[i] */
         if (KORB_CLASS_P(cls) && cls != prev) CHECK(korb_ary_push_val(c, slots + 1, arr, cls));
         prev = cls;
     }

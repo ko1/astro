@@ -55,3 +55,18 @@ t(:op_nomethod) { x = nil; [->{ x + 3 }, ->{ x < 1 }, ->{ -x }].map { |f| begin;
 t(:safe_nav_opassign) { k = Class.new { attr_writer :foo; def foo = nil }; o = k.new; begin; o&.foo += 3; rescue NoMethodError => e; e.name; end }
 module NsForCoerce; class Raw; def to_proc = 1; end; end
 t(:qualified_coerce_name) { [1].map(&NsForCoerce::Raw.new) }
+# SyntaxError#path from eval, print with no arguments, extend vs append_features, Module.nesting in
+# `class << self`, using outside the top level, alias_method with malformed names
+t(:syntax_path) { begin; eval("if true", TOPLEVEL_BINDING, "speccing.rb"); rescue SyntaxError => e; e.path; end }
+t(:print_lastline) { $_ = "ll\n"; print; $_ = nil; print; :done }
+ExtM = Module.new
+def ExtM.append_features(*) = ($af = true; super)
+t(:extend_no_append_features) { $af = false; o = Object.new.extend(ExtM); [$af, o.singleton_class.include?(ExtM)] }
+module NestM; class << self; $nest1 = Module.nesting; def nf = Module.nesting; end; end
+t(:nesting_sclass) { [$nest1, NestM.nf] }
+RefM = Module.new { refine(String) { def refz = 1 } }
+module UsingInMethod; def self.go = using(RefM); end
+def main_using_in_method = using(RefM)
+t(:using_in_method) { UsingInMethod.go }
+t(:main_using_in_method) { main_using_in_method }
+t(:alias_bad_bytes) { Class.new { alias_method (+"\xFF").force_encoding("UTF-8"), :to_s } }
