@@ -1675,6 +1675,8 @@ struct korb_vm {
      * encoding-name symbol per index (0 = free).  Character-level ops on these
      * raise NotImplementedError; #encoding still round-trips via the name. */
     const char *last_syntax_msg;     /* parse-time SyntaxError detail (static string), NULL if none */
+    bool defer_syntax_exit;          /* main script: a SyntaxError is reported after -r and at_exit run, not at once */
+    char *syntax_report;             /* that report (malloc'd), NULL = none */
     char *parse_warns;               /* prism's warnings from the last parse, emitted by the caller: "V"/"D" + line + '\n' each */
     size_t parse_warns_len;
     /* Module#const_source_location: where each (name, owner) constant was assigned. */

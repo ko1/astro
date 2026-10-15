@@ -7002,12 +7002,23 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
          * CRuby ends with. */
         kp_stash_syntax_msg(c, parser);
         const int32_t line0 = kp_first_error_line(parser);
+        char *rep = NULL; size_t rlen = 0;
+        FILE *const rf = open_memstream(&rep, &rlen);
+        if (!rf) abort();
         if (c->vm->last_syntax_msg) {   /* the snippet only: the summary line below says the rest */
             const char *const nl = strchr(c->vm->last_syntax_msg, '\n');
-            fputs(nl ? nl + 1 : c->vm->last_syntax_msg, stderr);
+            fputs(nl ? nl + 1 : c->vm->last_syntax_msg, rf);
         }
-        fprintf(stderr, "%s:%d: syntax error%s found (SyntaxError)\n",
+        fprintf(rf, "%s:%d: syntax error%s found (SyntaxError)\n",
                 fname, line0, pm_parser_errors_size(parser) > 1 ? "s" : "");
+        fclose(rf);
+        if (c->vm->defer_syntax_exit) {             /* -r libraries and at_exit handlers still run (CRuby) */
+            free(c->vm->syntax_report);
+            c->vm->syntax_report = rep;
+            kp_parser_free(parser, arena, options);
+            return NULL;
+        }
+        fputs(rep, stderr);
         exit(1);
     }
 

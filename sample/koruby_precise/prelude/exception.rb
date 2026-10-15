@@ -291,8 +291,10 @@ module Kernel
       # uplevel: 0 is the caller of #warn; index 0 of the list is #warn itself.
       # A level past the bottom of the stack keeps the "warning: " prefix but
       # names no position (CRuby).
-      loc = caller_locations(uplevel + 1, 1)
-      loc = loc && loc[0]
+      # `<internal:` frames (core methods written in Ruby, rubygems' require) are not counted (CRuby)
+      locs = caller_locations(1) || []
+      locs = locs.reject { |l| l.path.start_with?("<internal:") } if locs.any? { |l| l.path.start_with?("<internal:") }
+      loc = locs[uplevel]
       prefix = loc ? "#{loc.path}:#{loc.lineno}: warning: " : "warning: "
     end
     unless category.nil?

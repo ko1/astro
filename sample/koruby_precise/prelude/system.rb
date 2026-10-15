@@ -2117,6 +2117,15 @@ module Kernel
   end
   module_function :trace_var, :untrace_var
 
+  def syscall(num, *args) = __syscall(num, *args)
+  # tracing hooks are not implemented: only clearing (nil) is accepted
+  def set_trace_func(pr)
+    raise TypeError, "trace_func needs to be Proc" unless pr.nil? || pr.is_a?(Proc)
+    raise NotImplementedError, "set_trace_func is not supported" if pr
+    nil
+  end
+  module_function :syscall, :set_trace_func
+
   # 実体は Object 側の C メソッドで、そちらが先に見つかる。ここに名前を置くのは
   # Kernel.private_instance_methods に並べるためと、Kernel.system の形で呼べるため。
   def system(*args, **opts, &blk); __system(*args, **opts, &blk); end

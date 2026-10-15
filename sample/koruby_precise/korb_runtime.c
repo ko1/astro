@@ -20941,9 +20941,36 @@ korb_seed_provided_features(CTX *c, korb_value *slots)
     koruby_toplevel_locals_cnt = saved_cnt;
     koruby_toplevel_local_syms = saved_sym;
     koruby_toplevel_local_cnt  = saved_scnt;
-    static const char *const pseudo[] =   /* CRuby's own entries: bare names */
-        { "enumerator.so", "thread.rb", "rational.so", "complex.so", "ruby2_keywords.rb", "set.rb", NULL };
+    {   /* fiber / pathname are CRuby extensions: listed by their bare names, not koruby's lib paths */
+        const korb_value lf = korb_const_get(c->vm, korb_intern_lit(c->vm, "$LOADED_FEATURES", 16));
+        if (KORB_ARRAY_P(lf)) {
+            KorbArray *const a = VAL2ARY(lf);
+            uint32_t w = 0;
+            for (uint32_t i = 0; i < a->len; i++) {
+                const korb_value e = korb_ary_ptr(a)[i];
+                const bool own = KORB_STRING_P(e) && VAL2STR(e)->len > sizeof KORUBY_SRC_DIR "/lib/" - 1 &&
+                                 memcmp(korb_str_ptr(VAL2STR(e)), KORUBY_SRC_DIR "/lib/", sizeof KORUBY_SRC_DIR "/lib/" - 1) == 0;
+                if (!own) korb_ary_ptr(a)[w++] = e;
+            }
+            for (uint32_t i = w; i < a->len; i++) korb_ary_ptr(a)[i] = KORB_NIL;
+            a->len = w;
+        }
+    }
+    static const char *const pseudo[] =   /* CRuby's own entries: bare names (monitor, io/wait: built in since 4.1) */
+        { "enumerator.so", "monitor.so", "thread.rb", "fiber.so", "rational.so", "complex.so", "pathname.so",
+          "ruby2_keywords.rb", "set.rb", "io/wait.so", NULL };
     for (uint32_t i = 0; pseudo[i]; i++) korb_loaded_features_push(c, slots, pseudo[i]);
+    {   /* Monitor / MonitorMixin load on first use: lib/monitor.rb is not worth parsing at every start */
+        static const char *const consts[] = { "Monitor", "MonitorMixin", NULL };
+        for (uint32_t i = 0; consts[i]; i++) {
+            slots[0] = korb_const_get(c->vm, korb_intern_lit(c->vm, "Object", 6));
+            slots[1] = ID2SYM(korb_intern(c->vm, consts[i], (uint32_t)strlen(consts[i])));
+            const RESULT pr = korb_str_new(c, slots + 2, KORUBY_SRC_DIR "/lib/monitor.rb", sizeof KORUBY_SRC_DIR "/lib/monitor.rb" - 1);
+            if (pr.state != KORB_NORMAL) return;
+            slots[2] = pr.value;
+            (void)korb_send(c, slots + 3, korb_intern_lit(c->vm, "autoload", 8), 0, 2);
+        }
+    }
 }
 
 /* Loading-claim table: which green thread is mid-load of a feature. */
@@ -21422,6 +21449,17 @@ korb_bi_require(CTX *c, korb_value *slots, korb_slice args)
     char namebuf[4096]; uint32_t nl = VAL2STR(nv)->len;
     if (nl >= sizeof namebuf) nl = sizeof namebuf - 1;
     memcpy(namebuf, korb_str_ptr(VAL2STR(nv)), nl); namebuf[nl] = '\0';
+    {   /* features CRuby provides from the start (listed as "<name>.so"): require answers false */
+        static const char *const provided[] = { "fiber", "pathname", "monitor", "io/wait", NULL };
+        for (uint32_t i = 0; provided[i]; i++)
+            if (strcmp(namebuf, provided[i]) == 0 || (strncmp(namebuf, provided[i], strlen(provided[i])) == 0 &&
+                                                       (strcmp(namebuf + strlen(provided[i]), ".so") == 0 ||
+                                                        strcmp(namebuf + strlen(provided[i]), ".rb") == 0))) {
+                char so[64];
+                snprintf(so, sizeof so, "%s.so", provided[i]);
+                if (korb_feature_loaded_p(c, so) || korb_feature_basename_loaded_p(c, so)) return RESULT_OK(KORB_FALSE);
+            }
+    }
     char abspath[4096];
     if (namebuf[0] == '~') {                               /* shell-style tilde expansion (CRuby expand_path) */
         const char *home = getenv("HOME");
@@ -22146,6 +22184,23 @@ void korb_warn_caller(CTX *c, korb_value *slots, const korb_value *link, const c
     uint32_t fs = 0, ln = 0;
     const char *const file = link != NULL && korb_caller_pos(c, link, &fs, &ln) ? korb_sym_name(c->vm, fs) : NULL;
     korb_warn_at(c, slots, file, ln, "%s", body);
+}
+/* __syscall(num, *args) — Kernel#syscall: Integer args as is, a String as its byte pointer (rb_f_syscall) */
+static RESULT korb_bi_syscall(CTX *c, korb_value *slots, korb_slice args)
+{
+    const uint32_t n = KORB_SLICE_LEN(args);
+    if (n < 1) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "too few arguments for syscall");
+    if (n > 7) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "too many arguments for syscall");
+    long a[7] = { 0 };
+    for (uint32_t i = 0; i < n; i++) {
+        const korb_value v = KORB_SLICE_GET(args, i);
+        if (FIXNUM_P(v)) a[i] = (long)FIX2LONG(v);
+        else if (KORB_STRING_P(v) && i > 0) { KORB_CHECK_FROZEN(c, slots, v); a[i] = (long)(uintptr_t)korb_str_ptr(VAL2STR(v)); }
+        else return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, v));
+    }
+    const long r = syscall(a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+    if (r == -1) return korb_raise_errno(c, slots, errno, NULL, NULL);
+    return RESULT_OK(LONG2FIX(r));
 }
 /* Emit (and drop) the warnings the last parse stashed, gated on $VERBOSE as CRuby's compile warnings */
 void korb_flush_parse_warnings(CTX *c, korb_value *slots) {
@@ -24751,7 +24806,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__set_ruby2_keywords", korb_bi_set_ruby2_keywords, -1);
     korb_mark_loaded(c->vm, "set");   /* Set is core-loaded in modern Ruby: require 'set' ⇒ false */
     korb_builtin_define(c, "__refinement_import", korb_bi_refinement_import, 2);   /* Refinement#import_methods (prelude) */
-    korb_builtin_define(c, "__korb_mark_native", korb_bi_mark_native, 1);         /* lib/zlib.rb etc.: C to CRuby */
+    korb_builtin_define(c, "__korb_mark_native", korb_bi_mark_native, 1);
+    korb_builtin_define(c, "__syscall", korb_bi_syscall, -1);         /* lib/zlib.rb etc.: C to CRuby */
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
     korb_builtin_define(c, "__method__", korb_bi_method_name, 0);
     korb_builtin_define(c, "block_given?", korb_bi_block_given_p, 0);

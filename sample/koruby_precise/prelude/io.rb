@@ -371,12 +371,7 @@ module Kernel
         io.close if io.respond_to?(:close) && !io.closed?
       end
     end
-    path = File.path(name)
-    if path.start_with?("|")
-      IO.popen(path[1..-1], *rest, **opts, &blk)
-    else
-      File.open(path, *rest, **opts, &blk)
-    end
+    File.open(File.path(name), *rest, **opts, &blk)   # Ruby 4: a leading '|' is a file name, not a command
   end
   module_function :open
 end

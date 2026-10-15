@@ -1010,7 +1010,7 @@ static RESULT korb_m_process_spawn(CTX *c, korb_value *slots, korb_ref self, kor
 static RESULT korb_process_int_arg(CTX *c, korb_value *slots, korb_value v, korb_sword_t *out) {
     if (LIKELY(FIXNUM_P(v))) { *out = FIX2LONG(v); return RESULT_OK(KORB_NIL); }
     if (!KORB_OBJECT_P(v) || !korb_responds_to(c, v, korb_intern_lit(c->vm, "to_int", 6)))
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion into Integer");
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Integer", korb_coerce_name(c, v));
     slots[0] = v;
     const RESULT ir = korb_send(c, slots + 1, korb_intern_lit(c->vm, "to_int", 6), 0, 0);
     if (UNLIKELY(ir.state != KORB_NORMAL)) return ir;
@@ -1630,14 +1630,19 @@ static RESULT korb_m_process_test(CTX *c, korb_value *slots, korb_ref self, korb
 
 static RESULT korb_m_process_getpgid(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    const pid_t pid = (KORB_SLICE_LEN(a) >= 1 && FIXNUM_P(KORB_SLICE_GET(a, 0))) ? (pid_t)FIX2LONG(KORB_SLICE_GET(a, 0)) : 0;
-    const pid_t g = getpgid(pid);
+    korb_sword_t pid = 0;
+    if (KORB_SLICE_LEN(a) != 1) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1)", KORB_SLICE_LEN(a));
+    CHECK(korb_process_int_arg(c, slots, KORB_SLICE_GET(a, 0), &pid));
+    const pid_t g = getpgid((pid_t)pid);
     if (g < 0) return korb_raise_errno(c, slots, errno, "getpgid", "");
     return RESULT_OK(LONG2FIX(g));
 }
 static RESULT korb_m_process_setpgid(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    if (setpgid((pid_t)FIX2LONG(KORB_SLICE_GET(a, 0)), (pid_t)FIX2LONG(KORB_SLICE_GET(a, 1))) < 0)
+    korb_sword_t pid = 0, pg = 0;
+    CHECK(korb_process_int_arg(c, slots, KORB_SLICE_GET(a, 0), &pid));
+    CHECK(korb_process_int_arg(c, slots, KORB_SLICE_GET(a, 1), &pg));
+    if (setpgid((pid_t)pid, (pid_t)pg) < 0)
         return korb_raise_errno(c, slots, errno, "setpgid", "");
     return RESULT_OK(LONG2FIX(0));
 }

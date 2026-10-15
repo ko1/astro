@@ -1664,7 +1664,13 @@ main(int argc, char *argv[])
      * they are baked into preload.so, not the program's code store. */
     g_prelude_repo_count = code_repo_count();
 
+    c->vm->defer_syntax_exit = req_libs.n > 0;
     NODE *ast = koruby_parse_source(c, src, src_len, src_name, true);
+    c->vm->defer_syntax_exit = false;
+    if (UNLIKELY(c->vm->syntax_report != NULL)) {   /* reported after -r (below); -c / --dump-ast stop here */
+        if (OPTION.syntax_check || OPTION.dump_ast) { fputs(c->vm->syntax_report, stderr); return 1; }
+        ast = ALLOC_node_lit(KORB_NIL);
+    }
 #endif /* KORUBY_EMBED */
     /* held until $VERBOSE is set: a require on the way (rubygems) flushes the VM's list */
     char *const script_warns = c->vm->parse_warns;
@@ -1921,6 +1927,13 @@ main(int argc, char *argv[])
                 rr = korb_require_feature(c, toplevel_cursor, req_libs.v[k]);
             }
             if (rr.state == KORB_RAISE) { korb_report_uncaught(c, rr.value); korb_io_flush_all(c->vm); return 1; }
+        }
+        if (UNLIKELY(c->vm->syntax_report != NULL)) {   /* the main script did not parse: report, then at_exit */
+            fputs(c->vm->syntax_report, stderr);
+            bool ex = false;
+            const int hs = korb_drain_at_exit_x(c, toplevel_cursor + 4, &ex);
+            korb_io_flush_all(c->vm);
+            return hs >= 0 ? hs : 1;
         }
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);

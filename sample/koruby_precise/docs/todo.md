@@ -5,6 +5,12 @@
 
 
 
+## 未: $LOAD_PATH の symlink ディレクトリを realpath で正規化しない (2026-10-16)
+CRuby は展開済みの load path（realpath、キャッシュ付き）で探し、$LOADED_FEATURES にも実ディレクトリ側を
+残す。koruby で見つけたときだけ realpath すると、名前での既読判定（korb_feature_in_load_path_p）が書いた
+とおりのディレクトリと比べるため「新しい同名ファイルを 1 回だけ」の spec が壊れた（試して取り消した）。
+比較も含め realpath を毎回取ると require の多い起動が遅くなるので、load path 単位のキャッシュが要る。
+
 ## 未: eval(str) の中の yield / block_given? / bare super / return が binding のメソッドに届かない (2026-10-16)
 - `def m; eval("yield"); end; m { }` が LocalJumpError（`block_given?` も false）。メソッドが字句上 yield を
   持たないとブロックの 3 つ組を確保しないうえ、eval のフレームは binding のメソッドの組を読まない。
