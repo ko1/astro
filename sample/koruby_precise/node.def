@@ -427,13 +427,14 @@ node_lset(CTX *c, NODE *n, korb_value *slots, int32_t off, korb_value rval@child
 // rhs array (e.g. the literal built for `a, b = b, a`) snapshots both sides
 // first, so swaps work.  `offsets` is a baked int32[] of frame-slot offsets.
 NODE_DEF
-node_massign(CTX *c, NODE *n, korb_value *slots, void *offsets, uint32_t ntargets, korb_value rval@child)
+node_massign(CTX *c, NODE *n, korb_value *slots, void *offsets, uint32_t ntargets, uint64_t flink, korb_value rval@child)
 {
     (void)n;
     const int32_t *const offs = (const int32_t *)offsets;
     slots[0] = rval;                                       /* keep the original RHS at slots[0] (rooted, below the cursor) */
     slots[1] = rval;
-    CHECK(korb_massign_coerce(c, slots + 1));              /* non-Array rhs → #to_ary (into slots[1]); its send uses slots[2]+ */
+    if (UNLIKELY(KORB_OBJECT_P(slots[1]) && !KORB_ARRAY_P(slots[1])))   /* #to_ary: its frame links to this one */
+        CHECK(KP_DEOPT(c, flink, slots, korb_massign_coerce(c, slots + 1, korb_flink_line(flink))));              /* non-Array rhs → #to_ary (into slots[1]); its send uses slots[2]+ */
     if (KORB_ARRAY_P(slots[1])) {
         const KorbArray *const a = VAL2ARY(slots[1]);      /* no alloc below → pointer stays valid */
         for (uint32_t i = 0; i < ntargets; i++)
@@ -450,13 +451,14 @@ node_massign(CTX *c, NODE *n, korb_value *slots, void *offsets, uint32_t ntarget
 // or constant (kind 2, data=const name sym).  rhs parked in slots[0] across the
 // ivar-set allocs.  Returns the rhs (Array or scalar).
 NODE_DEF
-node_massign_het(CTX *c, NODE *n, korb_value *slots, void *descs, uint32_t nt, int32_t self_off, korb_value rval@child)
+node_massign_het(CTX *c, NODE *n, korb_value *slots, void *descs, uint32_t nt, int32_t self_off, uint64_t flink, korb_value rval@child)
 {
     (void)n;
     const struct { int32_t kind; int32_t data; } *const d = descs;
     slots[0] = rval;                                       /* keep the original RHS at slots[0] (rooted) to return */
     slots[1] = rval;
-    CHECK(korb_massign_coerce(c, slots + 1));              /* non-Array rhs → #to_ary (into slots[1]); its send uses slots[2]+ */
+    if (UNLIKELY(KORB_OBJECT_P(slots[1]) && !KORB_ARRAY_P(slots[1])))   /* #to_ary: its frame links to this one */
+        CHECK(KP_DEOPT(c, flink, slots, korb_massign_coerce(c, slots + 1, korb_flink_line(flink))));              /* non-Array rhs → #to_ary (into slots[1]); its send uses slots[2]+ */
     const bool is_ary = KORB_ARRAY_P(slots[1]);
     for (uint32_t i = 0; i < nt; i++) {
         const korb_value v = is_ary
@@ -479,13 +481,14 @@ node_massign_het(CTX *c, NODE *n, korb_value *slots, void *descs, uint32_t nt, i
 // The splat collects the middle elements into a fresh Array (a GC point — rhs is
 // parked in slots[0] across the alloc; ELEM treats a non-Array rhs as [rhs]).
 NODE_DEF
-node_massign_splat(CTX *c, NODE *n, korb_value *slots, void *offsets, uint32_t npre, uint32_t npost, korb_value rval@child)
+node_massign_splat(CTX *c, NODE *n, korb_value *slots, void *offsets, uint32_t npre, uint32_t npost, uint64_t flink, korb_value rval@child)
 {
     (void)n;
     const int32_t *const offs = (const int32_t *)offsets;
     slots[0] = rval;                                       /* keep the original RHS at slots[0] (rooted) to return */
     slots[1] = rval;
-    CHECK(korb_massign_coerce(c, slots + 1));              /* non-Array rhs → #to_ary (into slots[1]); its send uses slots[2]+ */
+    if (UNLIKELY(KORB_OBJECT_P(slots[1]) && !KORB_ARRAY_P(slots[1])))   /* #to_ary: its frame links to this one */
+        CHECK(KP_DEOPT(c, flink, slots, korb_massign_coerce(c, slots + 1, korb_flink_line(flink))));              /* non-Array rhs → #to_ary (into slots[1]); its send uses slots[2]+ */
     const bool is_ary = KORB_ARRAY_P(slots[1]);
     const uint32_t len = is_ary ? VAL2ARY(slots[1])->len : 1u;
     const uint32_t splat_cnt = len > npre + npost ? len - npre - npost : 0u;
@@ -1194,7 +1197,7 @@ node_neq(CTX *c, NODE *n, korb_value *slots, korb_ref lhs@child, korb_value rhs@
 // is_a? / match / call / custom) fall back to a real === send.
 // node_caseeq past its fixnum and cached-class paths: the whole original body, one copy in the binary (sdi27)
 static inline RESULT
-korb_caseeq_body(CTX *c, korb_value *slots, korb_ref wv, korb_value subj, struct korb_inlcache *ic)
+korb_caseeq_body(CTX *c, korb_value *slots, korb_ref wv, korb_value subj, struct korb_inlcache *ic, const uint32_t line)
 {
     const korb_value w = KORB_REF_GET(wv);
     /* No identity short-circuit: for a Class/Module when-value `w === subj` is
@@ -1204,23 +1207,24 @@ korb_caseeq_body(CTX *c, korb_value *slots, korb_ref wv, korb_value subj, struct
         if (LIKELY(FIXNUM_P(w) && FIXNUM_P(subj)) && LIKELY(!c->vm->basic_op_redefined))
             return RESULT_OK(w == subj ? KORB_TRUE : KORB_FALSE);
         if (UNLIKELY((FIXNUM_P(w) && KORB_OBJECT_P(subj)) ||   /* Integer#== asks a user object: subj == w */
-                     (c->vm->basic_op_redefined && (FIXNUM_P(w) || KORB_FLOAT_P(w))))) {   /* Integer#=== / Float#=== reopened */
+                     (c->vm->basic_op_redefined && (FIXNUM_P(w) || KORB_FLOAT_P(w))) ||   /* Integer#=== / Float#=== reopened */
+                     c->vm->eqq_redefined)) {                                             /* Symbol#=== / NilClass#=== … */
             slots[0] = w; slots[1] = subj;
-            return korb_send(c, slots + 2, c->vm->mid_eqq, 0, 1);
+            return korb_send(c, slots + 2, c->vm->mid_eqq, line, 1);
         }
         return RESULT_OK(korb_value_eq(w, subj) ? KORB_TRUE : KORB_FALSE);
     }
     switch (KORB_OBJ_TYPE(w)) {
       case KORB_OBJ_STRING: case KORB_OBJ_ARRAY: case KORB_OBJ_HASH:
       case KORB_OBJ_FLOAT:  case KORB_OBJ_BIGNUM:
-        if (UNLIKELY(((const AroObjectHeader *)(uintptr_t)w)->flags & KORB_FL_HAS_KLASS)) {   /* a subclass may define #=== */
+        if (UNLIKELY((((const AroObjectHeader *)(uintptr_t)w)->flags & KORB_FL_HAS_KLASS) || c->vm->eqq_redefined)) {   /* a subclass may define #=== */
             slots[0] = w; slots[1] = subj;
-            return korb_send(c, slots + 2, c->vm->mid_eqq, 0, 1);
+            return korb_send(c, slots + 2, c->vm->mid_eqq, line, 1);
         }
         if (UNLIKELY(c->vm->basic_op_redefined) && KORB_OBJ_TYPE(w) != KORB_OBJ_STRING &&
             KORB_OBJ_TYPE(w) != KORB_OBJ_ARRAY && KORB_OBJ_TYPE(w) != KORB_OBJ_HASH) {   /* Float#=== / Integer#=== reopened */
             slots[0] = w; slots[1] = subj;
-            return korb_send(c, slots + 2, c->vm->mid_eqq, 0, 1);
+            return korb_send(c, slots + 2, c->vm->mid_eqq, line, 1);
         }
         return RESULT_OK(korb_value_eq(w, subj) ? KORB_TRUE : KORB_FALSE);
       default: {                                           /* Range / Class / Regexp / Proc / user obj → real === */
@@ -1238,19 +1242,19 @@ korb_caseeq_body(CTX *c, korb_value *slots, korb_ref wv, korb_value subj, struct
             if (korb_caseeq_class_cached(c, w, subj, ic, &dr)) return dr;   /* `when String` */
         }
         slots[0] = w; slots[1] = subj;   /* a builtin === (Module / Range / Regexp) through this site's cache */
-        if (korb_deopt_cfunc_cached_any(c, slots + 2, c->vm->mid_eqq, 0, 1, ic, &dr)) return dr;
-        return korb_send1_ic(c, slots + 2, c->vm->mid_eqq, 0, ic);   /* a user #=== */
+        if (korb_deopt_cfunc_cached_any(c, slots + 2, c->vm->mid_eqq, line, 1, ic, &dr)) return dr;
+        return korb_send1_ic(c, slots + 2, c->vm->mid_eqq, line, ic);   /* a user #=== */
       }
     }}
 #ifndef NODE_SKIP_COLD
 RESULT
-korb_caseeq_generic(CTX *c, korb_value *slots, korb_ref wv, korb_value subj, struct korb_inlcache *ic)
+korb_caseeq_generic(CTX *c, korb_value *slots, korb_ref wv, korb_value subj, struct korb_inlcache *ic, const korb_value flink)
 {
-    return korb_caseeq_body(c, slots, wv, subj, ic);
+    return KP_DEOPT(c, flink, slots, korb_caseeq_body(c, slots, wv, subj, ic, korb_flink_line(flink)));   /* a #=== it sends links to this frame */
 }
 #endif
 NODE_DEF
-node_caseeq(CTX *c, NODE *n, korb_value *slots, korb_ref wv@child, korb_value subj@child, struct korb_inlcache *ic@ref)
+node_caseeq(CTX *c, NODE *n, korb_value *slots, korb_ref wv@child, korb_value subj@child, uint64_t flink, struct korb_inlcache *ic@ref)
 {
     (void)n;
     const korb_value w = KORB_REF_GET(wv);
@@ -1264,7 +1268,7 @@ node_caseeq(CTX *c, NODE *n, korb_value *slots, korb_ref wv@child, korb_value su
             if (k == w) return RESULT_OK(KORB_TRUE);
         return RESULT_OK(KORB_FALSE);
     }
-    return korb_caseeq_generic(c, slots, wv, subj, ic);
+    return korb_caseeq_generic(c, slots, wv, subj, ic, flink);
 }
 
 // case/when over Fixnum literals: a balanced split on the subject picks the few
@@ -2777,7 +2781,9 @@ node_const_set_on(CTX *c, NODE *n, korb_value *slots, uint32_t name_sym@sym, kor
     const korb_value o = KORB_REF_GET(owner);
     if (UNLIKELY(!KORB_CLASS_P(o))) {
         char ob[192]; korb_desc_inspect(c, o, ob, sizeof ob);
-        return korb_raise(c, slots, KORB_E_TYPE, 0, "%s is not a class/module", ob);
+        uint32_t fs, ln = 0;
+        korb_srcloc_find(c->vm, n, &fs, &ln);            /* parse.c registers every const_set_on */
+        return korb_raise(c, slots, KORB_E_TYPE, ln, "%s is not a class/module", ob);
     }
     return korb_const_assign_at(c, slots, n, name_sym, o, val);
 }
@@ -3612,10 +3618,11 @@ node_ary_push_kw(CTX *c, NODE *n, korb_value *slots, korb_ref ary@child, korb_va
 }
 
 NODE_DEF
-node_ary_concat(CTX *c, NODE *n, korb_value *slots, korb_ref ary@child, korb_value elem@child)
+node_ary_concat(CTX *c, NODE *n, korb_value *slots, korb_ref ary@child, korb_value elem@child, uint64_t flink)
 {
     (void)n;
-    return korb_ary_concat_val(c, slots, ary, elem);   /* splat: spread elem into ary */
+    if (LIKELY(KORB_ARRAY_P(elem))) return korb_ary_concat_val(c, slots, ary, elem, 0);   /* splat: spread elem into ary */
+    return KP_DEOPT(c, flink, slots, korb_ary_concat_val(c, slots, ary, elem, korb_flink_line(flink)));   /* #to_a links to this frame */
 }
 
 // `f(*x)` with a lone splat: the call-site spreader (node_call_splat /
@@ -3623,13 +3630,13 @@ node_ary_concat(CTX *c, NODE *n, korb_value *slots, korb_ref ary@child, korb_val
 // Array needs no `[*x]` copy.  Anything else takes the same conversion as
 // node_ary_concat (Range / nil / #to_a / `[x]`).
 NODE_DEF
-node_splat_view(CTX *c, NODE *n, korb_value *slots, korb_value elem@child)
+node_splat_view(CTX *c, NODE *n, korb_value *slots, korb_value elem@child, uint64_t flink)
 {
     (void)n;
     if (LIKELY(KORB_ARRAY_P(elem))) return RESULT_OK(elem);
     slots[0] = elem;                                    /* root across the alloc */
     slots[1] = UNWRAP(korb_ary_new(c, slots + 2, 1));
-    return korb_ary_concat_val(c, slots + 2, KORB_REF_AT(&slots[1]), slots[0]);
+    return KP_DEOPT(c, flink, slots, korb_ary_concat_val(c, slots + 2, KORB_REF_AT(&slots[1]), slots[0], korb_flink_line(flink)));
 }
 
 // ---- hash literals ---------------------------------------------------------
@@ -3672,10 +3679,11 @@ node_hash_set_sym(CTX *c, NODE *n, korb_value *slots, uint32_t key@sym, korb_ref
 }
 
 NODE_DEF
-node_hash_merge(CTX *c, NODE *n, korb_value *slots, korb_ref hash@child, korb_value src@child)
+node_hash_merge(CTX *c, NODE *n, korb_value *slots, korb_ref hash@child, korb_value src@child, uint64_t flink)
 {
     (void)n;
-    return korb_hash_merge_val(c, slots, hash, src);   /* **src: merge src's pairs into hash */
+    if (LIKELY(KORB_HASH_P(src) || src == KORB_NIL)) return korb_hash_merge_val(c, slots, hash, src, 0);   /* **src: merge src's pairs into hash */
+    return KP_DEOPT(c, flink, slots, korb_hash_merge_val(c, slots, hash, src, korb_flink_line(flink)));   /* #to_hash links to this frame */
 }
 
 // ---- range literals --------------------------------------------------------
@@ -4418,7 +4426,7 @@ node_ivar_arith(CTX *c, NODE *n, korb_value *slots, int32_t self_off, uint32_t n
 // instance method).  korb_cvar_{get,set} resolve up the superclass chain.
 
 NODE_DEF
-node_cvar_get(CTX *c, NODE *n, korb_value *slots, int32_t self_off, int32_t dc_off, uint32_t name@sym, uint32_t soft, struct korb_cvcache *cc@ref)
+node_cvar_get(CTX *c, NODE *n, korb_value *slots, int32_t self_off, int32_t dc_off, uint32_t name@sym, uint32_t soft, uint32_t line, struct korb_cvcache *cc@ref)
 {
     (void)n;
     const struct korb_vm *const vm = c->vm;
@@ -4431,7 +4439,7 @@ node_cvar_get(CTX *c, NODE *n, korb_value *slots, int32_t self_off, int32_t dc_o
         const korb_value lc = korb_cvar_block_cref(c, KORB_FBASE_AT(slots, dc_off));
         if (KORB_CLASS_P(lc)) self = lc;
     }
-    return korb_cvar_get_c(c, slots, self, slots[dc_off], name, soft, cc);
+    return korb_cvar_get_c(c, slots, self, slots[dc_off], name, soft, cc, line);
 }
 
 NODE_DEF

@@ -1350,6 +1350,8 @@ struct korb_vm {
      * from basic_op_redefined so it costs one cold branch, not the arithmetic
      * fast paths. */
     bool value_eq_redefined;
+    /* `===` reopened on a builtin whose values case/when and `in` compare without a send (Symbol, String, nil, …) */
+    bool eqq_redefined;
     /* set the first time a `using` activates a refinement (docs/refinements.md).
      * Same deopt-flag pattern as basic_op_redefined: while false the dispatch
      * paths are untouched; once true the inline/call caches stop being filled so

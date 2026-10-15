@@ -297,12 +297,12 @@ static inline int32_t korb_hash_find_inl(const KorbHash *const h, const korb_val
     }
     return korb_hash_find(h, key);
 }
-RESULT korb_ary_concat_val(CTX *c, korb_value *slots, korb_ref aref, korb_value val);
+RESULT korb_ary_concat_val(CTX *c, korb_value *slots, korb_ref aref, korb_value val, uint32_t line);
 
 /* Hash (korb_runtime.c) */
 RESULT korb_hash_new(CTX *c, korb_value *slots, uint32_t capa);
 RESULT korb_hash_set(CTX *c, korb_value *slots, korb_ref href, korb_ref kref, korb_value val);
-RESULT korb_hash_merge_val(CTX *c, korb_value *slots, korb_ref href, korb_value src);
+RESULT korb_hash_merge_val(CTX *c, korb_value *slots, korb_ref href, korb_value src, uint32_t line);
 
 /* Range (korb_runtime.c) — begin staged (rooted), end by value */
 RESULT korb_range_new(CTX *c, korb_value *slots, korb_ref bref, korb_value end, uint32_t exclude_end);
@@ -334,7 +334,7 @@ RESULT korb_ivar_set(CTX *c, korb_value *slots, korb_ref selfref, korb_value nam
 /* Classes + constants (korb_runtime.c) */
 RESULT korb_class_new(CTX *c, korb_value *slots, uint32_t name_sym, korb_value superclass);
 RESULT korb_cvar_get(CTX *c, korb_value *slots, korb_value self, korb_value entry_cell, uint32_t sym_id, uint32_t soft);
-RESULT korb_cvar_get_c(CTX *c, korb_value *slots, korb_value self, korb_value entry_cell, uint32_t sym_id, uint32_t soft, struct korb_cvcache *cc);   /* fills cc */
+RESULT korb_cvar_get_c(CTX *c, korb_value *slots, korb_value self, korb_value entry_cell, uint32_t sym_id, uint32_t soft, struct korb_cvcache *cc, uint32_t line);   /* fills cc */
 korb_value  korb_cvar_block_cref(CTX *c, const korb_value *frame_base);
 void   korb_method_clear_def_cref(korb_value klass, uint32_t mid);   /* a def in a class body of an eval: no eval cref */   /* a block's lexical class for @@x (nil: no home method) */
 void   korb_method_set_block_cref(CTX *c, korb_value klass, uint32_t mid, const korb_value *frame_base);   /* a def run by a block in a method: that method's class */
@@ -643,6 +643,7 @@ struct korb_pat {
     korb_value   *keys;                /* kind 3: symbol keys */
     struct Node *outw;            /* root only: writes the outer-scope binds out after a match (NULL: none) */
     int32_t  dc_off;              /* root of a case/in clause: frame cells [subject, #deconstruct cache] (0: none) */
+    uint32_t line;                /* the pattern's line: a #deconstruct(_keys) raise names it */
 };
 RESULT korb_pat_match(CTX *c, korb_value *base, korb_value *cur, korb_ref subjref, const struct korb_pat *p);
 
@@ -855,8 +856,9 @@ uint32_t korb_intern_enc(struct korb_vm *vm, const char *name, size_t len, uint3
 bool korb_responds_to_public(CTX *c, korb_value self, uint32_t mid);
 bool korb_responds_to_coerce(CTX *c, korb_value *slots, korb_value self, uint32_t mid);   /* defined in korb_runtime.c; called from node_eval.c (defined?) */
 bool korb_responds_to_coerce_p(CTX *c, korb_value *slots, korb_value *selfp, uint32_t mid);
-RESULT korb_massign_coerce(CTX *c, korb_value *slots);   /* to_ary for multiple assignment (node_eval.c) */
+RESULT korb_massign_coerce(CTX *c, korb_value *slots, uint32_t line);   /* to_ary for multiple assignment (node_eval.c) */
 void korb_reg_srcloc(struct korb_vm *vm, struct Node *node, uint32_t file_sym, uint32_t line);
+bool korb_srcloc_find(const struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line);
 /* Record what `path` resolves to now (Location#absolute_path); NULL if no such file. */
 const char *korb_reg_abspath(struct korb_vm *vm, const char *path);
 bool korb_get_srcloc(struct korb_vm *vm, const struct Node *node, uint32_t *file_sym, uint32_t *line);
@@ -931,7 +933,7 @@ void *korb_embed_het_descs(CTX *c, uint32_t cnt, ...);
 void *korb_embed_attr_descs(CTX *c, uint32_t cnt, ...);
 uint32_t *korb_embed_binding_scope(CTX *c, uint32_t L, ...);
 void *korb_embed_pat(CTX *c, uint32_t kind, int32_t bind_off, struct Node *value_node, struct Node *outw, int32_t dc_off,
-                     uint32_t n, uint32_t npost, uint32_t ecnt, ...);
+                     uint32_t n, uint32_t npost, uint32_t line, uint32_t ecnt, ...);
 void koruby_emit_set_vm(const struct korb_vm *vm);
 void koruby_emit_cstr_len(FILE *fp, const char *p, uint32_t len);
 
@@ -1374,7 +1376,7 @@ void korb_ty_observe(CTX *c, struct Node *n, unsigned lk, unsigned rk);   /* nod
 RESULT korb_eq_generic(CTX *c, korb_value *slots, korb_value l, korb_value rhs, uint64_t flink);   /* node.def, binary only */
 RESULT korb_neq_generic(CTX *c, korb_value *slots, korb_value l, korb_value rhs, uint64_t flink);   /* node.def, binary only (sdi23) */
 RESULT korb_aset_generic(CTX *c, korb_value *slots, uint64_t flink, korb_ref recv, korb_ref idx, korb_value val, struct korb_inlcache *ic);   /* sdi27 */
-RESULT korb_caseeq_generic(CTX *c, korb_value *slots, korb_ref wv, korb_value subj, struct korb_inlcache *ic);   /* sdi27 */
+RESULT korb_caseeq_generic(CTX *c, korb_value *slots, korb_ref wv, korb_value subj, struct korb_inlcache *ic, korb_value flink);   /* sdi27 */
 RESULT korb_plus_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink);   /* node.def, binary only (sdi26) */
 RESULT korb_minus_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink);   /* node.def, binary only (sdi26) */
 RESULT korb_mul_generic(CTX *c, korb_value *slots, korb_ref lhs, korb_value rhs, uint64_t flink);   /* node.def, binary only (sdi26) */

@@ -533,22 +533,7 @@ static RESULT korb_m_proc_call(CTX *c, korb_value *slots, korb_ref self, korb_sl
     /* `|&nil|` (Ruby 4.1): this proc refuses a block. */
     if (UNLIKELY(block != NULL) && entry != KORB_BLK_CPROC && korb_pi_no_block(korb_entry_param_info(entry)))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no block accepted");
-    /* Lambdas enforce arity (unlike plain procs/blocks).  Positional-only check
-     * (skip when the lambda declares keywords — the trailing kw Hash would skew
-     * the count). */
-    if (UNLIKELY(p->is_lambda) && entry != KORB_BLK_CPROC && korb_entry_kw_info(entry) == NULL) {
-        const uint32_t pc  = korb_entry_params_cnt(entry);
-        const bool has_rest = korb_entry_has_rest(entry);   /* the implicit `|x,|` rest does not relax the arity */
-        const bool variable = (korb_entry_opt_defaults(entry) != NULL) || has_rest;   /* same basis as Proc#arity */
-        const uint32_t req = variable ? korb_entry_req_cnt(entry) : pc;               /* non-variable → all required */
-        if (UNLIKELY(argc < req || (!has_rest && argc > pc))) {
-            char exp[32];
-            if (has_rest)       snprintf(exp, sizeof exp, "%u+", req);
-            else if (req == pc) snprintf(exp, sizeof exp, "%u", req);
-            else                snprintf(exp, sizeof exp, "%u..%u", req, pc);
-            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %s)", argc, exp);
-        }
-    }
+    /* A lambda's arity is checked by korb_block_yield_full (is_lam), inside the block's own frame as CRuby does. */
     korb_value penv = p->env;                                 /* already tagged: odd=slots / even=KorbEnv */
     /* Proc#refined: the body runs under the set the copy carries.  Nothing may
      * raise between the push and the pop below. */

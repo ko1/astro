@@ -108,6 +108,7 @@ struct kp_hoist {
 };
 
 struct kp_ctx {
+    uint32_t  cur_line;           /* line of the prism node being transduced: a raise from a helper names it */
     const pm_parser_t *parser;
     const pm_node_t *void_stmt;   /* the statement being transduced whose value is discarded (not the last one) */
     CTX *c;
@@ -983,7 +984,7 @@ static NODE *
 bake_cvar_get(struct kp_ctx *tc, uint32_t name, uint32_t soft)
 {
     kp_needs_definee(tc);
-    NODE *n = ALLOC_node_cvar_get(-1 - tc->chain, -4 - tc->chain, name, soft);
+    NODE *n = ALLOC_node_cvar_get(-1 - tc->chain, -4 - tc->chain, name, soft, tc->cur_line);
     bake_add(tc, &n->u.node_cvar_get.self_off);
     bake_add(tc, &n->u.node_cvar_get.dc_off);
     return n;
@@ -1379,6 +1380,7 @@ build_pattern_desc_r(struct kp_ctx *tc, const pm_node_t *pat)
 {
     struct korb_pat *p = calloc(1, sizeof(*p));
     if (!p) abort();
+    p->line = kp_line(tc, pat);
     if (PM_NODE_TYPE_P(pat, PM_IMPLICIT_NODE))                      /* `{key:}` shorthand wraps the target */
         pat = (const pm_node_t *)((const pm_implicit_node_t *)pat)->value;
     if (PM_NODE_TYPE_P(pat, PM_LOCAL_VARIABLE_TARGET_NODE)) {       /* binding */
@@ -1591,6 +1593,7 @@ extern const struct NodeKind kind_node_entry;        /* block/lambda entry — g
 extern const struct NodeKind kind_node_aref;         /* recv[idx] */
 extern const struct NodeKind kind_node_aset;         /* recv[idx] = val */
 extern const struct NodeKind kind_node_ary_push;     /* array-literal push chain */
+extern const struct NodeKind kind_node_massign, kind_node_massign_het, kind_node_massign_splat, kind_node_splat_view;   /* frame-link staging (to_ary / to_a) */
 extern const struct NodeKind kind_node_ary_concat;   /* array-literal splat (*) chain */
 
 /* Where a `class X` / `module X` written HERE nests.  Normally that is the
@@ -1663,25 +1666,39 @@ kp_lexical_class_owner(struct kp_ctx *tc, uint32_t *owner)
  * synth local, then the read and the write go through const_get / const_set.
  * `or_form` picks ||= (probe with const_defined? so an unset constant does not
  * raise) over &&= (a plain read, which does raise when unset, like CRuby). */
+/* `owner::name = val` on a runtime owner: a non-module owner is a TypeError at the expression's line */
+static NODE *
+kp_const_set_on(struct kp_ctx *tc, uint32_t line, uint32_t name, NODE *owner, NODE *val)
+{
+    NODE *const cn = ALLOC_node_const_set_on(name, owner, val);
+    korb_reg_srcloc(tc->c->vm, cn, korb_intern(tc->c->vm, tc->fname, (uint32_t)strlen(tc->fname)), line);
+    return cn;
+}
+
+static NODE *build_const_read(struct kp_ctx *tc, uint32_t name_cid, uint32_t line);
+/* The read of `mod::N op= v` / `&&= v` (mod in synth local mtmp): CRuby reads N lexically when mod is nil */
+static NODE *
+kp_dyn_const_opread(struct kp_ctx *tc, uint32_t mtmp, uint32_t name, uint32_t line)
+{
+    return ALLOC_node_if(bake_lget(tc, mtmp), KP_CONST_PATH(tc, name, line, bake_lget(tc, mtmp)),
+                         build_const_read(tc, name, line));
+}
+
+/* `mod::N &&= v` / `||= v` with a runtime owner, evaluated once into a synth local: read and write through
+ * the constant nodes (no const_get / const_set frame; a nil owner is CRuby's TypeError) */
 static NODE *
 kp_dyn_const_opassign(struct kp_ctx *tc, const pm_node_t *node, const pm_node_t *modpart,
                       uint32_t name, const pm_node_t *value, bool or_form)
 {
-    struct korb_vm *const vm = tc->c->vm;
     const uint32_t line = kp_line(tc, node);
     const uint32_t mtmp = alloc_synth_local(tc);
     NODE *const store = bake_lset(tc, mtmp, transduce(tc, modpart));
-    NODE *gr, *gk;
-    WITH_CHAIN(tc, KP_SEND1_SC, (gr = bake_lget(tc, mtmp), gk = ALLOC_node_lit(ID2SYM(name))));
-    NODE *read = kp_send1(tc, korb_intern(vm, "const_get", 9), line, gr, gk);
-    NODE *sr, *sk, *sv;
-    WITH_CHAIN(tc, KP_SEND2_SC, (sr = bake_lget(tc, mtmp), sk = ALLOC_node_lit(ID2SYM(name)),
-                                 sv = transduce(tc, value)));
-    NODE *const set = kp_send2(tc, korb_intern(vm, "const_set", 9), line, sr, sk, sv);
+    NODE *const read = or_form ? KP_CONST_PATH(tc, name, line, bake_lget(tc, mtmp)) : kp_dyn_const_opread(tc, mtmp, name, line);
+    NODE *so, *sv;
+    WITH_CHAIN(tc, kind_node_const_set_on.slot_count, (so = bake_lget(tc, mtmp), sv = transduce(tc, value)));
+    NODE *const set = kp_const_set_on(tc, line, name, so, sv);
     if (!or_form) return ALLOC_node_seq(store, ALLOC_node_and(read, set));
-    NODE *dr, *dk;
-    WITH_CHAIN(tc, KP_SEND1_SC, (dr = bake_lget(tc, mtmp), dk = ALLOC_node_lit(ID2SYM(name))));
-    NODE *const defq = kp_send1(tc, korb_intern(vm, "const_defined?", 14), line, dr, dk);
+    NODE *const defq = ALLOC_node_defined_cpath_dyn(bake_lget(tc, mtmp), name);
     return ALLOC_node_seq(store, ALLOC_node_or(ALLOC_node_and(defq, read), set));
 }
 
@@ -2855,7 +2872,9 @@ transduce_call(struct kp_ctx *tc, const pm_call_node_t *cn)
 
     const char *name = kp_cid_cstr(tc, cn->name);
     uint32_t mid = kp_intern_cid(tc, cn->name);
-    uint32_t line = kp_line(tc, (const pm_node_t *)cn);
+    /* CRuby's line for a call is its method name's (`recv\n  .m(...)` is on the second line) */
+    uint32_t line = cn->message_loc.length ? (uint32_t)kp_line_column(tc->parser, cn->message_loc.start).line
+                                           : kp_line(tc, (const pm_node_t *)cn);
     kp_note_backref_call(tc, name);   /* a name that can set `$~` makes this method save/restore it */
     size_t argc = cn->arguments ? cn->arguments->arguments.size : 0;
 
@@ -3950,7 +3969,7 @@ massign_general(struct kp_ctx *tc, const pm_node_list_t *lefts, const pm_node_t 
         kp_hoist_targets(tc, lefts, rest, rights, &prologue);
     }
     for (uint32_t k = 0; k < no; k++) rcv[k] = -1;
-    NODE *massign = ALLOC_node_massign_splat(offs, npre, npost, rhs);
+    NODE *massign = KP_LINK(tc, node_massign_splat, offs, npre, npost, kp_flink_at(tc, tc->cur_line, kind_node_massign_splat.slot_count), rhs);
     for (uint32_t k = 0; k < no; k++) bake_add(tc, &offs[k]);
     const uint32_t rettmp = alloc_synth_local(tc);          /* hold the massign value across the plumbing */
     NODE *acc = bake_lset(tc, rettmp, massign);
@@ -4003,16 +4022,15 @@ assign_target_from_synth_r(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_l
         NODE *v; WITH_CHAIN(tc, kind_node_const_set.slot_count, (v = bake_lget(tc, src_local)));
         return build_const_set(tc, name, v);
     }
-    if (PM_NODE_TYPE_P(t, PM_CONSTANT_PATH_TARGET_NODE)) {   /* `a, M::X = ...` → M.const_set(:X, v) */
+    if (PM_NODE_TYPE_P(t, PM_CONSTANT_PATH_TARGET_NODE)) {   /* `a, M::X = ...` → M::X = v on the runtime owner */
         const pm_constant_path_target_node_t *cpt = (const pm_constant_path_target_node_t *)t;
         if (cpt->parent == NULL) return NULL;                /* `::X` — no runtime namespace to send to */
         const struct kp_hoist *const hp = kp_hoist_find(tc, t);
-        NODE *r, *k, *v;
-        WITH_CHAIN(tc, KP_SEND2_SC, (r = (hp && hp->recv >= 0) ? bake_lget(tc, (uint32_t)hp->recv)
-                                                               : transduce(tc, cpt->parent),
-                                     k = ALLOC_node_lit(ID2SYM(kp_intern_cid(tc, cpt->name))),
-                                     v = bake_lget(tc, src_local)));
-        return kp_send2(tc, korb_intern(tc->c->vm, "const_set", 9), line, r, k, v);
+        NODE *r, *v;
+        WITH_CHAIN(tc, kind_node_const_set_on.slot_count, (r = (hp && hp->recv >= 0) ? bake_lget(tc, (uint32_t)hp->recv)
+                                                                                     : transduce(tc, cpt->parent),
+                                                           v = bake_lget(tc, src_local)));
+        return kp_const_set_on(tc, kp_line(tc, t), kp_intern_cid(tc, cpt->name), r, v);
     }
     if (PM_NODE_TYPE_P(t, PM_CLASS_VARIABLE_TARGET_NODE)) {
         return bake_cvar_set(tc, kp_intern_cid(tc, ((const pm_class_variable_target_node_t *)t)->name),
@@ -4174,7 +4192,7 @@ build_fwd_kwargs(struct kp_ctx *tc, struct korb_kw_info *kw, uint32_t n, uint32_
         if (kw->kwrest_slot >= 0) {
             NODE *src; const uint32_t sc = kind_node_hash_merge.slot_count;
             WITH_CHAIN(tc, sc, (src = bake_lget_at(tc, depth, kw->kwrest_slot)));
-            h = ALLOC_node_hash_merge(h, src);
+            h = KP_LINK(tc, node_hash_merge, h, src, kp_flink_at(tc, tc->cur_line, kind_node_hash_merge.slot_count));
         }
         return h;
     }
@@ -4215,7 +4233,7 @@ build_fwd_args(struct kp_ctx *tc, uint32_t np, int32_t rest_slot, uint32_t post_
     NODE *acc, *elem;
     WITH_CHAIN(tc, sc, (acc  = build_fwd_args(tc, np, rest_slot, post_base, pc, kw, total - 1, depth),
                         elem = bake_lget_at(tc, depth, slot)));
-    return is_rest ? ALLOC_node_ary_concat(acc, elem) : ALLOC_node_ary_push(acc, elem);
+    return is_rest ? KP_LINK(tc, node_ary_concat, acc, elem, kp_flink_at(tc, tc->cur_line, kind_node_ary_concat.slot_count)) : ALLOC_node_ary_push(acc, elem);
 }
 
 static NODE *
@@ -4344,7 +4362,7 @@ build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa)
         NODE *acc, *tail;
         WITH_CHAIN(tc, kind_node_ary_push.slot_count, (acc  = build_array(tc, elems, n - m, capa),
                                                        tail = build_array(tc, elems + n - m, m, (uint32_t)m)));
-        return ALLOC_node_ary_concat(acc, tail);
+        return KP_LINK(tc, node_ary_concat, acc, tail, kp_flink_at(tc, tc->cur_line, kind_node_ary_concat.slot_count));
     }
     const pm_node_t *last = elems[n - 1];
     bool splat = PM_NODE_TYPE_P(last, PM_SPLAT_NODE);
@@ -4356,13 +4374,13 @@ build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa)
         uint32_t sc0 = kind_node_ary_push.slot_count;
         WITH_CHAIN(tc, sc0, (acc0  = build_array(tc, elems, n - 1, capa),
                              elem0 = kp_fwd_args(tc, ard, ars)));   /* splat the collected rest array */
-        return ALLOC_node_ary_concat(acc0, elem0);
+        return KP_LINK(tc, node_ary_concat, acc0, elem0, kp_flink_at(tc, tc->cur_line, kind_node_ary_concat.slot_count));
     }
     NODE *acc, *elem;
     uint32_t sc = kind_node_ary_push.slot_count;        /* concat shares the push layout */
     WITH_CHAIN(tc, sc, (acc  = build_array(tc, elems, n - 1, capa),
                         elem = transduce(tc, expr)));
-    if (splat) return ALLOC_node_ary_concat(acc, elem);
+    if (splat) return KP_LINK(tc, node_ary_concat, acc, elem, kp_flink_at(tc, tc->cur_line, kind_node_ary_concat.slot_count));
     /* call-site trailing `**h` bundle (only ever the last arg): an empty kwargs
      * Hash is elided at run time (CRuby 3.0 empty-kwsplat rule) */
     if (PM_NODE_TYPE_P(last, PM_KEYWORD_HASH_NODE)) return ALLOC_node_ary_push_kw(acc, elem);
@@ -4378,7 +4396,7 @@ build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32
     uint32_t sc = kind_node_ary_push.slot_count;
     WITH_CHAIN(tc, sc, (acc = build_array(tc, elems, n, (uint32_t)n),
                         fwd = kp_fwd_args(tc, depth, slot)));
-    return ALLOC_node_ary_concat(acc, fwd);
+    return KP_LINK(tc, node_ary_concat, acc, fwd, kp_flink_at(tc, tc->cur_line, kind_node_ary_concat.slot_count));
 }
 
 /* CRuby's setup_args_dup_rest_p: a `&expr` that can change nothing (a variable read, a constant, a literal) lets
@@ -4405,7 +4423,7 @@ build_call_args(struct kp_ctx *tc, struct pm_node **elems, size_t n)
 {
     if (n == 1 && PM_NODE_TYPE_P(elems[0], PM_SPLAT_NODE)) {
         const pm_node_t *const expr = (const pm_node_t *)((const pm_splat_node_t *)elems[0])->expression;
-        if (expr != NULL) return ALLOC_node_splat_view(transduce(tc, expr));
+        if (expr != NULL) return KP_LINK(tc, node_splat_view, transduce(tc, expr), kp_flink_at(tc, tc->cur_line, kind_node_splat_view.slot_count));
     }
     return build_array(tc, elems, n, (uint32_t)n);
 }
@@ -4636,13 +4654,13 @@ build_hash(struct kp_ctx *tc, struct pm_node **assocs, size_t n, uint32_t capa)
             uint32_t sc0 = kind_node_hash_merge.slot_count;
             WITH_CHAIN(tc, sc0, (acc0 = build_hash(tc, assocs, n - 1, capa),
                                  src0 = kp_fwd_args(tc, akd, aks)));
-            return ALLOC_node_hash_merge(acc0, src0);
+            return KP_LINK(tc, node_hash_merge, acc0, src0, kp_flink_at(tc, tc->cur_line, kind_node_hash_merge.slot_count));
         }
         NODE *acc, *src;
         uint32_t sc = kind_node_hash_merge.slot_count;
         WITH_CHAIN(tc, sc, (acc = build_hash(tc, assocs, n - 1, capa),
                             src = transduce(tc, expr)));
-        return ALLOC_node_hash_merge(acc, src);
+        return KP_LINK(tc, node_hash_merge, acc, src, kp_flink_at(tc, tc->cur_line, kind_node_hash_merge.slot_count));
     }
     const pm_assoc_node_t *as = (const pm_assoc_node_t *)last;
     if (n < KORB_HASH_INDEX_THRESHOLD && kp_hash_sym_keys_distinct(tc, assocs, n)) {   /* no duplicate search */
@@ -4882,7 +4900,7 @@ kp_case_split(struct kp_ctx *tc, const struct kp_case_val *const vals, size_t lo
         for (size_t i = hi; i-- > lo; ) {
             NODE *vn, *targ;
             WITH_CHAIN(tc, kind_node_caseeq.slot_count, (vn = transduce(tc, vals[i].lit), targ = bake_lget(tc, tmp)));
-            leaf = ALLOC_node_if(ALLOC_node_caseeq(vn, targ), vals[i].body, leaf);
+            leaf = ALLOC_node_if(KP_LINK(tc, node_caseeq, vn, targ, kp_flink_at(tc, kp_line(tc, vals[i].lit), kind_node_caseeq.slot_count)), vals[i].body, leaf);
         }
         return leaf;
     }
@@ -4914,8 +4932,19 @@ kp_note_file_locals(struct kp_ctx *tc, const uint32_t *const syms, const uint32_
     vm->file_locals[vm->file_locals_cnt++] = (struct korb_file_locals){ fsym, li };
 }
 
+static NODE *transduce_1(struct kp_ctx *tc, const pm_node_t *node);
 static NODE *
 transduce(struct kp_ctx *tc, const pm_node_t *node)
+{
+    const uint32_t outer = tc->cur_line;
+    tc->cur_line = kp_line(tc, node);
+    NODE *const r = transduce_1(tc, node);
+    tc->cur_line = outer;
+    return r;
+}
+
+static NODE *
+transduce_1(struct kp_ctx *tc, const pm_node_t *node)
 {
     switch (PM_NODE_TYPE(node)) {
       case PM_PROGRAM_NODE: {
@@ -5490,7 +5519,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                     MW_LOCAL_CID(mw->lefts.nodes[i], cid);
                     offs[i] = (int32_t)lvar_index(tc, mw->lefts.nodes[i], cid) - tc->chain;
                 }
-                NODE *mn = ALLOC_node_massign(offs, nt, rhs);
+                NODE *mn = KP_LINK(tc, node_massign, offs, nt, kp_flink_at(tc, tc->cur_line, kind_node_massign.slot_count), rhs);
                 for (uint32_t i = 0; i < nt; i++) bake_add(tc, &offs[i]);
                 return mn;
             }
@@ -5513,7 +5542,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                     descs[i].data = (int32_t)kp_intern_cid(tc, ((const pm_constant_target_node_t *)t)->name);
                 }
             }
-            NODE *mn = ALLOC_node_massign_het(descs, nt, -1 - tc->chain, rhs);
+            NODE *mn = KP_LINK(tc, node_massign_het, descs, nt, -1 - tc->chain, kp_flink_at(tc, tc->cur_line, kind_node_massign_het.slot_count), rhs);
             bake_add(tc, &mn->u.node_massign_het.self_off);   /* self at base[-1] (bottom header) */
             for (uint32_t i = 0; i < nt; i++) if (descs[i].kind == 0) bake_add(tc, &descs[i].data);
             return mn;
@@ -5559,7 +5588,7 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             MW_LOCAL_CID(mw->rights.nodes[i], cid);
             offs[npre + 1u + i] = (int32_t)lvar_index(tc, mw->rights.nodes[i], cid) - tc->chain;
         }
-        NODE *mn = ALLOC_node_massign_splat(offs, npre, npost, rhs);
+        NODE *mn = KP_LINK(tc, node_massign_splat, offs, npre, npost, kp_flink_at(tc, tc->cur_line, kind_node_massign_splat.slot_count), rhs);
         for (uint32_t i = 0; i < no; i++) bake_add(tc, &offs[i]);
         return mn;
         #undef MW_LOCAL_CID
@@ -5880,9 +5909,9 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
                 }
                 NODE *test;
                 if (has_subj) {
-                    NODE *vn, *targ; (void)kp_line(tc, cv);
+                    NODE *vn, *targ;
                     WITH_CHAIN(tc, kind_node_caseeq.slot_count, (vn = transduce(tc, cv), targ = bake_lget(tc, tmp)));
-                    test = ALLOC_node_caseeq(vn, targ);     /* v === subj (inline for value-eq types) */
+                    test = KP_LINK(tc, node_caseeq, vn, targ, kp_flink_at(tc, kp_line(tc, cv), kind_node_caseeq.slot_count));   /* v === subj (inline for value-eq types) */
                 } else {
                     test = transduce(tc, cv);                       /* plain truthiness */
                 }
@@ -6607,13 +6636,10 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             owner_name = kp_intern_cpath(tc, parent);
             if (owner_name == 0) owner_name = kp_intern_cid(tc, ((const pm_constant_path_node_t *)parent)->name);
         }
-        else if (parent) {   /* dynamic owner (`expr::N = v`, e.g. a local holding an anon module) → expr.const_set(:N, v) so N nests under the runtime owner */
-            const uint32_t line = kp_line(tc, node);
-            NODE *r, *k, *v;
-            WITH_CHAIN(tc, KP_SEND2_SC, (r = transduce(tc, parent),
-                                         k = ALLOC_node_lit(ID2SYM(name)),
-                                         v = transduce(tc, cpw->value)));
-            return kp_send2(tc, korb_intern(tc->c->vm, "const_set", 9), line, r, k, v);
+        else if (parent) {   /* dynamic owner (`expr::N = v`, e.g. a local holding an anon module): N nests under the runtime owner */
+            NODE *o, *v;
+            WITH_CHAIN(tc, kind_node_const_set_on.slot_count, (o = transduce(tc, parent), v = transduce(tc, cpw->value)));
+            return kp_const_set_on(tc, kp_line(tc, node), name, o, v);
         }
         NODE *val;
         uint32_t sc = kind_node_const_set.slot_count;
@@ -6662,21 +6688,15 @@ transduce(struct kp_ctx *tc, const pm_node_t *node)
             const enum kp_binop op2 = kp_binop_kind(kp_cid_cstr(tc, ow->binary_operator));
             const uint32_t mtmp = alloc_synth_local(tc);
             NODE *const store = bake_lset(tc, mtmp, transduce(tc, ow->target->parent));
-            NODE *r2, *k2, *v2;
-            WITH_CHAIN(tc, KP_SEND2_SC, ({
+            NODE *r2, *v2;
+            WITH_CHAIN(tc, kind_node_const_set_on.slot_count, ({
                 r2 = bake_lget(tc, mtmp);
-                k2 = ALLOC_node_lit(ID2SYM(name));
                 NODE *lhs2, *rhs2;
-                WITH_CHAIN(tc, kind_node_plus.slot_count, ({
-                    NODE *gr, *gk;
-                    WITH_CHAIN(tc, KP_SEND1_SC, (gr = bake_lget(tc, mtmp), gk = ALLOC_node_lit(ID2SYM(name))));
-                    lhs2 = kp_send1(tc, korb_intern(tc->c->vm, "const_get", 9), line2, gr, gk);
-                    rhs2 = transduce(tc, ow->value);
-                }));
+                WITH_CHAIN(tc, kind_node_plus.slot_count, (lhs2 = kp_dyn_const_opread(tc, mtmp, name, line2),
+                                                           rhs2 = transduce(tc, ow->value)));
                 v2 = (op2 != KP_BINOP_NONE) ? alloc_binop(tc, op2, lhs2, rhs2, line2) : kp_send1(tc, opmid2, line2, lhs2, rhs2);
             }));
-            NODE *const setn = kp_send2(tc, korb_intern(tc->c->vm, "const_set", 9), line2, r2, k2, v2);
-            return ALLOC_node_seq(store, setn);
+            return ALLOC_node_seq(store, kp_const_set_on(tc, line2, name, r2, v2));
         }
         enum kp_binop op = kp_binop_kind(kp_cid_cstr(tc, ow->binary_operator));
         uint32_t opmid = kp_intern_cid(tc, ow->binary_operator), line = kp_line(tc, node);

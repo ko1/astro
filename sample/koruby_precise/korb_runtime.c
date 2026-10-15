@@ -1780,7 +1780,7 @@ static RESULT korb_m_range_to_a(CTX *c, korb_value *slots, korb_ref self, korb_s
 /* splat `*val` into aref: Array → its elements, Range → its ints, nil → nothing,
  * else → val itself (Ruby `[*x]` semantics). aref/srcref are slots-rooted. */
 RESULT
-korb_ary_concat_val(CTX *c, korb_value *slots, korb_ref aref, korb_value val)
+korb_ary_concat_val(CTX *c, korb_value *slots, korb_ref aref, korb_value val, const uint32_t line)
 {
     if (KORB_ARRAY_P(val)) {
         korb_ref sref = SLOTS_PUSH(slots, val);    /* root src across grow GCs */
@@ -1813,7 +1813,7 @@ korb_ary_concat_val(CTX *c, korb_value *slots, korb_ref aref, korb_value val)
         korb_value *const vp = slots;                         /* same cell as vr, for the writeback */
         korb_ref vr = SLOTS_PUSH(slots, val);           /* root recv across the respond_to? / to_a dispatch */
         if (korb_check_funcall_respond_to(c, slots, vp, to_a_mid)) {   /* an overridden #respond_to? is asked first (CRuby) */
-            RESULT ta = korb_send(c, slots, to_a_mid, 0, 0);
+            RESULT ta = korb_send(c, slots, to_a_mid, line, 0);
             if (UNLIKELY(ta.state != KORB_NORMAL)) return ta;
             if (KORB_ARRAY_P(ta.value)) {
                 KORB_REF_SET(vr, ta.value);             /* reuse the rooted slot for the array */
@@ -1824,7 +1824,7 @@ korb_ary_concat_val(CTX *c, korb_value *slots, korb_ref aref, korb_value val)
             }
             if (ta.value == KORB_NIL)                    /* to_a → nil: `*x` is just `[x]` */
                 return korb_ary_push_val(c, slots, aref, KORB_REF_GET(vr));
-            return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Array (%s#to_a gives %s)",   /* to_a → non-Array */
+            return korb_raise(c, slots, KORB_E_TYPE, line, "can't convert %s into Array (%s#to_a gives %s)",   /* to_a → non-Array */
                               korb_coerce_name(c, KORB_REF_GET(vr)), korb_coerce_name(c, KORB_REF_GET(vr)), korb_coerce_name(c, ta.value));
         }
         return korb_ary_push_val(c, slots, aref, KORB_REF_GET(vr));   /* re-read: coerce may have moved val */
@@ -1836,17 +1836,17 @@ korb_ary_concat_val(CTX *c, korb_value *slots, korb_ref aref, korb_value val)
  * TypeError).  rhs must be in slots[0]; slots[0] is updated to the Array on
  * success.  Non-static so node_eval.c can call it. */
 RESULT
-korb_massign_coerce(CTX *c, korb_value *slots)
+korb_massign_coerce(CTX *c, korb_value *slots, const uint32_t line)
 {
     const korb_value v = slots[0];
     if (KORB_ARRAY_P(v) || !KORB_OBJECT_P(v)) return RESULT_OK(v);
     const uint32_t to_ary = korb_intern_lit(c->vm, "to_ary", 6);
     if (!korb_check_funcall_respond_to(c, slots + 1, &slots[0], to_ary)) return RESULT_OK(slots[0]);   /* an overridden #respond_to? is asked first (CRuby) */
-    RESULT r = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);
+    RESULT r = korb_send_impl(c, slots + 1, to_ary, line, 0, NULL, NULL, NULL);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     if (KORB_ARRAY_P(r.value)) { slots[0] = r.value; return RESULT_OK(r.value); }
     if (r.value == KORB_NIL) return RESULT_OK(slots[0]);   /* to_ary → nil: keep scalar */
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Array (%s#to_ary gives %s)",
+    return korb_raise(c, slots, KORB_E_TYPE, line, "can't convert %s into Array (%s#to_ary gives %s)",
                       korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_coerce_name(c, r.value));
 }
 
@@ -2278,7 +2278,7 @@ korb_hash_ensure(CTX *c, korb_value *slots, korb_ref href, uint32_t need)
 
 /* merge `**src` into href: copy each src pair (Hash) into href.  nil → no-op. */
 RESULT
-korb_hash_merge_val(CTX *c, korb_value *slots, korb_ref href, korb_value src)
+korb_hash_merge_val(CTX *c, korb_value *slots, korb_ref href, korb_value src, const uint32_t line)
 {
     if (src == KORB_NIL) return RESULT_OK(KORB_REF_GET(href));
     if (UNLIKELY(!KORB_HASH_P(src))) {                 /* `**obj` → obj.to_hash */
@@ -2286,11 +2286,14 @@ korb_hash_merge_val(CTX *c, korb_value *slots, korb_ref href, korb_value src)
         const uint32_t to_hash = korb_intern_lit(c->vm, "to_hash", 7);
         if (KORB_OBJECT_P(src) && korb_responds_to_coerce_p(c, slots, &src, to_hash)) {
             slots[0] = src;
-            RESULT r = korb_send_impl(c, slots + 1, to_hash, 0, 0, NULL, NULL, NULL);
+            RESULT r = korb_send_impl(c, slots + 1, to_hash, line, 0, NULL, NULL, NULL);
             if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+            if (!KORB_HASH_P(r.value) && r.value != KORB_NIL)
+                return korb_raise(c, slots, KORB_E_TYPE, line, "can't convert %s into Hash (%s#to_hash gives %s)",
+                                  korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_coerce_name(c, r.value));
             src = r.value;
         }
-        if (!KORB_HASH_P(src)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into Hash", orig);
+        if (!KORB_HASH_P(src)) return korb_raise(c, slots, KORB_E_TYPE, line, "no implicit conversion of %s into Hash", orig);
     }
     korb_ref sref = SLOTS_PUSH(slots, src);          /* root src across grow GCs */
     uint32_t n = VAL2HASH(KORB_REF_GET(sref))->len;
@@ -3319,7 +3322,7 @@ korb_cvar_defined_p(CTX *c, korb_value self, korb_value entry_cell, uint32_t sym
 RESULT
 korb_cvar_get(CTX *c, korb_value *slots, korb_value self, korb_value entry_cell, uint32_t sym_id, uint32_t soft)
 {
-    return korb_cvar_get_c(c, slots, self, entry_cell, sym_id, soft, NULL);
+    return korb_cvar_get_c(c, slots, self, entry_cell, sym_id, soft, NULL, 0);
 }
 
 /* korb_cvar_get remembering the answer in node_cvar_get's cache: only in a method frame (whose identity fixes
@@ -3328,12 +3331,12 @@ korb_cvar_get(CTX *c, korb_value *slots, korb_value self, korb_value entry_cell,
  * singleton class for its object, on each read. */
 RESULT
 korb_cvar_get_c(CTX *c, korb_value *slots, korb_value self, korb_value entry_cell, uint32_t sym_id, uint32_t soft,
-                struct korb_cvcache *const cc)
+                struct korb_cvcache *const cc, const uint32_t line)
 {
     const korb_value cref = korb_cvar_scope_of(c, self, entry_cell);
     if (!KORB_CLASS_P(cref)) {
         if (soft) return RESULT_OK(KORB_NIL);
-        return korb_raise(c, slots, KORB_E_RUNTIME, 0, "class variable access from toplevel");
+        return korb_raise(c, slots, KORB_E_RUNTIME, line, "class variable access from toplevel");
     }
     const korb_value sym = ID2SYM(sym_id);
     int32_t idx;
@@ -3344,7 +3347,7 @@ korb_cvar_get_c(CTX *c, korb_value *slots, korb_value self, korb_value entry_cel
         if (soft) return RESULT_OK(KORB_NIL);
         char cn[192]; korb_cvar_class_name(c, cref, cn, sizeof cn);
         slots[0] = cref;                                  /* root across raise + ivar_set */
-        RESULT ne = korb_raise(c, slots + 1, KORB_E_NAME, 0, "uninitialized class variable %s in %s",
+        RESULT ne = korb_raise(c, slots + 1, KORB_E_NAME, line, "uninitialized class variable %s in %s",
                           korb_sym_name(c->vm, sym_id), cn);
         if (LIKELY(KORB_EXC_P(ne.value))) {               /* NameError#name → :@@x, #receiver → the resolving class */
             slots[1] = ne.value;
@@ -6195,6 +6198,12 @@ korb_check_basic_op_redef(CTX *c, korb_value klass, uint32_t mid)
         for (size_t i = 0; i < sizeof(eq_classes) / sizeof(eq_classes[0]); i++)
             if (klass == korb_builtin_class_obj(vm, eq_classes[i])) { vm->value_eq_redefined = true; break; }
     }
+    if (!vm->eqq_redefined && vm->boot_done && mid == vm->mid_eqq) {
+        static const int eqq_classes[] = { KORB_C_STRING, KORB_C_SYMBOL, KORB_C_NIL, KORB_C_TRUE, KORB_C_FALSE,
+                                           KORB_C_ARRAY, KORB_C_HASH, KORB_C_RATIONAL, KORB_C_COMPLEX };
+        for (size_t i = 0; i < sizeof(eqq_classes) / sizeof(eqq_classes[0]); i++)
+            if (klass == korb_builtin_class_obj(vm, eqq_classes[i])) { vm->eqq_redefined = true; break; }
+    }
     /* String / Array: node_plus / node_mod / node_lt ... have "a" + "b", "%s" % x, [1] + [2] paths.  A
      * flag of their own, so reopening String#% does not deopt Integer arithmetic; after boot only (the
      * prelude's String/Array operators are what those paths implement). */
@@ -8044,7 +8053,13 @@ korb_sclass_body(CTX *c, korb_value *slots, NODE *body_entry, korb_value recv, k
 {
     slots[0] = recv;                             /* root recv across the singleton alloc */
     slots[1] = enclosing;                        /* rooted: the alloc below can move it */
-    const korb_value sing = UNWRAP(korb_obj_singleton(c, slots + 2, slots[0]));
+    const RESULT sr = korb_obj_singleton(c, slots + 2, slots[0]);
+    if (UNLIKELY(sr.state != KORB_NORMAL)) {
+        if (sr.state == KORB_RAISE && KORB_EXC_P(sr.value) && VAL2EXC(sr.value)->line == 0)
+            VAL2EXC(sr.value)->line = caller_line;   /* `class << 1`: the raise is the expression's */
+        return sr;
+    }
+    const korb_value sing = sr.value;
     slots[0] = sing;                             /* self for the body = the singleton class */
     /* `class << obj` inside a module body is lexically nested in it, so record
      * that: constant reads in the body (and in classes nested in it) walk out
@@ -8634,6 +8649,8 @@ static RESULT korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb
                                     NODE *bp_blk, korb_value *bp_denv, korb_value *bp_self, uint32_t is_lam);   /* fwd (super into a define_method'd body) */
 static RESULT korb_cproc_yield(CTX *c, korb_value *slots, korb_value pv, const korb_value *argv, uint32_t argc);   /* fwd (same) */
 static RESULT korb_cproc_call_blk(CTX *c, korb_value *slots, korb_value pv, const korb_value *argv, uint32_t argc, NODE *block, korb_value *def_env, korb_value *cself);   /* fwd (same) */
+
+static RESULT korb_dm_arity_frame(CTX *c, korb_value *slots, const struct korb_method *m, RESULT r, uint32_t line);   /* below, with the block frame helpers */
 
 /* A define_method'd method enforces arity like a method whatever the source was
  * (CRuby converts proc arity to method arity); `|&nil|` refuses a block.
@@ -10167,7 +10184,7 @@ korb_pat_match(CTX *c, korb_value *base, korb_value *cur, korb_ref subjref, cons
 /* subject.deconstruct into cur[0] (*ok = false: no #deconstruct).  Within one
  * `case/in` the case subject's result is reused by every clause, as CRuby does. */
 static RESULT
-korb_pat_deconstruct(CTX *c, korb_value *cur, korb_ref subjref, bool *ok)
+korb_pat_deconstruct(CTX *c, korb_value *cur, korb_ref subjref, bool *ok, const uint32_t line)
 {
     korb_value *const dc = c->pat_dc;                         /* [subject, cached result or nil] */
     const bool root = dc != NULL && dc[0] == KORB_REF_GET(subjref);
@@ -10176,9 +10193,9 @@ korb_pat_deconstruct(CTX *c, korb_value *cur, korb_ref subjref, bool *ok)
     CHECK(korb_pat_responds_to(c, cur, subjref, mid_dc, ok));
     if (!*ok) return RESULT_OK(KORB_NIL);
     cur[0] = KORB_REF_GET(subjref);                     /* receiver */
-    RESULT dr = korb_send(c, cur + 1, mid_dc, 0, 0);
+    RESULT dr = korb_send(c, cur + 1, mid_dc, line, 0);
     if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
-    if (!KORB_ARRAY_P(dr.value)) return korb_raise(c, cur, KORB_E_TYPE, 0, "deconstruct must return Array (%s given)", korb_type_name(dr.value));
+    if (!KORB_ARRAY_P(dr.value)) return korb_raise(c, cur, KORB_E_TYPE, line, "deconstruct must return Array");
     cur[0] = dr.value;
     if (root) dc[1] = dr.value;
     return RESULT_OK(KORB_NIL);
@@ -10204,9 +10221,9 @@ korb_pat_match_1(CTX *c, korb_value *base, korb_value *cur, korb_ref subjref, co
          * dispatch → route these through the real #=== method.  Class/Regexp/
          * literal patterns keep the fast path. */
         if (KORB_PROC_P(pv.value) || KORB_OBJECT_P(pv.value) || KORB_RANGE_P(pv.value) ||
-            UNLIKELY(c->vm->refinements_active)) {   /* a refined #=== must win over korb_case_eq */
+            UNLIKELY(c->vm->refinements_active || c->vm->eqq_redefined)) {   /* a refined / reopened #=== must win over korb_case_eq */
             cur[0] = pv.value; cur[1] = KORB_REF_GET(subjref);
-            RESULT er = korb_send(c, cur + 2, korb_intern_lit(c->vm, "===", 3), 0, 1);
+            RESULT er = korb_send(c, cur + 2, korb_intern_lit(c->vm, "===", 3), p->line, 1);
             if (UNLIKELY(er.state != KORB_NORMAL)) return er;
             return RESULT_OK(KORB_TRUTHY(er.value) ? KORB_TRUE : KORB_FALSE);
         }
@@ -10228,7 +10245,7 @@ korb_pat_match_1(CTX *c, korb_value *base, korb_value *cur, korb_ref subjref, co
         if (korb_pat_plain_array(c, KORB_REF_GET(subjref))) {
             cur[0] = KORB_REF_GET(subjref);
         } else {
-            bool has_dc = false; CHECK(korb_pat_deconstruct(c, cur, subjref, &has_dc));   /* → cur[0] */
+            bool has_dc = false; CHECK(korb_pat_deconstruct(c, cur, subjref, &has_dc, p->line));   /* → cur[0] */
             if (!has_dc) return RESULT_OK(KORB_FALSE);
         }
         if (VAL2ARY(cur[0])->len != p->n) {
@@ -10265,10 +10282,10 @@ korb_pat_match_1(CTX *c, korb_value *base, korb_value *cur, korb_ref subjref, co
                 korb_ref kh = KORB_REF_AT(&cur[1]);
                 for (uint32_t i = 0; i < p->n; i++) { cur[2] = p->keys[i]; CHECK(korb_ary_push_val(c, cur + 3, kh, cur[2])); }
             }
-            RESULT dr = korb_send(c, cur + 2, mid_dk, 0, 1);
+            RESULT dr = korb_send(c, cur + 2, mid_dk, p->line, 1);
             if (UNLIKELY(dr.state != KORB_NORMAL)) return dr;
             if (!KORB_HASH_P(dr.value))                   /* CRuby: TypeError, not a plain non-match */
-                return korb_raise(c, cur, KORB_E_TYPE, 0, "deconstruct_keys must return Hash (%s given)", korb_type_name(dr.value));
+                return korb_raise(c, cur, KORB_E_TYPE, p->line, "deconstruct_keys must return Hash");
             cur[0] = dr.value;
         }
         if (p->n == 0 && p->npost == 0)                   /* `in {}` matches only an empty hash */
@@ -10308,7 +10325,7 @@ korb_pat_match_1(CTX *c, korb_value *base, korb_value *cur, korb_ref subjref, co
         if (korb_pat_plain_array(c, KORB_REF_GET(subjref))) {
             cur[0] = KORB_REF_GET(subjref);
         } else {
-            bool has_dc = false; CHECK(korb_pat_deconstruct(c, cur, subjref, &has_dc));   /* → cur[0] */
+            bool has_dc = false; CHECK(korb_pat_deconstruct(c, cur, subjref, &has_dc, p->line));   /* → cur[0] */
             if (!has_dc) return RESULT_OK(KORB_FALSE);
         }
         const uint32_t len = VAL2ARY(cur[0])->len;
@@ -10360,7 +10377,7 @@ korb_pat_match_1(CTX *c, korb_value *base, korb_value *cur, korb_ref subjref, co
         if (korb_pat_plain_array(c, KORB_REF_GET(subjref))) {
             cur[0] = KORB_REF_GET(subjref);
         } else {
-            bool has_dc = false; CHECK(korb_pat_deconstruct(c, cur, subjref, &has_dc));   /* → cur[0] */
+            bool has_dc = false; CHECK(korb_pat_deconstruct(c, cur, subjref, &has_dc, p->line));   /* → cur[0] */
             if (!has_dc) return RESULT_OK(KORB_FALSE);
         }
         korb_ref aref = KORB_REF_AT(&cur[0]);          /* the subject array, parked + rooted at cur[0] */
@@ -13005,7 +13022,10 @@ korb_dispatch_method(CTX *c, korb_value *slots, struct korb_method *m, uint32_t 
          * whether the source was a block, lambda or plain proc (CRuby converts
          * proc arity to method arity).  Positional-only; skip when keywords are
          * declared (a trailing kw Hash would skew the count). */
-        CHECK(korb_dm_call_check(c, slots, p->iseq, argc, line, block != NULL));
+        {
+            const RESULT ar = korb_dm_call_check(c, slots, p->iseq, argc, line, block != NULL);
+            if (UNLIKELY(ar.state != KORB_NORMAL)) return korb_dm_arity_frame(c, slots, m, ar, line);
+        }
         /* A Method#to_proc / Symbol#to_proc body (KORB_BLK_CPROC) has no node_entry:
          * it dispatches a send instead, and needs the PROC (not the receiver) as
          * its "captured self".  korb_block_yield's CPROC branch reads that from
@@ -14067,6 +14087,60 @@ korb_block_flink(CTX *c, const NODE *block, korb_value prev, const korb_value *d
     return korb_block_flink_defframe(c, block, prev, dst);
 }
 
+/* A lambda's arity error: CRuby raises it inside the block's own frame, at the line the block starts.  The
+ * frame never ran, so its header (identity, link, EP) is laid here for the label walk, then recorded. */
+static __attribute__((noinline, cold, format(printf, 7, 8))) RESULT
+korb_block_arity_raise(CTX *const c, NODE *const block, korb_value *const bf, const korb_value prev,
+                       const korb_value *const cb, const uint32_t blocals, const char *const fmt, ...)
+{
+    char buf[160];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    bf[-3] = (korb_value)(uintptr_t)block | KORB_FID_BLOCK;
+    bf[-1] = prev;
+    bf[-2] = korb_block_flink(c, block, prev, bf - 2, cb);
+    for (uint32_t i = 0; i < blocals; i++) bf[1 + i] = KORB_NIL;    /* the cursor sits above them: no stale cells */
+    const RESULT r = korb_raise(c, bf + 1 + blocals, KORB_E_ARGUMENT, 0, "%s", buf);
+    if (LIKELY(KORB_EXC_P(r.value))) {
+        uint32_t fsym, dline;
+        if (korb_get_srcloc(c->vm, block, &fsym, &dline)) VAL2EXC(r.value)->line = dline;
+        korb_bt_unwind_block(c, VAL2EXC(r.value), block, bf + 1);
+    }
+    return r;
+}
+
+/* A raise CRuby places in a block frame that never ran here (a define_method'd method's arity error, a
+ * `|(a, b)|` param's #to_ary): its header is laid at bf for the label walk and the frame recorded at the line
+ * the block starts. */
+static __attribute__((noinline, cold)) RESULT
+korb_block_unrun_frame(CTX *const c, NODE *const block, korb_value *const bf, const korb_value prev,
+                       const korb_value *const cb, const RESULT r)
+{
+    if (r.state != KORB_RAISE || !KORB_EXC_P(r.value)) return r;
+    bf[-3] = (korb_value)(uintptr_t)block | KORB_FID_BLOCK;
+    bf[-1] = prev;
+    bf[-2] = korb_block_flink(c, block, prev, bf - 2, cb);
+    uint32_t fsym, dline;
+    if (korb_get_srcloc(c->vm, block, &fsym, &dline)) VAL2EXC(r.value)->line = dline;
+    korb_bt_unwind_block(c, VAL2EXC(r.value), block, bf + 1);
+    return r;
+}
+
+static __attribute__((noinline, cold)) RESULT
+korb_dm_arity_frame(CTX *const c, korb_value *const slots, const struct korb_method *const m, const RESULT r, const uint32_t line)
+{
+    const KorbProc *const p = VAL2PROC(m->dm_proc);       /* read after the raise: its allocation can move the Proc */
+    NODE *const block = p->iseq;
+    if (r.state != KORB_RAISE || !KORB_EXC_P(r.value) || block == NULL || block == KORB_BLK_CPROC ||
+        block->head.kind != &kind_node_entry)
+        return r;
+    korb_block_unrun_frame(c, block, slots + 3, p->env, NULL, r);
+    VAL2EXC(r.value)->line = line;                        /* the frame below is at the call */
+    return r;
+}
+
 /* The abnormal tail of a block call: a `break` to claim, or a raise that must
  * leave this block's frame behind in the backtrace.  Out of line so the yield
  * path tests only "did the body return normally". */
@@ -14205,7 +14279,8 @@ korb_block_yield(CTX *c, korb_value *slots, NODE *block, korb_value *def_env,
     if (UNLIKELY(resv > c->slots_high_water)) c->slots_high_water = resv;
     const uint32_t np = block->u.node_entry.params_cnt;   /* fast path: block is a node_entry (CPROC/non-entry went to _full above) */
     if (UNLIKELY(is_lambda && argc != np))                /* lambda: exact arity (fast path = all-required, no rest/opt) */
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %u)", argc, np);
+        return korb_block_arity_raise(c, block, bf, prev, c->carry_base, blocals,
+                                      "wrong number of arguments (given %u, expected %u)", argc, np);
     bf[-3] = (korb_value)(uintptr_t)block + KORB_FID_BLOCK;              /* B[-4] identity (8-aligned: + == |, and folds into the address) */
     bf[-2] = korb_block_flink(c, block, prev, bf - 2, c->carry_base);   /* B[-3] frame link (backtrace); the carry is read late, at the store */
     bf[-1] = prev;                                                  /* B[-2] EP / PREV link */
@@ -14413,11 +14488,15 @@ korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_en
         const uint32_t rs = korb_entry_rest_slot(block) >= 0 ? (uint32_t)korb_entry_rest_slot(block) : pc;
         const uint32_t npost = (has_rest && korb_entry_rest_slot(block) >= 0) ? ((pc > rs + 1) ? (pc - rs - 1) : 0)
                                         : korb_entry_post_cnt(block);   /* |a, b=1, c| / |*, c| — posts are required too */
-        const uint32_t lo = korb_entry_req_cnt(block) + npost;   /* required front + required post */
+        const bool variable = korb_entry_opt_defaults(block) != NULL || has_rest;   /* same basis as Proc#arity */
+        const uint32_t lo = variable ? korb_entry_req_cnt(block) + npost : pc;   /* required front + required post */
         if (UNLIKELY(argc < lo || (!has_rest && argc > pc))) {
-            if (has_rest)   return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %u+)", argc, lo);
-            if (lo == pc)   return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %u)", argc, pc);
-            return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected %u..%u)", argc, lo, pc);
+            const korb_value prev = fwd ? VAL2PROC(*captured_self)->env : (korb_value)(uintptr_t)def_env;
+            char rk[256];
+            korb_req_kw_suffix(c->vm, kw, rk, sizeof rk);
+            if (has_rest)   return korb_block_arity_raise(c, block, bf, prev, cb, blocals, "wrong number of arguments (given %u, expected %u+%s)", argc, lo, rk);
+            if (lo == pc)   return korb_block_arity_raise(c, block, bf, prev, cb, blocals, "wrong number of arguments (given %u, expected %u%s)", argc, pc, rk);
+            return korb_block_arity_raise(c, block, bf, prev, cb, blocals, "wrong number of arguments (given %u, expected %u..%u%s)", argc, lo, pc, rk);
         }
     }
     /* A block that takes more than one positional param auto-splats a single
@@ -14430,21 +14509,24 @@ korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_en
         /* A lambda never auto-splats, but a DESTRUCTURING param (`|(a, b)|`)
          * still converts its argument through #to_ary — that is the param's own
          * decomposition, not auto-splat (CRuby). */
-        const bool wants_many = korb_entry_destructure_n(block) > 0 ||
-                                (korb_entry_destructure_spec(block) != NULL) ||
-                                (!is_lambda && ((np0 > 1) ||
-                                 (np0 == 1 && korb_entry_rest_slot(block) <= -2)));   /* |x,| / |x,*| are multi-param for auto-splat */
-        if (wants_many && KORB_OBJECT_P(argv[0])) {
+        const bool auto_splat = !is_lambda && ((np0 > 1) ||
+                                (np0 == 1 && korb_entry_rest_slot(block) <= -2));   /* |x,| / |x,*| are multi-param for auto-splat */
+        /* `|(a, b)|` alone converts inside the block (CRuby shows its frame); auto-splat does it before */
+        const bool in_frame = !auto_splat && (korb_entry_destructure_n(block) > 0 || korb_entry_destructure_spec(block) != NULL);
+        if ((auto_splat || in_frame) && KORB_OBJECT_P(argv[0])) {
             const uint32_t to_ary = korb_intern_lit(c->vm, "to_ary", 6);
             korb_value recv = argv[0];                        /* parked in slots[0] by the probe below */
             if (korb_check_funcall_respond_to(c, slots, &recv, to_ary)) {
                 slots[0] = recv;                         /* re-park: the probe may have moved it */
                 RESULT ar = korb_send_impl(c, slots + 1, to_ary, 0, 0, NULL, NULL, NULL);
-                if (UNLIKELY(ar.state != KORB_NORMAL)) return ar;
+                if (UNLIKELY(ar.state != KORB_NORMAL))
+                    return in_frame ? korb_block_unrun_frame(c, block, bf, fwd ? VAL2PROC(*captured_self)->env : (korb_value)(uintptr_t)def_env, cb, ar) : ar;
                 if (ar.value != KORB_NIL) {
-                    if (UNLIKELY(!KORB_ARRAY_P(ar.value)))
-                        return korb_raise(c, slots + 1, KORB_E_TYPE, 0, "can't convert %s into Array (%s#to_ary gives %s)",
-                                          korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_coerce_name(c, ar.value));
+                    if (UNLIKELY(!KORB_ARRAY_P(ar.value))) {
+                        const RESULT tr = korb_raise(c, slots + 1, KORB_E_TYPE, 0, "can't convert %s into Array (%s#to_ary gives %s)",
+                                                     korb_coerce_name(c, slots[0]), korb_coerce_name(c, slots[0]), korb_coerce_name(c, ar.value));
+                        return in_frame ? korb_block_unrun_frame(c, block, bf, fwd ? VAL2PROC(*captured_self)->env : (korb_value)(uintptr_t)def_env, cb, tr) : tr;
+                    }
                     splat_conv = ar.value;
                 }
             }
@@ -24611,10 +24693,11 @@ korb_embed_binding_scope(CTX *c, uint32_t L, ...)
  * then kcnt key korb_values (symbols arrive as ID2SYM(korb_intern(...)) results). */
 void *
 korb_embed_pat(CTX *c, uint32_t kind, int32_t bind_off, NODE *value_node, NODE *outw, int32_t dc_off,
-               uint32_t n, uint32_t npost, uint32_t ecnt, ...)
+               uint32_t n, uint32_t npost, uint32_t line, uint32_t ecnt, ...)
 {
     (void)c;
     struct korb_pat *const p = korb_embed_alloc(sizeof(*p));
+    p->line = line;
     p->kind = (uint8_t)kind;
     p->bind_off = bind_off;
     p->value_node = value_node;
@@ -24714,7 +24797,7 @@ korb_const_path_miss(CTX *c, korb_value *slots, uint32_t name, uint32_t line, in
         char *ib = NULL; size_t iz = 0;
         FILE *const ims = open_memstream(&ib, &iz);
         if (ims) { korb_fprint_inspect_s(c, slots + 1, ims, slots[0]); fclose(ims); }
-        RESULT tr = korb_raise(c, slots + 1, KORB_E_TYPE, 0, "%s is not a class/module", ib ? ib : "value");
+        RESULT tr = korb_raise(c, slots + 1, KORB_E_TYPE, line, "%s is not a class/module", ib ? ib : "value");
         free(ib);
         return tr;
     }

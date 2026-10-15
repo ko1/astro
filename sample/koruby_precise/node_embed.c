@@ -245,7 +245,7 @@ koruby_emit_pat(FILE *fp, const void *p)
     astro_emit_ast_c_child(fp, pat->value_node);
     fprintf(fp, ", ");
     astro_emit_ast_c_child(fp, pat->outw);
-    fprintf(fp, ", %d, %uU, %uU", pat->dc_off, pat->n, pat->npost);
+    fprintf(fp, ", %d, %uU, %uU, %uU", pat->dc_off, pat->n, pat->npost, pat->line);
     /* elems count by kind (korb_pat_match): 2/3/5/8 → n, 4 → 1, 6 → n+npost. */
     uint32_t ecnt = 0;
     if (pat->elems != NULL) {

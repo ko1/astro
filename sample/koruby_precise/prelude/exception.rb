@@ -134,6 +134,13 @@ class Exception
     # the raising position knows its exception: RubyVM::AbstractSyntaxTree.node_id_for_backtrace_location
     # picks the node by the exception's name (koruby's positions carry no node id)
     raw[0].instance_variable_set(:@__exc, self) if raw[0].is_a?(Thread::Backtrace::Location) && !raw[0].frozen?
+    # each position knows the one it called (#source_range picks the call by that name) and its caller
+    # (a C method's position is in its caller's code)
+    raw.each_with_index do |l, i|
+      next unless l.is_a?(Thread::Backtrace::Location) && !l.frozen?
+      l.instance_variable_set(:@__callee, raw[i - 1]) if i > 0
+      l.instance_variable_set(:@__caller, raw[i + 1]) if i + 1 < raw.size
+    end
     @__bt_locs = raw
   end
 
@@ -207,6 +214,13 @@ class Thread
 
       def to_s = @str
       def inspect = @str.inspect
+
+      # Ruby 4.1: the precise extent of the operation this frame was running (lib/koruby/backtrace_node.rb)
+      def source_range
+        return nil unless absolute_path && File.file?(absolute_path)
+        require "koruby/backtrace_node"
+        Ruby::SourceRange.__send__(:__build, Koruby::BacktraceNode.range_for(self))
+      end
     end
   end
 end
