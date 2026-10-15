@@ -161,10 +161,21 @@ class Queue
   def freeze; raise TypeError, "cannot freeze #{self}"; end
 end
 
+class ConditionVariable   # Thread::ConditionVariable (nested later)
+  def marshal_dump = raise(TypeError, "can't dump #{self.class}")
+end
+
 class SizedQueue < Queue
+  # NUM2LONG: nil and a non-numeric are TypeErrors in their own words; a Float truncates; else #to_int
+  private def __q_int(v)
+    raise TypeError, "no implicit conversion of nil into Integer" if v.nil?
+    return v.to_i if v.is_a?(Float)
+    return v if v.is_a?(Integer)
+    raise TypeError, "no implicit conversion of #{v.class} into Integer" unless v.respond_to?(:to_int)
+    v.to_int
+  end
   def initialize(max)
-    raise TypeError, "no implicit conversion from #{max.nil? ? 'nil' : max.class} to integer" unless max.is_a?(Numeric)
-    max = max.to_i
+    max = __q_int(max)
     raise ArgumentError, "queue size must be positive" unless max > 0
     super()
     @__max = max
@@ -173,7 +184,8 @@ class SizedQueue < Queue
   def num_waiting; @__cond.send(:__num_waiting) + @__cond_full.send(:__num_waiting); end
   def max; @__max; end
   def max=(v)
-    raise ArgumentError, "queue size must be positive" unless v.is_a?(Integer) && v > 0
+    v = __q_int(v)
+    raise ArgumentError, "queue size must be positive" unless v > 0
     @__mutex.synchronize { @__max = v; @__cond_full.broadcast }
     v
   end
@@ -501,7 +513,7 @@ module Process
     end
   end
 
-  def self.argv0 = $0
+  def self.argv0 = (@__argv0 ||= $0.dup.freeze)   # the original name: setting $0 later does not change it
 
   # Reap the child in the background; the thread's value is its Process::Status.
   # CRuby: the reaper is a Process::Waiter (a Thread) whose #pid reads the
@@ -1830,9 +1842,9 @@ module Process
   def self.spawn(*a) = __spawn(*a)
   def self.exec(*a) = __exec(*a)
   def self.wait(*a) = __waitpid(*a)
-  def self.waitpid(*a) = __waitpid(*a)
   def self.wait2(*a) = __waitpid2(*a)
-  def self.waitpid2(*a) = __waitpid2(*a)
+  singleton_class.alias_method :waitpid, :wait     # CRuby: the same method
+  singleton_class.alias_method :waitpid2, :wait2
   def self.kill(*a) = __kill(*a)
   def self.getpgid(*a) = __getpgid(*a)
   def self.getpgrp = __getpgid(0)
@@ -2188,12 +2200,14 @@ class File
 end
 
 module FileTest
-  %i[empty? zero? identical? pipe? socket? blockdev? chardev? sticky? setuid? setgid?
+  %i[empty? identical? pipe? socket? blockdev? chardev? sticky? setuid? setgid?
      owned? grpowned? readable_real? writable_real? executable_real?
      world_readable? world_writable?].each do |m|
     define_method(m) { |*a| File.send(m, *a) }
     module_function m
   end
+  alias_method :zero?, :empty?                       # CRuby: the same method
+  module_function :zero?
 end
 
 # Dir conveniences on top of the C primitives (entries/children/chdir/…).
@@ -2328,6 +2342,7 @@ module Process
 end
 
 class Regexp
+  TimeoutError = Class.new(RegexpError)   # a match past Regexp.timeout (koruby does not enforce the timeout yet)
   # Regexp.linear_time? — CRuby は「位置と状態のメモ化で線形時間にできるか」を
   # 答える。メモ化で潰せないのは後方参照 (\1 / \k<n>) と subexpression call
   # (\g<n>) だけで、先読み・後読みは linear。

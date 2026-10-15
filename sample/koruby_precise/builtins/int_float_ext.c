@@ -550,6 +550,9 @@ static KorbStrBuf *korb_hash_side_copy(CTX *c, korb_value *slots, korb_ref self,
 static RESULT korb_obj_copy_impl(CTX *c, korb_value *slots, korb_ref self, uint32_t hook_mid, const korb_value *hook_kw) {
     bool fin_done = false;   /* finalizers copied (korb_copy_hook does it before the hook) */
     const korb_value v = KORB_REF_GET(self);
+    if (UNLIKELY(KORB_CLASS_P(v) && !VAL2CLASS(v)->is_module && !VAL2CLASS(v)->is_singleton &&
+                 VAL2CLASS(v)->superclass == KORB_NIL))   /* BasicObject */
+        return korb_raise(c, slots, KORB_E_TYPE, 0, "can't copy the root class");
     /* preserve the subclass: a builtin-subclass instance dups to the same class */
     const bool sub = AROH_IS_GC_OBJECT(v) && (((const AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_HAS_KLASS);
     slots[0] = sub ? korb_klass_override_get(c->vm, v) : KORB_NIL;   /* override class (rooted across the copy) */

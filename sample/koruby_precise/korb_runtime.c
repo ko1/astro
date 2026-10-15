@@ -9872,6 +9872,7 @@ korb_nomethod_recv_desc(CTX *c, korb_value *scratch, korb_value v, char *buf, si
     return korb_recv_desc(c, scratch, v, buf, sz);
 }
 
+
 /* Coerce a method-name argument (Symbol / String / #to_str object) to an
  * interned mid; TypeError otherwise.  Uses slots[0..] as scratch (roots nothing
  * of the caller's — call with a scratch window). */
@@ -13899,7 +13900,7 @@ static RESULT korb_cproc_call_blk(CTX *c, korb_value *restrict slots, korb_value
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no receiver is available");
     }
     for (int32_t i = (int32_t)argc - 1; i >= 0; i--) slots[i] = argv[i];
-    return korb_send_impl(c, slots + argc, mid, 0, argc - 1, block, def_env, cself);
+    return korb_send_impl_vis(c, slots + argc, mid, 0, argc - 1, block, def_env, cself, KORB_VIS_OUTSIDE);   /* public only */
 }
 static RESULT korb_cproc_yield(CTX *c, korb_value *restrict slots, korb_value procv,
                                const korb_value *restrict argv, uint32_t argc) {
@@ -13929,7 +13930,7 @@ korb_symproc_yield(CTX *c, korb_value *const slots, const uint32_t mid,
     if (UNLIKELY(argc == 0))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no receiver given");
     for (uint32_t i = 0; i < argc; i++) slots[i] = argv[i];
-    return korb_send(c, slots + argc, mid, 0, argc - 1);
+    return korb_send_vis(c, slots + argc, mid, 0, argc - 1, KORB_VIS_OUTSIDE);   /* public methods only */
 }
 /* Bind one destructuring-spec entry (see parse.c): 0x00 = scalar leaf,
  * 0xFF <k> = a group of k nested entries.  Returns the next entry. */
@@ -16458,7 +16459,9 @@ korb_check_call_vis(CTX *c, korb_value *slots, const struct korb_method *m, uint
                     uint32_t argc, bool *mm_handled, korb_value link)
 {
     bool viol;
-    if (m->visibility == 1) {                          /* private */
+    if (caller_self == KORB_VIS_OUTSIDE) {             /* Symbol#to_proc: no private / protected at all */
+        viol = true;
+    } else if (m->visibility == 1) {                   /* private */
         viol = recv != caller_self;
     } else {                                           /* protected (visibility == 2) */
         const korb_value owner = KORB_CLASS_P(def_class) ? def_class : korb_dispatch_class(c, recv);
@@ -20118,14 +20121,27 @@ korb_fprint_inspect_s(CTX *c, korb_value *slots, FILE *fp, korb_value v)
       case KORB_OBJ_RATIONAL:                            /* inspect: (n/d) */
         fputc('(', fp); korb_fprint_to_s(c, fp, VAL2RAT(v)->num); fputc('/', fp); korb_fprint_to_s(c, fp, VAL2RAT(v)->den); fputc(')', fp);
         return;
-      case KORB_OBJ_MATCHDATA: {                        /* inspect: #<MatchData "g0" 1:"g1" 2:"g2"> */
+      case KORB_OBJ_MATCHDATA: {                        /* inspect: #<MatchData "g0" 1:"g1" name:"g2"> */
         const KorbMatchData *md = VAL2MD(v);
         const KorbString *subj = VAL2STR(md->subject);
         const KorbArray *off = VAL2ARY(md->offsets);
+        if (KORB_REGEXP_P(md->regexp) && c->vm->re_named_fn == NULL) korb_re_load(c->vm);
+        const korb_re_named_fn_t nf = KORB_REGEXP_P(md->regexp) ? (korb_re_named_fn_t)c->vm->re_named_fn : NULL;
         fputs("#<MatchData ", fp);
         for (uint32_t i = 0; 2 * i + 1 < off->len; i++) {
             const long b = FIX2LONG(korb_ary_ptr(off)[2 * i]), e = FIX2LONG(korb_ary_ptr(off)[2 * i + 1]);
-            if (i) fprintf(fp, " %u:", i);
+            const char *name = NULL;                      /* a named group shows its name */
+            if (i && nf) {
+                const KorbString *const pat = VAL2STR(VAL2RE(md->regexp)->source);
+                for (int k = 0; ; k++) {
+                    int gi = -1;
+                    const char *const gn = nf(korb_str_ptr(pat), pat->len, VAL2RE(md->regexp)->flags, k, &gi);
+                    if (gn == NULL) break;
+                    if (gi == (int)i) { name = gn; break; }
+                }
+            }
+            if (i && name) fprintf(fp, " %s:", name);
+            else if (i) fprintf(fp, " %u:", i);
             if (b >= 0) korb_fprint_quoted(fp, korb_str_ptr(subj) + b, (uint32_t)(e - b));
             else fputs("nil", fp);
         }
@@ -22228,7 +22244,7 @@ bad:
                 continue;
             }
             if (KORB_RATIONAL_P(rr.value)) return RESULT_OK(rr.value);
-            if (KORB_INTEGER_P(rr.value)) return korb_rat_new_v(c, slots + 1, rr.value, LONG2FIX(1));
+            if (i == 1 && KORB_INTEGER_P(rr.value)) return korb_rat_new_v(c, slots + 1, rr.value, LONG2FIX(1));   /* #to_r must answer a Rational */
             if (i == 0 && exc)   /* #to_r answered with the wrong type: CRuby stops here and names it */
                 return korb_raise(c, slots, KORB_E_TYPE, 0, "can't convert %s into Rational (%s#to_r gives %s)",
                                   nnm, nnm, korb_coerce_name(c, rr.value));
@@ -24280,9 +24296,16 @@ korb_raise_line_fill(CTX *const c, const RESULT r, const uint32_t line)
 enum { KORB_SRC_FILE, KORB_SRC_EVAL, KORB_SRC_E };
 static uint64_t korb_src_digest(const char *const restrict s, const size_t n)
 {
-    uint64_t h = 1469598103934665603ULL;                 /* FNV-1a */
-    for (size_t i = 0; i < n; i++) h = (h ^ (uint8_t)s[i]) * 1099511628211ULL;
-    return h ^ n;
+    uint64_t h = 1469598103934665603ULL ^ n;              /* 8 bytes a step: every loaded file pays for it */
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        uint64_t w;
+        memcpy(&w, s + i, 8);
+        h = (h ^ w) * 0x9E3779B97F4A7C15ULL;
+        h ^= h >> 29;
+    }
+    for (; i < n; i++) h = (h ^ (uint8_t)s[i]) * 1099511628211ULL;
+    return h;
 }
 
 /* A file is remembered by digest (source_range refuses one changed since); -e and, under
@@ -24291,7 +24314,7 @@ void
 korb_note_source(struct korb_vm *const vm, const char *const fname, const char *const src, const size_t len,
                  const int32_t first_line, const bool in_eval)
 {
-    if (fname == NULL || len > UINT32_MAX) return;
+    if (fname == NULL || len > UINT32_MAX || strcmp(fname, KORB_PRELUDE_FILE) == 0) return;   /* the prelude has no source_range */
     const uint8_t kind = in_eval ? KORB_SRC_EVAL : strcmp(fname, "-e") == 0 ? KORB_SRC_E : KORB_SRC_FILE;
     if (vm->srcrec_cnt == vm->srcrec_cap) {
         vm->srcrec_cap = vm->srcrec_cap ? vm->srcrec_cap * 2 : 64;

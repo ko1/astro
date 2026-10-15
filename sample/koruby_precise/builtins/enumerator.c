@@ -1315,12 +1315,24 @@ static RESULT korb_m_enum_mode(CTX *c, korb_value *slots, korb_ref self, korb_sl
     (void)c;(void)slots;(void)a;
     return RESULT_OK(LONG2FIX(SELF_ENUM->mode));
 }
+/* An eager enumerator ran out: StopIteration whose #result is what `each` returned (the receiver, for the
+ * each-like ones; unknown otherwise, nil) */
+static RESULT korb_enum_stop(CTX *c, korb_value *slots, korb_ref self) {
+    slots[0] = (SELF_ENUM->op == 6) ? SELF_ENUM->source : KORB_NIL;
+    RESULT r = korb_raise(c, slots + 2, KORB_E_STOP_ITERATION, 0, "iteration reached an end");
+    if (slots[0] != KORB_NIL && LIKELY(KORB_EXC_P(r.value))) {
+        slots[1] = r.value;
+        korb_exc_ivar_set(c, slots + 2, KORB_REF_AT(&slots[1]), ID2SYM(korb_intern_lit(c->vm, "@result", 7)), slots[0]);
+        r.value = slots[1];
+    }
+    return r;
+}
 static RESULT korb_m_enum_next(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)a;
     if (SELF_ENUM->mode != 0) return korb_enum_gen_at_cursor(c, slots, self, true);
     KorbEnumerator *e = SELF_ENUM;
     const KorbArray *v = VAL2ARY(e->values);
-    if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_STOP_ITERATION, 0, "iteration reached an end");
+    if (e->cursor >= v->len) return korb_enum_stop(c, slots, self);
     return RESULT_OK(korb_ary_ptr(v)[e->cursor++]);
 }
 static RESULT korb_m_enum_peek(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
@@ -1328,7 +1340,7 @@ static RESULT korb_m_enum_peek(CTX *c, korb_value *slots, korb_ref self, korb_sl
     if (SELF_ENUM->mode != 0) return korb_enum_gen_at_cursor(c, slots, self, false);
     const KorbEnumerator *e = SELF_ENUM;
     const KorbArray *v = VAL2ARY(e->values);
-    if (e->cursor >= v->len) return korb_raise(c, slots, KORB_E_STOP_ITERATION, 0, "iteration reached an end");
+    if (e->cursor >= v->len) return korb_enum_stop(c, slots, self);
     return RESULT_OK(korb_ary_ptr(v)[e->cursor]);
 }
 static RESULT korb_m_enum_rewind(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {

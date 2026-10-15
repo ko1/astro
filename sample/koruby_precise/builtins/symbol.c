@@ -527,7 +527,7 @@ static RESULT korb_m_proc_call(CTX *c, korb_value *slots, korb_ref self, korb_sl
         }
         if (UNLIKELY(argc < 1)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no receiver given");
         for (uint32_t i = 0; i < argc; i++) slots[i] = KORB_SLICE_GET(a, i);   /* Symbol#to_proc: arg0.sym(arg1..) */
-        return korb_send_impl(c, slots + argc, mid, 0, argc - 1, block, def_env, cself);
+        return korb_send_impl_vis(c, slots + argc, mid, 0, argc - 1, block, def_env, cself, KORB_VIS_OUTSIDE);   /* public only */
     }
     NODE *entry = p->iseq;
     /* `|&nil|` (Ruby 4.1): this proc refuses a block. */

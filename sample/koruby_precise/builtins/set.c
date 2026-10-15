@@ -860,7 +860,9 @@ static RESULT korb_m_class_attached_object(CTX *c, korb_value *slots, korb_ref s
     if (KORB_CLASS_P(cls) && VAL2CLASS(cls)->is_singleton)
         for (uint32_t i = 0; i < vm->sklass.cnt; i++)
             if (vm->sklass.val[i] == cls) return RESULT_OK(vm->sklass.obj[i]);
-    return korb_raise(c, slots, KORB_E_TYPE, 0, "'attached_object' called on a non-singleton class");
+    char nb[256];
+    korb_desc_inspect(c, cls, nb, sizeof nb);
+    return korb_raise(c, slots, KORB_E_TYPE, 0, "'%s' is not a singleton class", nb);
 }
 static RESULT korb_bi_heap_objects(CTX *c, korb_value *slots, korb_slice args);   /* fwd (korb_runtime.c) */
 static bool korb_subclass_listed(const korb_value super_cls, const korb_value sub_cls) {
@@ -1192,8 +1194,8 @@ static RESULT korb_m_public_class_method(CTX *c, korb_value *slots, korb_ref sel
  * no enclosing catch for the tag, raises a (rescuable) UncaughtThrowError. */
 static RESULT korb_m_throw(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)self;
-    if (UNLIKELY(KORB_SLICE_LEN(a) == 0))
-        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given 0, expected 1..2)");
+    if (UNLIKELY(KORB_SLICE_LEN(a) == 0 || KORB_SLICE_LEN(a) > 2))
+        return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "wrong number of arguments (given %u, expected 1..2)", (unsigned)KORB_SLICE_LEN(a));
     const korb_value tag = KORB_SLICE_GET(a, 0);
     bool active = false;
     const void *const me = c->vm->cur_thread;
@@ -2914,7 +2916,10 @@ static RESULT korb_m_class_const_defined(CTX *c, korb_value *slots, korb_ref sel
 /* Object#then / yield_self — yield self, return the block's value (no block → self). */
 static RESULT korb_m_obj_then(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
     (void)a;
-    if (block == NULL) return RESULT_OK(KORB_REF_GET(self));
+    if (block == NULL) {                             /* an Enumerator of size 1 (CRuby) */
+        slots[0] = KORB_REF_GET(self);
+        return korb_send(c, slots + 1, korb_intern_lit(c->vm, "__then_enum", 11), 0, 0);
+    }
     slots[0] = KORB_REF_GET(self);                   /* rooted across the yield */
     return korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
 }
@@ -2941,8 +2946,8 @@ static RESULT korb_m_loop(CTX *c, korb_value *slots, korb_ref self, korb_slice a
         }
         if (r.state == KORB_BREAK && korb_break_owned(c, block, def_env)) return RESULT_OK(r.value);   /* break [v] → loop value (only ours) */
         if (r.state == KORB_RAISE && KORB_EXC_P(r.value) && VAL2EXC(r.value)->etype == KORB_E_STOP_ITERATION &&
-            !VAL2EXC(r.value)->gen_bound)
-            return RESULT_OK(KORB_NIL);                         /* StopIteration ends the loop */
+            !VAL2EXC(r.value)->gen_bound)                       /* StopIteration ends the loop: its #result is the value */
+            return RESULT_OK(korb_exc_ivar_get_pub(r.value, ID2SYM(korb_intern_lit(c->vm, "@result", 7))));
         return r;
     }
 }

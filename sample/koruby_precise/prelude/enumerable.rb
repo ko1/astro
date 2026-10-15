@@ -269,5 +269,5 @@ end
 
 # MatchData pattern-matching support.
 class MatchData
-  def deconstruct; captures; end
+  alias_method :deconstruct, :captures
 end

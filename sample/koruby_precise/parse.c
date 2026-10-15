@@ -108,7 +108,7 @@ struct kp_hoist {
 };
 
 struct kp_ctx {
-    uint32_t  cur_line;           /* line of the prism node being transduced: a raise from a helper names it */
+    const pm_node_t *cur_node;    /* the prism node being transduced: its line names a raise from a helper (kp_cur_line) */
     const pm_parser_t *parser;
     const pm_node_t *void_stmt;   /* the statement being transduced whose value is discarded (not the last one) */
     CTX *c;
@@ -377,6 +377,7 @@ kp_line(struct kp_ctx *tc, const pm_node_t *node)
     const int32_t line = kp_line_column(tc->parser, node->location.start).line;
     return (uint32_t)line;                  /* eval can set a negative first line: kept as-is, printed signed */
 }
+static uint32_t kp_cur_line(struct kp_ctx *tc) { return tc->cur_node ? kp_line(tc, tc->cur_node) : 0; }
 
 /* Ruby 4.1 #source_range: register the full extent of a def/block/lambda node.
  * Columns are 0-based BYTE offsets into their line (what the spec asks for, and
@@ -984,7 +985,7 @@ static NODE *
 bake_cvar_get(struct kp_ctx *tc, uint32_t name, uint32_t soft)
 {
     kp_needs_definee(tc);
-    NODE *n = ALLOC_node_cvar_get(-1 - tc->chain, -4 - tc->chain, name, soft, tc->cur_line);
+    NODE *n = ALLOC_node_cvar_get(-1 - tc->chain, -4 - tc->chain, name, soft, kp_cur_line(tc));
     bake_add(tc, &n->u.node_cvar_get.self_off);
     bake_add(tc, &n->u.node_cvar_get.dc_off);
     return n;
@@ -3972,7 +3973,7 @@ massign_general(struct kp_ctx *tc, const pm_node_list_t *lefts, const pm_node_t 
         kp_hoist_targets(tc, lefts, rest, rights, &prologue);
     }
     for (uint32_t k = 0; k < no; k++) rcv[k] = -1;
-    NODE *massign = KP_LINK(tc, node_massign_splat, offs, npre, npost, kp_flink_at(tc, tc->cur_line, kind_node_massign_splat.slot_count), rhs);
+    NODE *massign = KP_LINK(tc, node_massign_splat, offs, npre, npost, kp_flink_at(tc, kp_cur_line(tc), kind_node_massign_splat.slot_count), rhs);
     for (uint32_t k = 0; k < no; k++) bake_add(tc, &offs[k]);
     const uint32_t rettmp = alloc_synth_local(tc);          /* hold the massign value across the plumbing */
     NODE *acc = bake_lset(tc, rettmp, massign);
@@ -4195,7 +4196,7 @@ build_fwd_kwargs(struct kp_ctx *tc, struct korb_kw_info *kw, uint32_t n, uint32_
         if (kw->kwrest_slot >= 0) {
             NODE *src; const uint32_t sc = kind_node_hash_merge.slot_count;
             WITH_CHAIN(tc, sc, (src = bake_lget_at(tc, depth, kw->kwrest_slot)));
-            h = KP_LINK(tc, node_hash_merge, h, src, kp_flink_at(tc, tc->cur_line, kind_node_hash_merge.slot_count));
+            h = KP_LINK(tc, node_hash_merge, h, src, kp_flink_at(tc, kp_cur_line(tc), kind_node_hash_merge.slot_count));
         }
         return h;
     }
@@ -4204,7 +4205,7 @@ build_fwd_kwargs(struct kp_ctx *tc, struct korb_kw_info *kw, uint32_t n, uint32_
     WITH_CHAIN(tc, sc, (acc = build_fwd_kwargs(tc, kw, n - 1, depth),
                         key = ALLOC_node_lit(ID2SYM(kw->entries[n - 1].mid)),
                         val = bake_lget_at(tc, depth, kw->entries[n - 1].slot)));
-    return KP_LINK(tc, node_hash_set, acc, key, val, kp_flink_at(tc, tc->cur_line, kind_node_hash_set.slot_count));
+    return KP_LINK(tc, node_hash_set, acc, key, val, kp_flink_at(tc, kp_cur_line(tc), kind_node_hash_set.slot_count));
 }
 
 /* Build [pos0..pos_{np-1}, *rest, post0..post_{pc-1}(, {kwargs})] as an Array NODE — the
@@ -4236,7 +4237,7 @@ build_fwd_args(struct kp_ctx *tc, uint32_t np, int32_t rest_slot, uint32_t post_
     NODE *acc, *elem;
     WITH_CHAIN(tc, sc, (acc  = build_fwd_args(tc, np, rest_slot, post_base, pc, kw, total - 1, depth),
                         elem = bake_lget_at(tc, depth, slot)));
-    return is_rest ? KP_LINK(tc, node_ary_concat, acc, elem, kp_flink_at(tc, tc->cur_line, kind_node_ary_concat.slot_count)) : ALLOC_node_ary_push(acc, elem);
+    return is_rest ? KP_LINK(tc, node_ary_concat, acc, elem, kp_flink_at(tc, kp_cur_line(tc), kind_node_ary_concat.slot_count)) : ALLOC_node_ary_push(acc, elem);
 }
 
 static NODE *
@@ -4365,7 +4366,7 @@ build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa)
         NODE *acc, *tail;
         WITH_CHAIN(tc, kind_node_ary_push.slot_count, (acc  = build_array(tc, elems, n - m, capa),
                                                        tail = build_array(tc, elems + n - m, m, (uint32_t)m)));
-        return KP_LINK(tc, node_ary_concat, acc, tail, kp_flink_at(tc, tc->cur_line, kind_node_ary_concat.slot_count));
+        return KP_LINK(tc, node_ary_concat, acc, tail, kp_flink_at(tc, kp_cur_line(tc), kind_node_ary_concat.slot_count));
     }
     const pm_node_t *last = elems[n - 1];
     bool splat = PM_NODE_TYPE_P(last, PM_SPLAT_NODE);
@@ -4377,13 +4378,13 @@ build_array(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32_t capa)
         uint32_t sc0 = kind_node_ary_push.slot_count;
         WITH_CHAIN(tc, sc0, (acc0  = build_array(tc, elems, n - 1, capa),
                              elem0 = kp_fwd_args(tc, ard, ars)));   /* splat the collected rest array */
-        return KP_LINK(tc, node_ary_concat, acc0, elem0, kp_flink_at(tc, tc->cur_line, kind_node_ary_concat.slot_count));
+        return KP_LINK(tc, node_ary_concat, acc0, elem0, kp_flink_at(tc, kp_cur_line(tc), kind_node_ary_concat.slot_count));
     }
     NODE *acc, *elem;
     uint32_t sc = kind_node_ary_push.slot_count;        /* concat shares the push layout */
     WITH_CHAIN(tc, sc, (acc  = build_array(tc, elems, n - 1, capa),
                         elem = transduce(tc, expr)));
-    if (splat) return KP_LINK(tc, node_ary_concat, acc, elem, kp_flink_at(tc, tc->cur_line, kind_node_ary_concat.slot_count));
+    if (splat) return KP_LINK(tc, node_ary_concat, acc, elem, kp_flink_at(tc, kp_cur_line(tc), kind_node_ary_concat.slot_count));
     /* call-site trailing `**h` bundle (only ever the last arg): an empty kwargs
      * Hash is elided at run time (CRuby 3.0 empty-kwsplat rule) */
     if (PM_NODE_TYPE_P(last, PM_KEYWORD_HASH_NODE)) return ALLOC_node_ary_push_kw(acc, elem);
@@ -4399,7 +4400,7 @@ build_array_with_fwd(struct kp_ctx *tc, struct pm_node **elems, size_t n, uint32
     uint32_t sc = kind_node_ary_push.slot_count;
     WITH_CHAIN(tc, sc, (acc = build_array(tc, elems, n, (uint32_t)n),
                         fwd = kp_fwd_args(tc, depth, slot)));
-    return KP_LINK(tc, node_ary_concat, acc, fwd, kp_flink_at(tc, tc->cur_line, kind_node_ary_concat.slot_count));
+    return KP_LINK(tc, node_ary_concat, acc, fwd, kp_flink_at(tc, kp_cur_line(tc), kind_node_ary_concat.slot_count));
 }
 
 /* CRuby's setup_args_dup_rest_p: a `&expr` that can change nothing (a variable read, a constant, a literal) lets
@@ -4426,7 +4427,7 @@ build_call_args(struct kp_ctx *tc, struct pm_node **elems, size_t n)
 {
     if (n == 1 && PM_NODE_TYPE_P(elems[0], PM_SPLAT_NODE)) {
         const pm_node_t *const expr = (const pm_node_t *)((const pm_splat_node_t *)elems[0])->expression;
-        if (expr != NULL) return KP_LINK(tc, node_splat_view, transduce(tc, expr), kp_flink_at(tc, tc->cur_line, kind_node_splat_view.slot_count));
+        if (expr != NULL) return KP_LINK(tc, node_splat_view, transduce(tc, expr), kp_flink_at(tc, kp_cur_line(tc), kind_node_splat_view.slot_count));
     }
     return build_array(tc, elems, n, (uint32_t)n);
 }
@@ -4657,13 +4658,13 @@ build_hash(struct kp_ctx *tc, struct pm_node **assocs, size_t n, uint32_t capa)
             uint32_t sc0 = kind_node_hash_merge.slot_count;
             WITH_CHAIN(tc, sc0, (acc0 = build_hash(tc, assocs, n - 1, capa),
                                  src0 = kp_fwd_args(tc, akd, aks)));
-            return KP_LINK(tc, node_hash_merge, acc0, src0, kp_flink_at(tc, tc->cur_line, kind_node_hash_merge.slot_count));
+            return KP_LINK(tc, node_hash_merge, acc0, src0, kp_flink_at(tc, kp_cur_line(tc), kind_node_hash_merge.slot_count));
         }
         NODE *acc, *src;
         uint32_t sc = kind_node_hash_merge.slot_count;
         WITH_CHAIN(tc, sc, (acc = build_hash(tc, assocs, n - 1, capa),
                             src = transduce(tc, expr)));
-        return KP_LINK(tc, node_hash_merge, acc, src, kp_flink_at(tc, tc->cur_line, kind_node_hash_merge.slot_count));
+        return KP_LINK(tc, node_hash_merge, acc, src, kp_flink_at(tc, kp_cur_line(tc), kind_node_hash_merge.slot_count));
     }
     const pm_assoc_node_t *as = (const pm_assoc_node_t *)last;
     if (n < KORB_HASH_INDEX_THRESHOLD && kp_hash_sym_keys_distinct(tc, assocs, n)) {   /* no duplicate search */
@@ -4678,7 +4679,7 @@ build_hash(struct kp_ctx *tc, struct pm_node **assocs, size_t n, uint32_t capa)
     WITH_CHAIN(tc, sc, (acc = build_hash(tc, assocs, n - 1, capa),
                         key = transduce(tc, as->key),
                         val = transduce(tc, as->value)));
-    return KP_LINK(tc, node_hash_set, acc, key, val, kp_flink_at(tc, tc->cur_line, kind_node_hash_set.slot_count));
+    return KP_LINK(tc, node_hash_set, acc, key, val, kp_flink_at(tc, kp_cur_line(tc), kind_node_hash_set.slot_count));
 }
 
 /* The encoding a literal ends up in: prism marks a literal whose escapes force
@@ -4939,10 +4940,10 @@ static NODE *transduce_1(struct kp_ctx *tc, const pm_node_t *node);
 static NODE *
 transduce(struct kp_ctx *tc, const pm_node_t *node)
 {
-    const uint32_t outer = tc->cur_line;
-    tc->cur_line = kp_line(tc, node);
+    const pm_node_t *const outer = tc->cur_node;
+    tc->cur_node = node;
     NODE *const r = transduce_1(tc, node);
-    tc->cur_line = outer;
+    tc->cur_node = outer;
     return r;
 }
 
@@ -5522,7 +5523,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
                     MW_LOCAL_CID(mw->lefts.nodes[i], cid);
                     offs[i] = (int32_t)lvar_index(tc, mw->lefts.nodes[i], cid) - tc->chain;
                 }
-                NODE *mn = KP_LINK(tc, node_massign, offs, nt, kp_flink_at(tc, tc->cur_line, kind_node_massign.slot_count), rhs);
+                NODE *mn = KP_LINK(tc, node_massign, offs, nt, kp_flink_at(tc, kp_cur_line(tc), kind_node_massign.slot_count), rhs);
                 for (uint32_t i = 0; i < nt; i++) bake_add(tc, &offs[i]);
                 return mn;
             }
@@ -5545,7 +5546,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
                     descs[i].data = (int32_t)kp_intern_cid(tc, ((const pm_constant_target_node_t *)t)->name);
                 }
             }
-            NODE *mn = KP_LINK(tc, node_massign_het, descs, nt, -1 - tc->chain, kp_flink_at(tc, tc->cur_line, kind_node_massign_het.slot_count), rhs);
+            NODE *mn = KP_LINK(tc, node_massign_het, descs, nt, -1 - tc->chain, kp_flink_at(tc, kp_cur_line(tc), kind_node_massign_het.slot_count), rhs);
             bake_add(tc, &mn->u.node_massign_het.self_off);   /* self at base[-1] (bottom header) */
             for (uint32_t i = 0; i < nt; i++) if (descs[i].kind == 0) bake_add(tc, &descs[i].data);
             return mn;
@@ -5591,7 +5592,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
             MW_LOCAL_CID(mw->rights.nodes[i], cid);
             offs[npre + 1u + i] = (int32_t)lvar_index(tc, mw->rights.nodes[i], cid) - tc->chain;
         }
-        NODE *mn = KP_LINK(tc, node_massign_splat, offs, npre, npost, kp_flink_at(tc, tc->cur_line, kind_node_massign_splat.slot_count), rhs);
+        NODE *mn = KP_LINK(tc, node_massign_splat, offs, npre, npost, kp_flink_at(tc, kp_cur_line(tc), kind_node_massign_splat.slot_count), rhs);
         for (uint32_t i = 0; i < no; i++) bake_add(tc, &offs[i]);
         return mn;
         #undef MW_LOCAL_CID

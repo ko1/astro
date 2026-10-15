@@ -79,6 +79,7 @@ typedef int64_t  korb_sword_t;
 #define KORB_FALSE     KORB_SPECIAL(0)   /* 0b000100 =  4 */
 #define KORB_TRUE      KORB_SPECIAL(1)   /* 0b010100 = 20 */
 #define KORB_UNDEF     KORB_SPECIAL(2)   /* 0b100100 = 36 — never a valid Ruby value (uninitialized / removed marker) */
+#define KORB_VIS_OUTSIDE KORB_SPECIAL(3) /* a send's caller_self that reaches public methods only (Symbol#to_proc) */
 
 #define FIXNUM_P(v)    ((KORB_WORD(v) & 1u) != 0)
 #define LONG2FIX(i)    ((korb_value)((KORB_WORD((korb_sword_t)(i)) << 1) | 1u))

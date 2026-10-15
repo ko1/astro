@@ -359,6 +359,8 @@ class Object
   __set_ruby2_keywords(self, :to_enum)
   alias_method :enum_for, :to_enum    # CRuby: the same definition, not a copy
 
+  private def __then_enum = to_enum(:then) { 1 }   # #then / #yield_self without a block
+
   # What a block-less builtin returns: CRuby's own enumerator for `meth`, whose
   # #size is the receiver's — except for the predicate-driven ones, where how
   # many elements survive is not knowable up front.
