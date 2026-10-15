@@ -18771,7 +18771,8 @@ korb_register_core_methods(CTX *c)
       korb_class_def_cfn(c, tsing, "abort_on_exception=", korb_m_thread_s_aoe_set, 1);
       korb_class_def_cfn(c, tsing, "report_on_exception",  korb_m_thread_s_roe, 0);
       korb_class_def_cfn(c, tsing, "report_on_exception=", korb_m_thread_s_roe_set, 1);
-      korb_class_def_cfn(c, tsing, "__check_ints", korb_m_thread_s_check_ints, 0); }   /* 非 blocking な配送点 */
+      korb_class_def_cfn(c, tsing, "__check_ints", korb_m_thread_s_check_ints, 0);   /* 非 blocking な配送点 */
+      korb_class_def_cfn(c, tsing, "__signal_defer", korb_m_thread_s_signal_defer, 1); }   /* シグナル例外も handle_interrupt で延期 */
     korb_def_cmethod(c, KORB_C_RANDOM, "initialize", korb_m_random_init, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "rand", korb_m_random_rand, -1);
     korb_def_cmethod(c, KORB_C_RANDOM, "seed", korb_m_random_seed, 0);
@@ -20623,6 +20624,19 @@ korb_warn_const_redef_at(CTX *c, korb_value *slots, uint32_t name_sym, korb_valu
 /* The common tail of a constant assignment at node `n`: warn on reassignment
  * (with the assignment's position), define, record the position for
  * Module#const_source_location, and fire a custom const_added. */
+/* Kernel#trace_var hooks: run the prelude's registry for `$name` after the store
+ * (CRuby calls them with the new value).  Returns the assigned value. */
+static __attribute__((cold, noinline)) RESULT
+korb_gvar_trace_fire(CTX *c, korb_value *slots, const uint32_t name_sym, const korb_value val)
+{
+    slots[0] = val;
+    slots[1] = c->vm->kernel_mod;                     /* Kernel.__trace_var_fire (module_function) */
+    slots[2] = ID2SYM(name_sym); slots[3] = val;
+    const RESULT r = korb_send(c, slots + 4, korb_intern_lit(c->vm, "__trace_var_fire", 16), 0, 2);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return RESULT_OK(slots[0]);
+}
+
 RESULT
 korb_const_assign_at(CTX *c, korb_value *slots, const struct Node *n, uint32_t name_sym, korb_value ownc, korb_value val,
                      const korb_value *const fbase)
@@ -20633,6 +20647,7 @@ korb_const_assign_at(CTX *c, korb_value *slots, const struct Node *n, uint32_t n
     const bool gvar = korb_sym_name(c->vm, name_sym)[0] == '$';
     if (gvar && idx != UINT32_MAX) {                     /* `$x = v` again: no naming, location or hook */
         c->vm->const_vals[idx] = val;                    /* root cell (scanned); no WB needed */
+        if (UNLIKELY(c->vm->gvar_traced)) return korb_gvar_trace_fire(c, slots, name_sym, val);
         return RESULT_OK(val);
     }
     if (UNLIKELY(idx != UINT32_MAX) && !gvar)
@@ -20643,6 +20658,7 @@ korb_const_assign_at(CTX *c, korb_value *slots, const struct Node *n, uint32_t n
           else korb_warn_const_redef(c, slots + 2, name_sym, slots[1]);
           val = slots[0]; ownc = slots[1]; }              /* re-read: the warning ran Ruby */
     korb_const_define_owned(c, name_sym, val, ownc);
+    if (UNLIKELY(gvar && c->vm->gvar_traced)) return korb_gvar_trace_fire(c, slots, name_sym, val);
     { uint32_t fsym, fline;                              /* Module#const_source_location */
       if (korb_get_srcloc(c->vm, n, &fsym, &fline)) korb_const_reg_loc(c->vm, name_sym, ownc, fsym, fline); }
     if (korb_sym_name(c->vm, name_sym)[0] != '$') {      /* fire const_added(name) if the module defines the hook */
@@ -21335,6 +21351,7 @@ korb_load_path_arg(CTX *c, korb_value *slots, korb_value *v)
  * search is what makes a later entry that already provided the feature win over
  * an earlier one that merely has the file on disk.  Non-String entries are
  * skipped (their #to_path would run Ruby here); they only cost a missed dedup. */
+static const char *korb_lp_real(struct korb_vm *vm, const char *dir);   /* fwd */
 static bool
 korb_feature_in_load_path_p(CTX *c, const char *name)
 {
@@ -21373,6 +21390,7 @@ korb_feature_in_load_path_p(CTX *c, const char *name)
         if (!KORB_STRING_P(e)) continue;
         char dir[4096]; uint32_t dl = VAL2STR(e)->len; if (dl >= sizeof dir) dl = sizeof dir - 1;
         memcpy(dir, korb_str_ptr(VAL2STR(e)), dl); dir[dl] = '\0';
+        if (dir[0] == '/') { const char *const r = korb_lp_real(c->vm, dir); if (r != dir) snprintf(dir, sizeof dir, "%s", r); }
         char cand[4096], norm[4096];
         if (dir[0] != '/' && !cwd[0] && !getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, ".");
         const int cl = (dir[0] == '/') ? snprintf(cand, sizeof cand, "%s/%s%s", dir, name, has_rb ? "" : ".rb")
@@ -21394,6 +21412,42 @@ korb_feature_in_load_path_p(CTX *c, const char *name)
         }
     }
     return false;
+}
+
+/* A $LOAD_PATH dir as CRuby searches it: its realpath (the expanded load path), so
+ * `require "f"` through a symlinked dir records and recognizes "<real dir>/f.rb"
+ * while the filename itself stays as written.  Cached per dir string: require
+ * walks the whole load path, and realpath is several syscalls.  Returns `dir`
+ * itself when it is already canonical or cannot be resolved. */
+static const char *
+korb_lp_real(struct korb_vm *vm, const char *dir)
+{
+    uint64_t h = 1469598103934665603ULL;
+    for (const char *p = dir; *p; p++) h = (h ^ (unsigned char)*p) * 1099511628211ULL;
+    if (vm->lpr_n * 2 >= vm->lpr_cap) {                  /* grow (and rehash) at half full */
+        const uint32_t ncap = vm->lpr_cap ? vm->lpr_cap * 2 : 64;
+        struct korb_lp_real_ent *const nt = calloc(ncap, sizeof *nt);
+        if (!nt) abort();
+        for (uint32_t i = 0; i < vm->lpr_cap; i++) {
+            if (!vm->lpr_tab[i].dir) continue;
+            uint64_t g = 1469598103934665603ULL;
+            for (const char *p = vm->lpr_tab[i].dir; *p; p++) g = (g ^ (unsigned char)*p) * 1099511628211ULL;
+            uint32_t j = (uint32_t)g & (ncap - 1);
+            while (nt[j].dir) j = (j + 1) & (ncap - 1);
+            nt[j] = vm->lpr_tab[i];
+        }
+        free(vm->lpr_tab);
+        vm->lpr_tab = nt; vm->lpr_cap = ncap;
+    }
+    uint32_t i = (uint32_t)h & (vm->lpr_cap - 1);
+    for (; vm->lpr_tab[i].dir; i = (i + 1) & (vm->lpr_cap - 1))
+        if (strcmp(vm->lpr_tab[i].dir, dir) == 0) return vm->lpr_tab[i].real ? vm->lpr_tab[i].real : dir;
+    char real[PATH_MAX];
+    const bool moved = realpath(dir, real) != NULL && strcmp(real, dir) != 0;
+    vm->lpr_tab[i].dir = strdup(dir);
+    vm->lpr_tab[i].real = moved ? strdup(real) : NULL;   /* NULL: the dir as written */
+    vm->lpr_n++;
+    return moved ? vm->lpr_tab[i].real : dir;
 }
 
 /* Extension file names: `x.so` is CRuby's, `x.kompat.so` a CRuby extension rebuilt for
@@ -21585,6 +21639,7 @@ korb_bi_require(CTX *c, korb_value *slots, korb_slice args)
             }
             char dir[4096]; uint32_t dl = VAL2STR(e)->len; if (dl >= sizeof dir) dl = sizeof dir - 1;
             memcpy(dir, korb_str_ptr(VAL2STR(e)), dl); dir[dl] = '\0';
+            if (dir[0] == '/') { const char *const r = korb_lp_real(c->vm, dir); if (r != dir) snprintf(dir, sizeof dir, "%s", r); }
             if (pass == 1) {
                 if (korb_resolve_so(dir, namebuf, abspath, sizeof abspath)) return korb_require_so(c, slots, abspath);
                 continue;
@@ -21616,6 +21671,19 @@ korb_bi_require(CTX *c, korb_value *slots, korb_slice args)
             korb_loaded_features_push(c, slots, korb_builtin_feature_path(c, stem, fpath, sizeof fpath));
             return RESULT_OK(KORB_TRUE);
         }
+    if (namebuf[0] == '/' && strchr(strrchr(namebuf, '/'), '.') == NULL) {
+        /* CRuby's own `x.so` is there: CRuby tries it and reports the loader's
+         * error, with no #path (the file exists).  koruby cannot run it either. */
+        char so[4200]; struct stat st;
+        snprintf(so, sizeof so, "%s.so", namebuf);
+        if (stat(so, &st) == 0 && S_ISREG(st.st_mode)) {
+            void *const h = dlopen(so, RTLD_LAZY | RTLD_LOCAL);
+            if (h) dlclose(h);
+            if (h) return korb_raise(c, slots, KORB_E_LOADERR, 0, "%s: a CRuby extension (koruby loads NAME.kompat.so)", so);
+            const char *const why = dlerror();             /* "<so>: file too short" — CRuby appends " - <so>" */
+            return korb_raise(c, slots, KORB_E_LOADERR, 0, "%s - %s", why ? why : "cannot load", so);
+        }
+    }
     return korb_raise_load_error(c, slots, namebuf);
 }
 /* The $LOADED_FEATURES entry for a built-in feature: rbconfig is a real file in
@@ -21714,6 +21782,19 @@ korb_bi_require_relative(CTX *c, korb_value *slots, korb_slice args)
     if (base[0] != '/' && c->vm->cur_load_abs) base = c->vm->cur_load_abs;
     char basedir[4096]; snprintf(basedir, sizeof basedir, "%s", base);
     char *slash = strrchr(basedir, '/'); if (slash) *slash = '\0'; else snprintf(basedir, sizeof basedir, ".");
+    if (base[0] == '/') {   /* CRuby resolves against the current file's REAL path: a file loaded
+                             * through a symlink requires relative to where it really lives */
+        struct stat lst; char real[PATH_MAX];
+        if (lstat(base, &lst) == 0 && S_ISLNK(lst.st_mode)) {
+            if (realpath(base, real) != NULL) {
+                snprintf(basedir, sizeof basedir, "%s", real);
+                slash = strrchr(basedir, '/'); if (slash) *slash = '\0';
+            }
+        } else if (basedir[0] == '/') {                    /* only the directory can be a link: cached */
+            const char *const r = korb_lp_real(c->vm, basedir);
+            if (r != basedir) snprintf(basedir, sizeof basedir, "%s", r);
+        }
+    }
     char abspath[4096];
     if (korb_resolve_load(basedir, namebuf, abspath, sizeof abspath)) {
         korb_value out; return korb_load_abspath(c, slots, abspath, true, &out, args.p);
@@ -22276,6 +22357,12 @@ static RESULT korb_bi_setproctitle(CTX *c, korb_value *slots, korb_slice args)
     if (!KORB_STRING_P(v)) return korb_raise(c, slots, KORB_E_TYPE, 0, "no implicit conversion of %s into String", korb_coerce_name(c, v));
     korb_set_proctitle(c->vm, korb_str_ptr(VAL2STR(v)), VAL2STR(v)->len);
     return RESULT_OK(v);
+}
+/* __trace_var_on(bool) — some global has a trace_var hook (the prelude keeps the registry) */
+static RESULT korb_bi_trace_var_on(CTX *c, korb_value *slots, korb_slice a) {
+    (void)slots;
+    c->vm->gvar_traced = KORB_TRUTHY(KORB_SLICE_GET(a, 0));
+    return RESULT_OK(KORB_NIL);
 }
 /* __syscall(num, *args) — Kernel#syscall: Integer args as is, a String as its byte pointer (rb_f_syscall) */
 static RESULT korb_bi_syscall(CTX *c, korb_value *slots, korb_slice args)
@@ -24904,6 +24991,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__refinement_import", korb_bi_refinement_import, 2);   /* Refinement#import_methods (prelude) */
     korb_builtin_define(c, "__korb_mark_native", korb_bi_mark_native, 1);
     korb_builtin_define(c, "__syscall", korb_bi_syscall, -1);
+    korb_builtin_define(c, "__trace_var_on", korb_bi_trace_var_on, 1);
     korb_builtin_define(c, "__setproctitle", korb_bi_setproctitle, 1);         /* lib/zlib.rb etc.: C to CRuby */
     korb_builtin_define(c, "__dir__", korb_bi_dir, 0);
     korb_builtin_define(c, "__method__", korb_bi_method_name, 0);

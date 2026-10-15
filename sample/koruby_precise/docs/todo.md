@@ -38,16 +38,16 @@ korb_runtime.c の `#include <execinfo.h>`（EXPERIMENT acct45、2026-10-09 mast
 `ASTrogre.compile` が "failed to parse pattern: [\xNN]" で ArgumentError。HEAD の astrogre を別ディレクトリに
 展開しても同じなので今回の変更とは無関係。
 
+## 未: autoload 中の定数が他のスレッドから見える (2026-10-16)
+CRuby は autoload の読み込みが終わるまで、新しい定数を読み込み中のスレッドにだけ見せ（autoloading value）、
+他のスレッドは autoload の完了を待つ。koruby は `module ModN` を実行した時点で表に入るので、他のスレッドが
+中身の無いモジュールを掴む（rubyspec: core/module/autoload_spec の 2 例、concurrently / const_source_location）。
+読み込み中の (名前, owner) への定義を別表に置き、読み込み中のスレッドの探索だけがそれを見る仕組みが要る。
+
 ## 未: 外の変数を使わないブロックの binding がメソッドの引数を見ない (2026-10-16)
 `def o.m(some) = -> {}; eval("some", o.m(1).binding)` が NameError（CRuby は 1）。何も捕まえないブロックは
 環境を作らない（メソッドが戻った後はフレームが無い）。直すとブロックを作るたびに環境を確保することになり遅く
 なるので見送り。spec: core/proc/binding_spec。
-
-## 未: $LOAD_PATH の symlink ディレクトリを realpath で正規化しない (2026-10-16)
-CRuby は展開済みの load path（realpath、キャッシュ付き）で探し、$LOADED_FEATURES にも実ディレクトリ側を
-残す。koruby で見つけたときだけ realpath すると、名前での既読判定（korb_feature_in_load_path_p）が書いた
-とおりのディレクトリと比べるため「新しい同名ファイルを 1 回だけ」の spec が壊れた（試して取り消した）。
-比較も含め realpath を毎回取ると require の多い起動が遅くなるので、load path 単位のキャッシュが要る。
 
 ## 未: eval(str) の中の yield / block_given? / bare super / return が binding のメソッドに届かない (2026-10-16)
 - `def m; eval("yield"); end; m { }` が LocalJumpError（`block_given?` も false）。メソッドが字句上 yield を

@@ -21,7 +21,8 @@
 
 enum korb_blop_kind  { KORB_BLOP_POLL, KORB_BLOP_READ, KORB_BLOP_WRITE, KORB_BLOP_TIMER, KORB_BLOP_CFUNC };
 enum korb_blop_flags { KORB_BLOP_F_TIMEOUT = 1, KORB_BLOP_F_DONE = 2,
-                       KORB_BLOP_F_DEADLOCKABLE = 4 /* Mutex#sleep forever: only another thread can end it */ };
+                       KORB_BLOP_F_DEADLOCKABLE = 4 /* Mutex#sleep forever: only another thread can end it */,
+                       KORB_BLOP_F_SPURIOUS_OK = 8  /* Mutex#sleep: may return after a signal (the caller rechecks) */ };
 
 static void korb_thread_runq_push(struct korb_vm *vm, struct korb_thread *t);   /* fwd (下の scheduler 節) */
 static RESULT korb_bi_exit(CTX *c, korb_value *slots, korb_slice args);            /* fwd (korb_runtime.c) */
@@ -720,6 +721,19 @@ korb_m_thread_int_mask_pop(CTX *c, korb_value *slots, korb_ref self, korb_slice 
     return RESULT_OK(KORB_NIL);
 }
 
+/* Thread.__signal_defer(exc) — シグナル既定の例外 (Interrupt / SignalException) を
+ * handle_interrupt のマスクが遅らせるなら保留列に積んで true (出口の配送点で投げる)。 */
+static RESULT
+korb_m_thread_s_signal_defer(CTX *c, korb_value *slots, korb_ref self, korb_slice a)
+{
+    (void)self;
+    struct korb_thread *const cur = korb_thread_boot(c);
+    const korb_value exc = KORB_SLICE_GET(a, 0);
+    if (cur == NULL || cur->int_masks == KORB_NIL || korb_thread_int_mask_of(c, cur, exc) == 0) return RESULT_OK(KORB_FALSE);
+    CHECK(korb_thread_interrupt(c, slots, cur, exc));
+    return RESULT_OK(KORB_TRUE);
+}
+
 /* Thread.__check_ints — 非 blocking の配送点 (handle_interrupt の入口 / 出口) */
 static RESULT
 korb_m_thread_s_check_ints(CTX *c, korb_value *slots, korb_ref self, korb_slice a)
@@ -752,6 +766,10 @@ korb_blop_wait(CTX *c, korb_value *slots, struct korb_blop *b)
         /* -EINTR は signal で起こされただけ。handler が戻ったのなら CRuby と
            同じく操作を続行する (sleep も read も signal では打ち切らない)。 */
         if (LIKELY(b->result != -EINTR) || UNLIKELY(r.state != KORB_NORMAL)) return r;
+        /* Mutex#sleep returns instead: a wake posted while the handler ran found
+           us not PENDED and was dropped (korb_waitq_wake_one), so waiting again
+           could sleep forever.  CV / Queue callers recheck their condition. */
+        if (b->flags & KORB_BLOP_F_SPURIOUS_OK) return r;
     }
 }
 
@@ -1828,6 +1846,7 @@ korb_m_mutex_sleep(CTX *c, korb_value *slots, korb_ref self, korb_slice a)
     CHECK(korb_mutex_unlock_core(c, slots, self));
     struct korb_blop b; memset(&b, 0, sizeof b);
     b.kind = KORB_BLOP_TIMER;
+    b.flags = KORB_BLOP_F_SPURIOUS_OK;
     if (sec >= 0) korb_blop_deadline_in(&b, sec);
     else b.flags |= KORB_BLOP_F_DEADLOCKABLE;
     struct timespec t0; korb_blop_now(&t0);

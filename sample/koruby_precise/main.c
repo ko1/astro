@@ -1995,6 +1995,13 @@ main(int argc, char *argv[])
         bool handler_exited = false;
         const int handler_status = korb_drain_at_exit_x(c, toplevel_cursor + 4, &handler_exited);
         if (handler_status >= 0) exit_status = handler_status;   /* a handler's exit wins */
+        bool other_threads = false;
+        for (const struct korb_thread *t = c->vm->thread_list; t; t = t->next)
+            if (t != c->vm->main_thread && t->state != KORB_TH_DEAD) { other_threads = true; break; }
+        if (other_threads) {   /* the other threads are killed: their current fibers' ensure clauses run (CRuby) */
+            toplevel_cursor[4] = korb_const_get(c->vm, korb_intern_lit(c->vm, "Thread", 6));
+            (void)korb_send(c, toplevel_cursor + 5, korb_intern_lit(c->vm, "__terminate_all", 15), 0, 0);   /* errors there are dropped (CRuby) */
+        }
         bool sig_quiet = false;
         const int die_sig = uncaught ? korb_uncaught_signo(c, toplevel_cursor[0], &sig_quiet) : 0;
         /* CRuby reports the uncaught exception AFTER at_exit, and not at all when

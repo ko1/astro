@@ -1756,6 +1756,10 @@ struct korb_vm {
     void     *re_timeout_fn; /* koruby_re_set_timeout — the engine's match time limit */
     double    re_timeout_sec;/* Regexp.timeout (0 = none) */
     struct KorbFiberRep *xfer_to;      /* a transfer down to the root fiber in flight: each fiber it passes steps aside */
+    bool gvar_traced;                  /* some global has a trace_var hook: assignments go through korb_gvar_trace_fire */
+    /* $LOAD_PATH dir → its realpath (korb_lp_real); malloc'd strings, open addressing */
+    struct korb_lp_real_ent { char *dir; char *real; } *lpr_tab;
+    uint32_t lpr_cap, lpr_n;
 };
 
 /* builtins/cext.c — reached from the AROH_* hooks, i.e. from the GC backends' TUs */

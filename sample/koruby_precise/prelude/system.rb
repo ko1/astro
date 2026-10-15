@@ -85,6 +85,15 @@ class Thread
       __check_ints              # マスクが遅らせた分はブロックを出るときに配る
     end
   end
+  # The main thread is ending (after at_exit): kill the others and wait, so the
+  # ensure clauses of each one's current fiber run — not those of fibers it left
+  # suspended (CRuby's rb_thread_terminate_all).
+  def self.__terminate_all
+    others = list.reject { |t| t.equal?(main) }
+    others.each { |t| t.kill }
+    others.each { |t| begin; t.join; rescue Exception; end }
+    nil
+  end
   def self.each_caller_location(*args, **kw, &blk)
     raise ArgumentError, "unknown keyword: #{kw.keys.first.inspect}" unless kw.empty?
     raise LocalJumpError, "no block given" unless blk
@@ -2010,14 +2019,14 @@ module Signal
     # never trapped → Ruby's default disposition (raise), which is NOT the same
     # as trap(sig, nil), whose stored nil means "ignore"
     unless @@handlers.key?(nm)
-      raise(signo == Signal.list["INT"] ? Interrupt.new("") : SignalException.new(signo))
+      return __raise_default(signo)
     end
     case (h = @@handlers[nm])
     when "IGNORE", "SIG_IGN" then nil
     when "EXIT"              then exit(0)
     when nil                 then nil          # trap(sig, nil) → ignore
     when "DEFAULT", "SIG_DFL", "SYSTEM_DEFAULT"
-      raise(signo == Signal.list["INT"] ? Interrupt.new("") : SignalException.new(signo))
+      __raise_default(signo)
     else
       __trap_ctx(true)   # Mutex#lock refuses inside the handler (CRuby's trap context)
       begin
@@ -2027,6 +2036,15 @@ module Signal
       end
     end
   end
+
+  # The default disposition raises — unless Thread.handle_interrupt masks the
+  # exception, which then waits in the thread's pending interrupts (CRuby 4.1).
+  def self.__raise_default(signo)
+    e = signo == Signal.list["INT"] ? Interrupt.new("") : SignalException.new(signo)
+    raise e unless Thread.send(:__signal_defer, e)
+    nil
+  end
+  private_class_method :__raise_default
 
   def self.signame(signo) = __signal_signame(signo)
   def self.signo(sig) = sig.is_a?(Integer) ? sig : __signal_signo(sig)
@@ -2104,10 +2122,13 @@ module Kernel
   def select(*args) = IO.select(*args)
   module_function :select
 
-  # $-variable tracing: koruby has no hook on global assignment, so the
-  # registration is recorded (and #untrace_var returns it) but never fires.
+  # Global-variable hooks.  The registry lives here; while it is non-empty the
+  # assignment path calls __trace_var_fire after the store (korb_gvar_trace_fire).
   def trace_var(name, cmd = nil, &blk)
-    (($__traced_vars ||= {})[name.to_sym] ||= []) << (cmd || blk)
+    cmd ||= blk
+    raise ArgumentError, "tried to create Proc object without a block" if cmd.nil?
+    (($__traced_vars ||= {})[name.to_sym] ||= []) << cmd
+    __trace_var_on(true)
     nil
   end
   # Returns the removed commands (CRuby hands back the list it dropped).
@@ -2115,14 +2136,24 @@ module Kernel
     h = ($__traced_vars ||= {})
     k = name.to_sym
     return nil unless h.key?(k)
-    if cmd
+    r = if cmd
       h[k].delete(cmd)
       [cmd]
     else
       h.delete(k)
     end
+    h.delete(k) if h[k] && h[k].empty?
+    __trace_var_on(!h.empty?)
+    r
   end
-  module_function :trace_var, :untrace_var
+  # The newest hook runs first (CRuby); a String is evaluated at the top level.
+  def __trace_var_fire(name, value)
+    hooks = $__traced_vars && $__traced_vars[name]
+    return unless hooks
+    hooks.reverse_each { |cmd| cmd.is_a?(String) ? TOPLEVEL_BINDING.eval(cmd) : cmd.call(value) }
+    nil
+  end
+  module_function :trace_var, :untrace_var, :__trace_var_fire
 
   def syscall(num, *args) = __syscall(num, *args)
   # tracing hooks are not implemented: only clearing (nil) is accepted
