@@ -1374,7 +1374,7 @@ static RESULT korb_m_file_write(CTX *c, korb_value *slots, korb_ref self, korb_s
  * byte limit otherwise; `nil` slurps to EOF and `""` selects paragraph mode
  * (records end at a blank line, and the run of newlines after it is consumed).
  * The limit counts bytes of the returned String, separator included. */
-struct korb_line_args { bool slurp, paragraph, chomp; korb_sword_t limit; };
+struct korb_line_args { bool slurp, paragraph, chomp, limit_hit; korb_sword_t limit; };   /* limit_hit: out, the read stopped at the limit */
 
 /* Parse them, starting at positional index `from`.  The separator is left in
  * slots[0] (rooted, so a reader that allocates can re-read its bytes through the
@@ -1383,7 +1383,7 @@ struct korb_line_args { bool slurp, paragraph, chomp; korb_sword_t limit; };
 static RESULT
 korb_io_line_args(CTX *c, korb_value *slots, korb_slice a, uint32_t from, struct korb_line_args *o)
 {
-    o->slurp = o->paragraph = o->chomp = false;
+    o->slurp = o->paragraph = o->chomp = o->limit_hit = false;
     o->limit = -1;
     uint32_t n = KORB_SLICE_LEN(a);
     /* only real keyword args are options — a positional Hash falls through to
@@ -1552,15 +1552,24 @@ static RESULT korb_io_lines_mode_check(CTX *c, korb_value *slots, korb_slice a, 
 /* File.readlines / File.foreach slurp and split the file themselves, so the
  * `encoding:` option has to be honoured HERE: tag each record with the external
  * encoding and transcode it into the internal one when a pair was given. */
+static void korb_file_line_enc_defaults(const struct korb_vm *const vm, int *ext, int *intr) {
+    /* no encoding given: the defaults (UTF-8 and none, the usual case, need nothing) */
+    if (*ext < 0 && vm->enc_external != KORB_ENC_UTF8) *ext = (int)vm->enc_external;
+    if (*intr < 0 && vm->enc_internal != UINT32_MAX && *ext != (int)KORB_ENC_BINARY) {   /* BINARY ignores the internal one */
+        if (*ext < 0) *ext = (int)vm->enc_external;
+        *intr = (int)vm->enc_internal;
+    }
+}
 static RESULT korb_file_line_enc(CTX *c, korb_value *slots, korb_slice a, int *ext, int *intr, bool *univ) {
     *ext = -1; *intr = -1; *univ = false;
     const uint32_t na = KORB_SLICE_LEN(a);
-    if (na < 2) return RESULT_OK(KORB_NIL);
-    const korb_value last = KORB_SLICE_GET(a, na - 1);
-    if (!KORB_HASH_P(last) || !korb_kwargs_hash_p(last)) return RESULT_OK(KORB_NIL);
-    struct korb_open_args oa;
-    CHECK(korb_io_open_args(c, slots, last, "r", &oa));
-    *ext = oa.enc; *intr = oa.enc2; *univ = korb_open_univ(&oa);
+    const korb_value last = na >= 2 ? KORB_SLICE_GET(a, na - 1) : KORB_NIL;
+    if (na >= 2 && KORB_HASH_P(last) && korb_kwargs_hash_p(last)) {
+        struct korb_open_args oa;
+        CHECK(korb_io_open_args(c, slots, last, "r", &oa));
+        *ext = oa.enc; *intr = oa.enc2; *univ = korb_open_univ(&oa);
+    }
+    korb_file_line_enc_defaults(c->vm, ext, intr);
     return RESULT_OK(KORB_NIL);
 }
 static RESULT korb_file_line_apply_enc(CTX *c, korb_value *slots, korb_value *vslot, int ext, int intr) {
@@ -1571,7 +1580,14 @@ static RESULT korb_file_line_apply_enc(CTX *c, korb_value *slots, korb_value *vs
     const RESULT tr = korb_tc_convert(c, slots, *vslot, korb_enc_name_of(c->vm, (uint32_t)ext),
                                       korb_enc_name_of(c->vm, (uint32_t)intr), &ok);
     if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
-    if (ok) *vslot = tr.value;
+    if (ok) { *vslot = tr.value; return RESULT_OK(*vslot); }
+    /* a target the direct converter has no table for (the dummy UTF-16 / UTF-32 with a BOM): String#encode */
+    const char *const tn = korb_enc_name_of(c->vm, (uint32_t)intr);
+    slots[0] = *vslot;
+    slots[1] = UNWRAP(korb_str_new(c, slots + 1, tn, (uint32_t)strlen(tn)));
+    const RESULT er = korb_send(c, slots + 2, korb_intern_lit(c->vm, "encode", 6), 0, 1);
+    if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+    *vslot = er.value;
     return RESULT_OK(*vslot);
 }
 static RESULT korb_m_file_readlines(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {

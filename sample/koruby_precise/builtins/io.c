@@ -33,7 +33,7 @@ typedef struct KorbIORep {
     uint8_t  line_rd;                /* the last read was by line: its read-ahead is what CRuby keeps buffered */
     int8_t   wnl;                    /* memo of the write decorator (korb_io_write_newline); -1 = not read yet */
     int      slow_fd1;               /* fd + 1 that `slow` was worked out for; 0 = not yet */
-    uint32_t lineno;                 /* IO#lineno: lines handed out by #gets */
+    int32_t  lineno;                 /* IO#lineno: lines handed out by #gets (a C int in CRuby: may be set negative) */
     int      enc_idx;                /* memo: the encoding a read result carries (-1 = ask the prelude) */
     int      benc_idx;               /* memo: the encoding the raw bytes arrive in (the external one) */
     int      wenc_idx;               /* memo: what writes transcode into (-1 = nothing; see korb_io_write_enc) */
@@ -874,8 +874,19 @@ static RESULT korb_m_io_s_pipe(CTX *c, korb_value *slots, korb_ref self, korb_sl
     (void)fcntl(fds[0], F_SETFD, FD_CLOEXEC);
     (void)fcntl(fds[1], F_SETFD, FD_CLOEXEC);
     slots[0] = KORB_REF_GET(self);                       /* IO class (root) */
-    slots[1] = UNWRAP(korb_io_make(c, slots + 2, slots[0], fds[0], 1));   /* r (read) */
-    slots[2] = UNWRAP(korb_io_make(c, slots + 3, slots[0], fds[1], 2));   /* w (write) */
+    if (UNLIKELY(korb_sub_overrides_init_p(c, slots[0], korb_const_get(c->vm, korb_intern_lit(c->vm, "IO", 2))))) {
+        /* a subclass's own #initialize runs for each end (allocate + initialize, never .new: CRuby) */
+        for (int e = 0; e < 2; e++) {
+            slots[3] = slots[0];
+            slots[1 + e] = UNWRAP(korb_send(c, slots + 4, korb_intern_lit(c->vm, "allocate", 8), 0, 0));
+            slots[3] = slots[1 + e]; slots[4] = LONG2FIX(fds[e]);
+            slots[5] = UNWRAP(korb_str_new(c, slots + 5, e == 0 ? "r" : "w", 1));
+            CHECK(korb_send(c, slots + 6, korb_intern_lit(c->vm, "initialize", 10), 0, 2));
+        }
+    } else {
+        slots[1] = UNWRAP(korb_io_make(c, slots + 2, slots[0], fds[0], 1));   /* r (read) */
+        slots[2] = UNWRAP(korb_io_make(c, slots + 3, slots[0], fds[1], 2));   /* w (write) */
+    }
     { KorbIORep *const rd = korb_io_rep(c, slots[1]);
       KorbIORep *const wr = korb_io_rep(c, slots[2]);
       if (wr) wr->sync = 1;                              /* write → the peer can read it now */
@@ -1234,7 +1245,7 @@ static RESULT korb_m_io_read(CTX *c, korb_value *slots, korb_ref self, korb_slic
  * slots on every pass: filling the buffer and growing the String are GC points,
  * and a cached `char *` into either would go stale under a moving collector. */
 static RESULT
-korb_io_read_sep(CTX *c, korb_value *slots, KorbIORep *rep, korb_ref sepref, const struct korb_line_args *la)
+korb_io_read_sep(CTX *c, korb_value *slots, KorbIORep *rep, korb_ref sepref, struct korb_line_args *la)
 {
     RESULT err = RESULT_OK(KORB_NIL);
     if (la->paragraph) {                               /* skip a leading run of blank lines */
@@ -1295,25 +1306,32 @@ korb_io_read_sep(CTX *c, korb_value *slots, KorbIORep *rep, korb_ref sepref, con
     if (la->limit >= 0 && len == (uint32_t)la->limit) {
         /* a byte limit must not split a character: take the continuation bytes of
          * a truncated UTF-8 sequence as well (CRuby) */
-        const char *d = korb_str_ptr(VAL2STR(KORB_REF_GET(sref)));
-        uint32_t st = len;                              /* start of the last sequence */
-        while (st > 0 && ((unsigned char)d[st - 1] & 0xC0) == 0x80) st--;
-        if (st > 0) {
+        /* …again while the bytes taken leave another sequence open, at most 16 extra bytes in all */
+        const uint32_t base_len = len;
+        for (bool more = true; more && len - base_len < 16; ) {
+            more = false;
+            const char *d = korb_str_ptr(VAL2STR(KORB_REF_GET(sref)));
+            uint32_t st = len;                              /* start of the last sequence */
+            while (st > 0 && len - st < 3 && ((unsigned char)d[st - 1] & 0xC0) == 0x80) st--;
+            if (st == 0) break;
             const unsigned char lead = (unsigned char)d[st - 1];
             const uint32_t need = (lead >= 0xF0) ? 4 : (lead >= 0xE0) ? 3 : (lead >= 0xC0) ? 2 : 1;
             uint32_t have = len - (st - 1);
-            while (have < need) {
+            while (have < need && len - base_len < 16) {
                 const uint32_t avail = KORB_IO_FILL_TXT(c, slots + 1, rep, &err);
                 if (UNLIKELY(err.state != KORB_NORMAL)) return err;
                 if (avail == 0) break;
                 uint32_t take = need - have;
                 if (take > avail) take = avail;
+                if (take > 16 - (len - base_len)) take = 16 - (len - base_len);
                 KorbString *const s2 = korb_str_ensure(c, slots + 1, sref, len + take);
                 memcpy(korb_str_ptr(s2) + len, rep->rbuf + rep->rpos, take);
                 rep->rpos += take; len += take; have += take; s2->len = len;
+                more = true;
             }
         }
     }
+    la->limit_hit = !hit_sep && la->limit >= 0 && len >= (uint32_t)la->limit;   /* lineno counts records only */
     if (hit_sep && la->paragraph) {                    /* swallow the blank lines after the record */
         for (;;) {
             const uint32_t avail = KORB_IO_FILL_TXT(c, slots + 1, rep, &err);
@@ -1328,7 +1346,7 @@ korb_io_read_sep(CTX *c, korb_value *slots, KorbIORep *rep, korb_ref sepref, con
     if (la->chomp && !la->slurp) {                     /* drop the separator we just matched */
         const uint32_t sl = VAL2STR(KORB_REF_GET(sepref))->len;
         const char *const data = korb_str_ptr(VAL2STR(KORB_REF_GET(sref)));
-        if (la->paragraph) { while (len > 0 && data[len - 1] == '\n') len--; }
+        if (la->paragraph) { if (hit_sep) while (len > 0 && data[len - 1] == '\n') len--; }   /* the last record keeps its "\n" */
         else if (len >= sl && !memcmp(data + len - sl, korb_str_ptr(VAL2STR(KORB_REF_GET(sepref))), sl)) {
             len -= sl;
             if (sl == 1 && data[len] == '\n' && len > 0 && data[len - 1] == '\r') len--;   /* "\r\n" */
@@ -1360,8 +1378,8 @@ static RESULT korb_m_io_gets(CTX *c, korb_value *slots, korb_ref self, korb_slic
     /* IO#lineno counts the records #gets handed out; $. mirrors it and $_ holds
      * the last line (nil once the stream is exhausted).  Re-fetch the rep: the
      * read may have GC'd, and it lives in a libc allocation the IO points at. */
-    if (r.value != KORB_NIL) {
-        const uint32_t ln = ++korb_io_rep(c, KORB_REF_GET(self))->lineno;
+    if (r.value != KORB_NIL && !la.limit_hit) {           /* a read cut off by the limit is no record (CRuby nolimit) */
+        const int32_t ln = ++korb_io_rep(c, KORB_REF_GET(self))->lineno;
         korb_const_define(c, korb_intern_lit(c->vm, "$.", 2), LONG2FIX((korb_sword_t)ln));
     }
     korb_const_define(c, korb_intern_lit(c->vm, "$_", 2), r.value);
@@ -1385,7 +1403,7 @@ static RESULT korb_m_io_lineno_set(CTX *c, korb_value *slots, korb_ref self, kor
     else CHECK(korb_io_arg_int(c, slots + 1, slots[0], &n));
     if (UNLIKELY(n > INT32_MAX || n < INT32_MIN))       /* CRuby stores it in a C int */
         return korb_raise(c, slots, KORB_E_RANGE, 0, "integer %ld too big to convert to `int'", (long)n);
-    korb_io_rep(c, KORB_REF_GET(self))->lineno = (uint32_t)(n < 0 ? 0 : n);   /* re-fetch: #to_int may have GC'd */
+    korb_io_rep(c, KORB_REF_GET(self))->lineno = (int32_t)n;   /* re-fetch: #to_int may have GC'd */
     return RESULT_OK(slots[0]);
 }
 /* IO#readlines / IO#each_line — the remaining records, same arguments as #gets. */
@@ -1404,7 +1422,7 @@ static RESULT korb_m_io_readlines(CTX *c, korb_value *slots, korb_ref self, korb
         rep = korb_io_rep(c, KORB_REF_GET(self));
         slots[2] = UNWRAP(korb_io_read_sep(c, slots + 2, rep, sepref, &la));
         if (slots[2] == KORB_NIL) break;
-        korb_io_rep(c, KORB_REF_GET(self))->lineno++;   /* #readlines advances #lineno (CRuby) */
+        if (!la.limit_hit) korb_io_rep(c, KORB_REF_GET(self))->lineno++;   /* #readlines advances #lineno (CRuby): whole records only */
         { const uint32_t re = korb_io_read_enc(c, slots + 3, self, korb_io_rep(c, KORB_REF_GET(self)));
           CHECK(korb_io_apply_read_enc(c, slots + 3, self, &slots[2], re)); }   /* tag + transcode ext→int */
         CHECK(korb_ary_push_val(c, slots + 3, arr, slots[2]));
@@ -1443,7 +1461,7 @@ static RESULT korb_m_io_each_line(CTX *c, korb_value *slots, korb_ref self, korb
         rep = korb_io_rep(c, KORB_REF_GET(self));
         slots[1] = UNWRAP(korb_io_read_sep(c, slots + 1, rep, sepref, &la));
         if (slots[1] == KORB_NIL) break;
-        korb_io_rep(c, KORB_REF_GET(self))->lineno++;
+        if (!la.limit_hit) korb_io_rep(c, KORB_REF_GET(self))->lineno++;   /* whole records only */
         { const uint32_t re = korb_io_read_enc(c, slots + 2, self, korb_io_rep(c, KORB_REF_GET(self)));
           CHECK(korb_io_apply_read_enc(c, slots + 2, self, &slots[1], re)); }   /* tag + transcode ext→int */
         korb_const_define(c, korb_intern_lit(c->vm, "$.", 2),   /* $. follows #each_line too */
@@ -1882,6 +1900,14 @@ static RESULT korb_io_apply_read_enc(CTX *c, korb_value *slots, korb_ref io, kor
     if (!KORB_STRING_P(xr.value)) return RESULT_OK(*vslot);          /* no transcoding pair */
     char xb[64]; korb_tc_cstr(xr.value, xb, sizeof xb);
     if (strcasecmp(xb, korb_enc_name_of(c->vm, tag)) == 0) return RESULT_OK(*vslot);
+    if (UNLIKELY(korb_ivar_get(c, KORB_REF_GET(io), ID2SYM(korb_intern_lit(c->vm, "@__ecopts", 9))) != KORB_NIL)) {
+        /* invalid: / undef: / replace: given (open or #set_encoding): String#encode applies them */
+        slots[0] = KORB_REF_GET(io); slots[1] = *vslot; slots[2] = xr.value;
+        const RESULT er = korb_send(c, slots + 3, korb_intern_lit(c->vm, "__rencode", 9), 0, 2);
+        if (UNLIKELY(er.state != KORB_NORMAL)) return er;
+        *vslot = er.value;
+        return RESULT_OK(*vslot);
+    }
     bool ok = false;
     const RESULT tr = korb_tc_convert(c, slots + 1, *vslot, xb, korb_enc_name_of(c->vm, tag), &ok);
     if (UNLIKELY(tr.state != KORB_NORMAL)) return tr;
@@ -2258,9 +2284,14 @@ static RESULT korb_m_io_ungetc(CTX *c, korb_value *slots, korb_ref self, korb_sl
     if (UNLIKELY(!korb_io_open_p(rep))) return korb_raise(c, slots, KORB_E_IOERROR, 0, "closed stream");
     KORB_IO_NEED_READ(c, slots, self);
     const korb_value v = KORB_SLICE_GET(a, 0);
-    if (FIXNUM_P(v)) {
-        const char b = (char)(FIX2LONG(v) & 0xff);
-        if (!korb_io_unget(rep, &b, 1)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "ungetc failed");
+    if (FIXNUM_P(v)) {                                /* a codepoint, in the external encoding (rb_enc_uint_chr) */
+        const korb_sword_t cp = FIX2LONG(v);
+        const uint32_t be = cp > 0x7f ? korb_io_byte_enc(c, slots, self, rep) : KORB_ENC_UTF8;
+        KorbIORep *const rp = korb_io_rep(c, KORB_REF_GET(self));   /* the encoding lookup may dispatch */
+        char b[4]; uint32_t bn = 1;
+        if (be == KORB_ENC_UTF8 && cp > 0x7f && cp <= 0x10ffff) bn = korb_utf8_encode((uint32_t)cp, b);
+        else b[0] = (char)(cp & 0xff);
+        if (!korb_io_unget(rp, b, bn)) return korb_raise(c, slots, KORB_E_IOERROR, 0, "ungetc failed");
     } else if (KORB_STRING_P(v)) {
         uint32_t n; const char *const p = korb_str_cstr_len(v, &n);
         if (n == 0) return RESULT_OK(KORB_NIL);

@@ -146,6 +146,7 @@ class IO
     __check_newline_opt(opts[:newline]) unless opts[:newline].nil?
     __check_newline_binmode(opts)
     __apply_univ_opts(opts)
+    __record_ecopts(opts)
     ext = __enc_arg(ext)
     # "-" (or a "ext:-" pair) means "explicitly no internal encoding", which is
     # not the same as leaving it out (that one falls back to the default).
@@ -198,6 +199,11 @@ class IO
   # String#encode's exceptions when a conversion fails)
   private def __wencode(str, enc)
     @__ecopts ? str.encode(enc, **@__ecopts) : str.encode(enc)
+  end
+
+  # the read side of the same: the bytes came in `from`, the result is the internal encoding
+  private def __rencode(str, from)
+    str.force_encoding(from).encode(internal_encoding || Encoding.default_internal || from, **@__ecopts)
   end
 
   private def __record_ecopts(opts)
