@@ -171,6 +171,12 @@ korb_time_zone_arg(CTX *c, korb_value *slots, korb_value zv, korb_value recv, do
     *utcish = false;
     if (KORB_STRING_P(zv) && !korb_str_ascii_compat(c->vm, zv))
         return korb_raise(c, slots + 2, KORB_E_ARGUMENT, 0, "string should have ASCII compatible encoding");
+    if (KORB_FLOAT_P(zv) && korb_float_val(zv) != trunc(korb_float_val(zv))) {   /* 7245.5: exact, as its Rational (CRuby) */
+        slots[2] = zv;
+        const RESULT fr = korb_send(c, slots + 3, korb_intern_lit(c->vm, "to_r", 4), 0, 0);
+        if (UNLIKELY(fr.state != KORB_NORMAL)) return fr;
+        zv = fr.value;
+    }
     if (korb_parse_tz_offset(zv, off, utcish)) goto range;
     /* a String offset has to match the format outright — no coercion (and in
      * particular not String#to_r, which happily turns "J" into 0).  A name that
@@ -1368,7 +1374,12 @@ static RESULT korb_m_time_strftime(CTX *c, korb_value *slots, korb_ref self, kor
     /* Nanosecond part, for the Ruby-only %L / %N sub-second directives. */
     const long nsec = korb_time_nsec_of(c, KORB_REF_GET(self));
     int64_t srn = 0, srd = 1; korb_time_subns_parts(c, KORB_REF_GET(self), &srn, &srd);   /* digits past the 9th */
-    const long gmtoff = tm.tm_gmtoff;
+    long gmtoff = tm.tm_gmtoff;
+    {   /* a fractional utc_offset prints rounded to the second (CRuby): 3664.5 → +01:01:05 */
+        const korb_value ox = korb_ivar_get(c, KORB_REF_GET(self), korb_time_offx_sym(c->vm));
+        if (KORB_RATIONAL_P(ox) && FIXNUM_P(VAL2RAT(ox)->num) && FIXNUM_P(VAL2RAT(ox)->den))
+            gmtoff = lround((double)FIX2LONG(VAL2RAT(ox)->num) / (double)FIX2LONG(VAL2RAT(ox)->den));
+    }
     /* Pre-expand the directives libc strftime does not know (%L, %[w]N, %:z /
      * %::z, %v); everything else is copied verbatim for the strftime call. */
     char efmt[1024]; size_t o = 0;

@@ -3923,7 +3923,7 @@ static RESULT korb_m_struct_eql(CTX *c, korb_value *slots, korb_ref self, korb_s
     CHECK(korb_struct_cmp_rec(c, slots, true, NULL, 0, &eq));
     return RESULT_OK(eq ? KORB_TRUE : KORB_FALSE);
 }
-static RESULT korb_m_class_new_bracket(CTX *c, korb_value *slots, korb_ref self, korb_slice a);   /* fwd */
+static RESULT korb_m_class_new_bracket(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself);   /* fwd */
 static RESULT korb_m_struct_inspect(CTX *c, korb_value *slots, korb_ref self, korb_slice a);   /* fwd */
 static RESULT korb_m_struct_ivars(CTX *c, korb_value *slots, korb_ref self, korb_slice a);     /* fwd (defined in symbol.c) */
 RESULT korb_do_include(CTX *c, korb_value *slots, korb_value klass, korb_slice mods);   /* fwd (defined below) */
@@ -4114,7 +4114,7 @@ static RESULT korb_struct_define(CTX *c, korb_value *slots, korb_slice a, NODE *
     slots[3] = UNWRAP(korb_obj_singleton(c, slots + 4, slots[2]));
     korb_class_def_cfn(c, slots[3], "members", korb_m_struct_class_members, 0);
     korb_class_def_cfn(c, slots[3], "keyword_init?", korb_m_struct_keyword_init_p, 0);
-    korb_class_def_cfn(c, slots[3], "[]", korb_m_class_new_bracket, -1);   /* Rec[...] == Rec.new(...) */
+    korb_class_def_cfn_blk(c, slots[3], "[]", korb_m_class_new_bracket, -1);   /* Rec[...] == Rec.new(...) */
     if (block != NULL) {                                      /* Struct.new(...) do ... end → class-body methods */
         slots[2] = KORB_REF_GET(cls);                       /* root the class as the block's self/cref */
         korb_cref_push(c);                            /* a class body: `def` lands on the class */
@@ -4270,11 +4270,11 @@ static RESULT korb_m_struct_inspect(CTX *c, korb_value *slots, korb_ref self, ko
 /* Data.define(*members [, &block]) → an anonymous immutable value class. */
 /* class-level `[]` constructor: Klass[a, b, ...] == Klass.new(a, b, ...).  Shared
  * by Struct and Data value classes; forwards positional + trailing-kwargs args. */
-static RESULT korb_m_class_new_bracket(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+static RESULT korb_m_class_new_bracket(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
     const uint32_t argc = KORB_SLICE_LEN(a);
     slots[0] = KORB_REF_GET(self);                       /* receiver */
     for (uint32_t i = 0; i < argc; i++) slots[1 + i] = KORB_SLICE_GET(a, i);
-    return korb_send(c, slots + 1 + argc, korb_intern_lit(c->vm, "new", 3), 0, argc);
+    return korb_send_impl(c, slots + 1 + argc, korb_intern_lit(c->vm, "new", 3), 0, argc, block, def_env, cself);   /* and its block */
 }
 /* Common Data instance methods — on the base Data class, once (see
  * korb_def_struct_common for why).  `pk` is a rooted slot. */
@@ -4319,7 +4319,7 @@ static RESULT korb_data_define(CTX *c, korb_value *slots, korb_ref self, korb_sl
     slots[2] = KORB_REF_GET(cls);                            /* root across singleton alloc */
     slots[3] = UNWRAP(korb_obj_singleton(c, slots + 4, slots[2]));
     korb_class_def_cfn(c, slots[3], "members", korb_m_struct_class_members, 0);
-    korb_class_def_cfn(c, slots[3], "[]", korb_m_class_new_bracket, -1);   /* D[...] == D.new(...) */
+    korb_class_def_cfn_blk(c, slots[3], "[]", korb_m_class_new_bracket, -1);   /* D[...] == D.new(...) */
     if (block != NULL) {                                      /* Data.define(...) do ... end → class-body methods */
         slots[2] = KORB_REF_GET(cls);
         korb_cref_push(c);                            /* a class body: `def` lands on the class */
@@ -9975,6 +9975,7 @@ korb_value_eq(korb_value a, korb_value b)
         return eq;
     }
     if (KORB_SET_P(a) && KORB_SET_P(b)) {             /* Set#==: same members (order-independent) */
+        if (VAL2SET(a)->by_identity != VAL2SET(b)->by_identity) return false;   /* compare_by_identity differs */
         const KorbArray *x = VAL2ARY(VAL2SET(a)->elems), *y = VAL2ARY(VAL2SET(b)->elems);
         if (x->len != y->len) return false;
         for (uint32_t i = 0; i < x->len; i++) {
@@ -15697,8 +15698,9 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
                 struct korb_method *const duinit = korb_find_method_c(vm, *recv_slot, vm->mid_initialize, &didef);
                 if (duinit && duinit->kind == KORB_METHOD_ISEQ) {   /* the default is a CFUNC, so ISEQ ⇒ a real override */
                     const uint32_t nmem = VAL2ARY(VAL2CLASS(*recv_slot)->members)->len;
-                    const bool kw_form = argc == 1 && KORB_HASH_P(slots[-(korb_sword_t)argc]) &&
-                                         korb_data_all_keys_members(vm, VAL2CLASS(*recv_slot), VAL2HASH(slots[-(korb_sword_t)argc]));
+                    const bool kw_form = argc == 1 && (korb_kwargs_hash_p(slots[-(korb_sword_t)argc]) ||   /* written as keywords */
+                                         (KORB_HASH_P(slots[-(korb_sword_t)argc]) &&
+                                          korb_data_all_keys_members(vm, VAL2CLASS(*recv_slot), VAL2HASH(slots[-(korb_sword_t)argc]))));
                     /* Data.new always calls #initialize with KEYWORDS: map exact-count
                      * positional args to a member-keyed Hash so an override's **kw sees them.
                      * Build the kwargs Hash BEFORE allocating the instance (the instance
@@ -15785,6 +15787,15 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
                             k = kr.value;
                         }
                         slots[2] = KORB_STRING_P(k) ? ID2SYM(korb_intern_enc(vm, korb_str_ptr(VAL2STR(k)), VAL2STR(k)->len, KORB_STR_ENC(k))) : k;
+                        if (KORB_STRING_P(k)) {                    /* a String key naming no member: CRuby shows it as a String */
+                            const KorbArray *const mm = VAL2ARY(VAL2CLASS(*recv_slot)->members);
+                            bool member = false;
+                            for (uint32_t m2 = 0; m2 < mm->len; m2++) if (korb_ary_ptr(mm)[m2] == slots[2]) { member = true; break; }
+                            if (!member) {
+                                char ib[256]; korb_desc_inspect(c, k, ib, sizeof ib);
+                                return korb_raise(c, slots, KORB_E_ARGUMENT, line, "unknown keyword: %s", ib);
+                            }
+                        }
                         slots[3] = korb_hash_pairs(VAL2HASH(slots[0]))[2 * j + 1];
                         CHECK(korb_hash_set(c, slots + 5, KORB_REF_AT(&slots[1]), KORB_REF_AT(&slots[2]), slots[3]));
                     }
@@ -19190,6 +19201,7 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_SET, "union", korb_m_set_union, 1);
     korb_def_cmethod(c, KORB_C_SET, "+", korb_m_set_union, 1);
     korb_def_cmethod(c, KORB_C_SET, "merge", korb_m_set_merge, -1);
+    korb_def_cmethod(c, KORB_C_SET, "__iterating?", korb_m_set_iterating_p, 0);
     korb_def_cmethod(c, KORB_C_SET, "join", korb_m_set_join, -1);
     korb_def_cmethod(c, KORB_C_SET, "&", korb_m_set_inter, 1);
     korb_def_cmethod(c, KORB_C_SET, "intersection", korb_m_set_inter, 1);

@@ -24,6 +24,13 @@ static RESULT korb_set_find(CTX *c, korb_value *slots, const korb_value set, con
     return err;
 }
 static RESULT korb_set_add(CTX *c, korb_value *slots, korb_ref sref, const korb_value e, bool *added) {
+    if (UNLIKELY(VAL2SET(KORB_REF_GET(sref))->iter_lev != 0)) {   /* during #each only a member already there */
+        int32_t idx;
+        CHECK(korb_set_find(c, slots, KORB_REF_GET(sref), e, &idx));
+        if (idx < 0) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "can't add a new item into set during iteration");
+        *added = false;
+        return RESULT_OK(KORB_NIL);
+    }
     slots[0] = e;
     slots[1] = VAL2SET(KORB_REF_GET(sref))->tbl;
     const uint32_t n0 = VAL2HASH(slots[1])->len;
@@ -271,14 +278,22 @@ static RESULT korb_m_set_delete_at(CTX *c, korb_value *slots, korb_ref self, kor
 static RESULT korb_m_set_each(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself) {
     (void)a;
     if (block == NULL) REQUIRE_BLOCK("Set#each");
+    if (SELF_SET->iter_lev != UINT8_MAX) SELF_SET->iter_lev++;
+    RESULT r = RESULT_OK(KORB_NIL);
     for (uint32_t i = 0; ; i++) {
         const KorbArray *ar = VAL2ARY(SELF_SET->elems);
         if (i >= ar->len) break;
         slots[0] = korb_ary_ptr(ar)[i];
-        RESULT r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
-        if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+        r = korb_block_yield(c, slots + 1, block, def_env, &slots[0], 1, cself);
+        if (UNLIKELY(r.state != KORB_NORMAL)) break;
     }
-    return RESULT_OK(KORB_REF_GET(self));
+    if (SELF_SET->iter_lev != UINT8_MAX) SELF_SET->iter_lev--;   /* SELF_SET re-reads: the block may have moved it */
+    return r.state != KORB_NORMAL ? r : RESULT_OK(KORB_REF_GET(self));
+}
+/* __iterating? — inside #each (Set#replace refuses then, as CRuby) */
+static RESULT korb_m_set_iterating_p(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)c; (void)slots; (void)a;
+    return RESULT_OK(SELF_SET->iter_lev ? KORB_TRUE : KORB_FALSE);
 }
 /* set ops: op 0=union 1=intersection 2=difference 3=xor.  Member order and the
  * compare_by_identity carry-over follow CRuby 4.x (& drops the flag). */
@@ -327,6 +342,7 @@ static RESULT korb_m_set_diff(CTX *c, korb_value *slots, korb_ref self, korb_sli
 static RESULT korb_m_set_xor(CTX *c, korb_value *slots, korb_ref self, korb_slice a)   { return korb_set_binop(c, slots, self, a, 3); }
 static RESULT korb_m_set_merge(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     KORB_CHECK_FROZEN(c, slots, KORB_REF_GET(self));
+    if (UNLIKELY(SELF_SET->iter_lev)) return korb_raise(c, slots, KORB_E_RUNTIME, 0, "cannot add to set during iteration");
     const uint32_t na = KORB_SLICE_LEN(a);
     if (UNLIKELY(na >= 1 && korb_kwargs_hash_p(KORB_SLICE_GET(a, na - 1))))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "no keywords accepted");
@@ -382,6 +398,7 @@ static RESULT korb_m_set_psuperset(CTX *c, korb_value *slots, korb_ref self, kor
 static RESULT korb_m_set_eq(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     const korb_value o = KORB_SLICE_GET(a, 0);
     if (!KORB_SET_P(o)) return RESULT_OK(KORB_FALSE);
+    if (SELF_SET->by_identity != VAL2SET(o)->by_identity) return RESULT_OK(KORB_FALSE);   /* compare_by_identity differs */
     if (VAL2ARY(SELF_SET->elems)->len != VAL2ARY(VAL2SET(o)->elems)->len) return RESULT_OK(KORB_FALSE);
     slots[0] = o;
     slots[1] = SELF_SET->elems;

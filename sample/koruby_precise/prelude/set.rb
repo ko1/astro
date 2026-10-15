@@ -34,12 +34,13 @@ class Set
   def reject!; return to_enum(:reject!) { size } unless block_given?; n = size; delete_if { |x| yield(x) }; size == n ? nil : self; end
   def select!; return to_enum(:select!) { size } unless block_given?; n = size; keep_if { |x| yield(x) }; size == n ? nil : self; end
   alias filter! select!                    # CRuby: #filter! is the same UnboundMethod as #select!
-  def collect!; return to_enum(:collect!) { size } unless block_given?; old = []; each { |x| old << x }; nw = old.map { |e| yield(e) }; clear; nw.each { |x| self << x }; self; end
+  def collect!; return to_enum(:collect!) { size } unless block_given?; old = []; each { |x| old << x }; nw = old.map { |e| yield(e) }; clear; __set_unidentity if compare_by_identity?; nw.each { |x| self << x }; self; end
   alias map! collect!                      # CRuby: #map! and #collect! share one UnboundMethod
   def classify; return to_enum(:classify) { size } unless block_given?; h = {}; each { |e| k = yield(e); (h[k] ||= self.class.new) << e }; h; end
   # replace self's contents with the given enumerable's, in place.
   def replace(enum)
     raise ArgumentError, "value must be enumerable" unless enum.respond_to?(:each)
+    raise RuntimeError, "cannot replace set during iteration" if __iterating?
     clear
     if enum.is_a?(Set)                                 # CRuby: the argument's compare_by_identity comes along
       if enum.compare_by_identity? then compare_by_identity
@@ -50,13 +51,9 @@ class Set
     self
   end
   def flatten!
-    flat = flatten
-    if flat == self
-      nil
-    else
-      replace(flat)
-      self
-    end
+    return nil unless any? { |e| e.is_a?(Set) }   # nothing nested: unchanged (keeps compare_by_identity)
+    replace(flatten)
+    self
   end
   def divide(&func)
     return to_enum(:divide) { size } unless block_given?

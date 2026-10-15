@@ -393,6 +393,7 @@ typedef struct KorbSet {
     korb_value ARO_GC_EDGE elems;         /* KorbArray of unique members */
     korb_value ARO_GC_EDGE tbl;           /* KorbHash member → true, same order as elems (CRuby's buckets) */
     uint8_t by_identity;             /* compare_by_identity: members compared by object identity */
+    uint8_t iter_lev;                /* inside #each (saturating): adding a new member is a RuntimeError (CRuby) */
 } KorbSet;
 
 typedef struct KorbRegexp {

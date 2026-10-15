@@ -119,8 +119,11 @@ static RESULT korb_m_obj_eq(CTX *c, korb_value *slots, korb_ref self, korb_slice
 /* Object#=== — the default is `self == other`, so a subclass's overridden #==
  * is honoured (dispatch rather than the identity korb_m_obj_eq). */
 static RESULT korb_m_obj_case_eq(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    if (KORB_REF_GET(self) == KORB_SLICE_GET(a, 0)) return RESULT_OK(KORB_TRUE);   /* rb_equal: the same object, without #== */
     slots[0] = KORB_REF_GET(self); slots[1] = KORB_SLICE_GET(a, 0);
-    return korb_send_impl(c, slots + 2, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
+    const RESULT r = korb_send_impl(c, slots + 2, c->vm->mid_eq, 0, 1, NULL, NULL, NULL);
+    if (UNLIKELY(r.state != KORB_NORMAL)) return r;
+    return RESULT_OK(KORB_TRUTHY(r.value) ? KORB_TRUE : KORB_FALSE);
 }
 static RESULT korb_m_obj_eql(CTX *c, korb_value *slots, korb_ref self, korb_slice a) { (void)c;(void)slots; return RESULT_OK(korb_value_eql(KORB_REF_GET(self), KORB_SLICE_GET(a,0)) ? KORB_TRUE : KORB_FALSE); }  /* type-strict: 1.eql?(1.0) => false */
 static RESULT korb_m_obj_neq(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {

@@ -2929,3 +2929,16 @@ def $LOAD_PATH.resolve_feature_path(feature)
   end
   nil
 end
+
+class Data
+  # CRuby: no changes → self; else a new instance built through #initialize with the merged members
+  def with(*args, **changes)
+    raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0)" unless args.empty?
+    return self if changes.empty?
+    h = to_h
+    changes.each { |k, v| h[k.is_a?(String) ? k.to_sym : k] = v }
+    obj = self.class.allocate
+    obj.__send__(:initialize, **h)
+    obj.freeze
+  end
+end
