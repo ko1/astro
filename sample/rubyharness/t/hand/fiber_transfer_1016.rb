@@ -49,3 +49,6 @@ t(:yield_still) { g = Fiber.new { Fiber.yield 1; 2 }; [g.resume, g.resume, g.ali
 t(:public_send_none) { begin; public_send(); rescue ArgumentError => e; e.backtrace[0][/'[^']+'/]; end }
 t(:public_send_bad) { begin; public_send(Object.new); rescue TypeError => e; e.backtrace[0][/'[^']+'/]; end }
 t(:send_none) { begin; send(); rescue ArgumentError => e; e.backtrace[0][/'[^']+'/]; end }
+t(:public_send_private) { c = Class.new { private def q; end; protected def r; end }; [:q, :r].map { |m| begin; c.new.public_send(m); rescue NoMethodError => e; e.backtrace[0][/'[^']+'/]; end } }
+def ps_top; end
+t(:public_send_top) { begin; public_send(:ps_top); rescue NoMethodError => e; e.backtrace[0][/'[^']+'/]; end }

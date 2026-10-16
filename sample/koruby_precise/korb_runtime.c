@@ -15554,16 +15554,18 @@ korb_super_new_skip_p(CTX *c, korb_value self, korb_value sdef, const korb_value
 /* public_send's own argument errors come from a 'Kernel#public_send' frame (CRuby: a
  * real C method; send / __send__ are optimized away and show none).  koruby's
  * public_send is in no method table, so the frame is named here. */
-__attribute__((cold, noinline)) static RESULT
-korb_public_send_arg_raise(CTX *c, korb_value *slots, uint32_t argc, uint32_t line)
-{
-    const RESULT r = argc == 0 ? korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given")
-                               : korb_raise_line_fill(c, korb_raise_not_sym(c, slots, slots[-(korb_sword_t)argc]), line);
+static RESULT korb_public_send_framed(CTX *c, const RESULT r, uint32_t line) {
     if (r.state == KORB_RAISE && KORB_EXC_P(r.value)) {
         korb_bt_push(c->vm, NULL, line, "Kernel#public_send");   /* a C frame: borrows the caller's file */
         VAL2EXC(r.value)->line = line;
     }
     return r;
+}
+__attribute__((cold, noinline)) static RESULT
+korb_public_send_arg_raise(CTX *c, korb_value *slots, uint32_t argc, uint32_t line)
+{
+    return korb_public_send_framed(c, argc == 0 ? korb_raise(c, slots, KORB_E_ARGUMENT, line, "no method name given")
+                                                : korb_raise_line_fill(c, korb_raise_not_sym(c, slots, slots[-(korb_sword_t)argc]), line), line);
 }
 
 static RESULT
@@ -15629,8 +15631,8 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
             if (mid == vm->mid_public_send &&
                 KORB_OBJECT_P(self) && VAL2OBJ(self)->klass == KORB_NIL &&
                 !korb_responds_to(c, self, rmid) && korb_method_lookup(vm, rmid) != NULL)
-                return korb_raise(c, slots, KORB_E_NOMETHOD, line,
-                                  "private method '%s' called for main", korb_sym_name(vm, rmid));
+                return korb_public_send_framed(c, korb_raise(c, slots, KORB_E_NOMETHOD, line,
+                                  "private method '%s' called for main", korb_sym_name(vm, rmid)), line);
             if (mid == vm->mid_public_send) {              /* public_send refuses private/protected methods */
                 const korb_value dcls = korb_dispatch_class(c, self);
                 korb_value mdef = KORB_NIL;
@@ -15641,8 +15643,8 @@ korb_send_impl_vis(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, uint3
                     slots[0] = self;
                     char rdbuf[224];
                     const char *const rd = korb_nomethod_recv_desc(c, slots + 2, slots[0], rdbuf, sizeof rdbuf);
-                    return korb_raise(c, slots + 1, KORB_E_NOMETHOD, line, "%s method '%s' called for %s",
-                                      vis == 1 ? "private" : "protected", korb_sym_name(vm, rmid), rd);
+                    return korb_public_send_framed(c, korb_raise(c, slots + 1, KORB_E_NOMETHOD, line, "%s method '%s' called for %s",
+                                      vis == 1 ? "private" : "protected", korb_sym_name(vm, rmid), rd), line);
                 }
             }
             slots[-(korb_sword_t)argc] = self;                 /* recv → arg0 slot; args shift down by one */
