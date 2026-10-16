@@ -269,6 +269,10 @@ enum korb_obj_type {
  * NOTE the high bits are NOT free here: a String keeps its encoding in
  * KORB_STR_ENC_MASK (0x7000) *and* KORB_STR_ENC_HI_MASK (0x0180). */
 #define KORB_FL_CHILLED_SYM 0x400u
+/* FROZEN | CHILLED_SYM without CHILLED (a pair nothing else sets): a String temporarily locked by
+ * IO::Buffer.for { } (CRuby's rb_str_locktmp).  The mutation guards' FROZEN test catches it; the raise
+ * then says "temporarily locked", and #frozen? answers false. */
+#define KORB_STR_TMPLOCKED_P(fl) (((fl) & (KORB_FL_FROZEN | KORB_FL_CHILLED | KORB_FL_CHILLED_SYM)) == (KORB_FL_FROZEN | KORB_FL_CHILLED_SYM))
 
 /* bit 10 (Array, transient): array is on the current Array#join recursion path.
  * GC-safe cycle detection (survives moves) so join can dispatch element #to_s. */

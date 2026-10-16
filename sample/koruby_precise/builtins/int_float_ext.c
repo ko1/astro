@@ -833,7 +833,8 @@ static RESULT korb_m_obj_clone(CTX *c, korb_value *slots, korb_ref self, korb_sl
      * those — a plain clone passes none. */
     slots[0] = (n >= 1 && KORB_HASH_P(KORB_SLICE_GET(a, n - 1))) ? KORB_SLICE_GET(a, n - 1) : KORB_NIL;
     const korb_value sv = KORB_REF_GET(self);
-    const bool self_frozen = AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_FROZEN);
+    const bool self_frozen = AROH_IS_GC_OBJECT(sv) && (((const AroObjectHeader *)(uintptr_t)sv)->flags & KORB_FL_FROZEN) &&
+                             !(KORB_STRING_P(sv) && KORB_STR_TMPLOCKED_P(((const AroObjectHeader *)(uintptr_t)sv)->flags));   /* locked, not frozen */
     RESULT r = korb_obj_copy_impl(c, slots + 1, self, korb_intern_lit(c->vm, "initialize_clone", 16), &slots[0]);
     if (UNLIKELY(r.state != KORB_NORMAL)) return r;
     const korb_value sv2 = KORB_REF_GET(self);   /* re-fetch: korb_m_obj_dup GC-moved the receiver; `sv` is stale */

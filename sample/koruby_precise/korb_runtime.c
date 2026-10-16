@@ -12982,6 +12982,8 @@ korb_raise_frozen_at(CTX *c, korb_value *slots, korb_value v, uint32_t line)
 {
     if (UNLIKELY(KORB_STRING_P(v) && (((AroObjectHeader *)(uintptr_t)v)->flags & KORB_FL_CHILLED)))
         return korb_unchill(c, slots, v);          /* reached from the non-macro callers */
+    if (UNLIKELY(KORB_STRING_P(v) && KORB_STR_TMPLOCKED_P(((AroObjectHeader *)(uintptr_t)v)->flags)))
+        return korb_raise(c, slots, KORB_E_RUNTIME, line, "can't modify string; temporarily locked");
     /* name the object's real class and let it inspect itself: a user instance is
      * not "Object", and a Time renders as a Time.  nil/true/false are named by
      * their class here (NilClass), not by the value as in a TypeError. */
@@ -17804,7 +17806,7 @@ static const struct { const char *name; uint32_t argc; int cls[KORB_SDI_FN_MAX +
     KORB_SDI_E(DOWNCASE, "downcase", 0, KORB_C_STRING, KORB_C_SYMBOL),
     KORB_SDI_E(DUP, "dup", 0, KORB_C_OBJECT, KORB_C_INTEGER, KORB_C_FLOAT, KORB_C_STRING),
     KORB_SDI_E(FORCE_ENCODING, "force_encoding", 1, KORB_C_STRING),
-    KORB_SDI_E(FREEZE, "freeze", 0, KORB_C_OBJECT),
+    KORB_SDI_E(FREEZE, "freeze", 0, KORB_C_OBJECT, KORB_C_STRING),
     KORB_SDI_E(TO_I, "to_i", 0, KORB_C_INTEGER, KORB_C_STRING, KORB_C_NIL, KORB_C_FLOAT),
     KORB_SDI_E(PUSH, "push", 1, KORB_C_ARRAY),
     KORB_SDI_E(POP, "pop", 0, KORB_C_ARRAY),
@@ -18419,6 +18421,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_STRING, "dup", korb_m_str_dup, 0);
     korb_def_cmethod(c, KORB_C_STRING, "encode!", korb_m_str_self, -1);
     korb_def_cmethod(c, KORB_C_STRING, "force_encoding", korb_m_str_force_encoding, 1);
+    korb_def_cmethod(c, KORB_C_STRING, "freeze", korb_m_obj_freeze, 0);   /* String#freeze is String's own (CRuby) */
+    korb_def_cmethod(c, KORB_C_STRING, "__tmplock", korb_m_str_tmplock, 0);
+    korb_def_cmethod(c, KORB_C_STRING, "__tmpunlock", korb_m_str_tmpunlock, 0);
     korb_def_cmethod(c, KORB_C_STRING, "__encoding_tag", korb_m_str_enc_tag, 0);
     korb_def_cmethod(c, KORB_C_STRING, "__encoding_name", korb_m_str_enc_name, 0);
     korb_def_cmethod(c, KORB_C_STRING, "__enc_same?", korb_m_str_enc_same_p, 1);

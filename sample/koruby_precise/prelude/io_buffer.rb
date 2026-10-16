@@ -124,6 +124,29 @@ class IO
     # block なし: 文字列内容の read-only なコピー (以後 String を書き換えても
     # buffer には反映されない)。block あり: 元 String を直接指す writable な
     # buffer を渡し、block を抜けたら free する。
+    # the buffer's own write into its String, which IO::Buffer.for { } keeps locked against everyone else
+    private def __splice(pos, len, str)
+      relock = @source.__send__(:__tmpunlock)
+      @source.bytesplice(pos, len, str)
+      @root.__map_out(pos, str)
+    ensure
+      @source.__send__(:__tmplock) if relock
+    end
+
+    # A SHARED map is a copy of the file here, so another process's writes reach it through the file: a write
+    # goes to the file too, and a read takes the bytes from it first.  (A PRIVATE map keeps its own copy.)
+    def __map_shared(io, base); @map_io = io; @map_base = base; self; end
+    def __map_out(pos, str)
+      @map_io.pwrite(str, @map_base + pos) if @map_io && !@map_io.closed? && !str.empty?
+    end
+    private def __map_in(pos, len)
+      root = @root
+      io = root.instance_variable_get(:@map_io)
+      return unless io && !io.closed? && len > 0
+      data = io.pread(len, root.instance_variable_get(:@map_base) + pos) rescue return
+      @source.bytesplice(pos, data.bytesize, data) unless data.empty?
+    end
+
     def self.for(string)
       raise TypeError, "expected a String" unless string.is_a?(String)
       unless block_given?
@@ -133,9 +156,11 @@ class IO
       end
       flags = EXTERNAL | (string.frozen? ? READONLY : 0)
       buffer = __wrap(string, 0, string.bytesize, flags, true).__mark_string_backed
+      locked = string.__send__(:__tmplock)   # the String can't be modified while the buffer points at it
       begin
         yield buffer
       ensure
+        string.__send__(:__tmpunlock) if locked
         buffer.__free_internal       # even when the block froze it (CRuby's C-level cleanup)
       end
     end
@@ -209,7 +234,8 @@ class IO
       data << ("\0".b * (size - data.bytesize)) if data.bytesize < size
       # PRIVATE は copy-on-write の私有ページ: shared でも external でもない。
       base = (flags & PRIVATE) == 0 ? (EXTERNAL | SHARED) : 0
-      __wrap(data, 0, size, base | MAPPED | flags, false)
+      buf = __wrap(data, 0, size, base | MAPPED | flags, false)
+      (flags & PRIVATE) == 0 ? buf.__map_shared(file, offset) : buf
     end
 
     def self.__writable_io?(file)
@@ -359,6 +385,7 @@ class IO
       width, fmt = __type(type)
       __valid!
       __bounds(offset, width)
+      __map_in(@offset + offset, width)
       @source.byteslice(@offset + offset, width).unpack1(fmt)
     end
 
@@ -375,7 +402,7 @@ class IO
       width, fmt = __type(type)
       __writable!
       __bounds(offset, width)
-      @source.bytesplice(@offset + offset, width, [value].pack(fmt))
+      __splice(@offset + offset, width, [value].pack(fmt))
       offset + width
     end
 
@@ -434,6 +461,7 @@ class IO
       if offset + length > @size
         raise ArgumentError, "Specified offset+length is bigger than the buffer size!"
       end
+      __map_in(@offset + offset, length) if @source
       s = @source ? @source.byteslice(@offset + offset, length) : ""
       s.force_encoding(encoding)
     end
@@ -452,7 +480,7 @@ class IO
       if offset + length > @size
         raise ArgumentError, "Specified offset+length is bigger than the buffer size!"
       end
-      @source.bytesplice(@offset + offset, length, string.byteslice(source_offset, length))
+      __splice(@offset + offset, length, string.byteslice(source_offset, length))
       length
     end
 
@@ -462,7 +490,7 @@ class IO
       if offset < 0 || length < 0 || offset + length > @size
         raise ArgumentError, "Specified offset+length is bigger than the buffer size!"
       end
-      @source.bytesplice(@offset + offset, length, (value & 0xff).chr.b * length) if length > 0
+      __splice(@offset + offset, length, (value & 0xff).chr.b * length) if length > 0
       self
     end
 

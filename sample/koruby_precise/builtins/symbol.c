@@ -149,6 +149,8 @@ static RESULT korb_m_obj_itself(CTX *c, korb_value *slots, korb_ref self, korb_s
 static RESULT korb_m_obj_freeze(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     (void)slots;(void)a; korb_value v = KORB_REF_GET(self);
     if (AROH_IS_GC_OBJECT(v)) {
+        if (UNLIKELY(KORB_STRING_P(v) && KORB_STR_TMPLOCKED_P(((const AroObjectHeader *)(uintptr_t)v)->flags)))
+            return korb_raise(c, slots, KORB_E_RUNTIME, 0, "can't modify string; temporarily locked");
         /* an explicit #freeze ends chilled status: from here a mutation is a
          * real FrozenError, not a deprecation warning */
         ((AroObjectHeader *)(uintptr_t)v)->flags &= (uint16_t)~(KORB_FL_CHILLED | KORB_FL_CHILLED_SYM);
@@ -172,8 +174,23 @@ static RESULT korb_m_obj_frozen_q(CTX *c, korb_value *slots, korb_ref self, korb
     const uint16_t fl = ((AroObjectHeader *)(uintptr_t)v)->flags;
     /* A CHILLED String carries FROZEN so the mutation guards catch it, but it is
      * not frozen yet as far as Ruby is concerned. */
-    if (UNLIKELY(KORB_STRING_P(v) && (fl & KORB_FL_CHILLED))) return RESULT_OK(KORB_FALSE);
+    if (UNLIKELY(KORB_STRING_P(v) && (fl & (KORB_FL_CHILLED | KORB_FL_CHILLED_SYM)))) return RESULT_OK(KORB_FALSE);   /* also a temporarily locked one */
     return RESULT_OK((fl & KORB_FL_FROZEN) ? KORB_TRUE : KORB_FALSE);
+}
+/* String#__tmplock / __tmpunlock (IO::Buffer.for { }): see KORB_STR_TMPLOCKED_P.  A frozen String stays as it is. */
+static RESULT korb_m_str_tmplock(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)c; (void)slots; (void)a;
+    AroObjectHeader *const h = (AroObjectHeader *)(uintptr_t)KORB_REF_GET(self);
+    if ((h->flags & KORB_FL_FROZEN) && !(h->flags & KORB_FL_CHILLED)) return RESULT_OK(KORB_FALSE);
+    h->flags = (uint16_t)((h->flags & ~KORB_FL_CHILLED) | KORB_FL_FROZEN | KORB_FL_CHILLED_SYM);
+    return RESULT_OK(KORB_TRUE);
+}
+static RESULT korb_m_str_tmpunlock(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
+    (void)c; (void)slots; (void)a;
+    AroObjectHeader *const h = (AroObjectHeader *)(uintptr_t)KORB_REF_GET(self);
+    if (!KORB_STR_TMPLOCKED_P(h->flags)) return RESULT_OK(KORB_FALSE);   /* frozen meanwhile: stays frozen */
+    h->flags &= (uint16_t)~(KORB_FL_FROZEN | KORB_FL_CHILLED_SYM);
+    return RESULT_OK(KORB_TRUE);
 }
 static RESULT korb_m_obj_cmp(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {
     /* CRuby Object#<=>: 0 if self == other (dispatched, so a custom #== counts), else nil. */

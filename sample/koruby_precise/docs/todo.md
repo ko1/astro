@@ -5,6 +5,19 @@
 
 
 
+## 未: `for x in obj`（Array / Range 以外）が先に全要素を配列にしてから回す (2026-10-16)
+node_for は `obj.to_enum(:each).to_a` で materialize してから本体を回すので、(1) 無限の Enumerator を
+`break` で抜ける for が止まらない、(2) #each の途中の副作用と本体の実行順が CRuby と違う、(3) #each に渡る
+ブロックが prelude の map のもの（Proc#source_range / syntax_tree が for 文を指さない。rubyspec 2 例）。
+本体を END { } と同じ depth_shift のブロックにして each に渡せばよいが、prism の depth をそのまま使う箇所
+（パターンマッチの束縛・多重代入の targets・rescue `=> e`・入れ子のブロックからの参照）が shift を見ないので、
+それらを kp_frame_at の手前で一括して換算する仕組みが先に要る（END の本体も同じ穴を持つ）。
+
+## 未: 外側の変数を読まないブロックの Proc#binding に引数・局所変数が無い (2026-10-16)
+`def t(a) = -> {}; eval("a", t(1).binding)` が NameError。cap_depth == 0 のブロックは身元だけの env
+（n = 0）を作り、フレームを escape させない（return 時の局所変数の写しを省く高速化）。Proc#binding のために
+常に写すと proc を作るメソッドの return がすべて遅くなる。rubyspec core/proc/binding_spec 1 例。
+
 ## 未: 正規表現の `\k<name-0>`（再帰の段ごとの後方参照）(2026-10-16)
 astrogre はキャプチャを段ごとに持たないので `\k<first_char-0>` を解決できない（mirror パターンが nil）。
 \g<> の呼び出しごとにキャプチャ履歴を積む必要がある。rubyspec: language/regexp/subexpression_call_spec 1 例。
@@ -25,13 +38,6 @@ korb_runtime.c の `#include <execinfo.h>`（EXPERIMENT acct45、2026-10-09 mast
 ## 既存: astrogre の tests/regex_test.rb が `[\xNN]` の compile で止まる (2026-10-16 確認)
 `ASTrogre.compile` が "failed to parse pattern: [\xNN]" で ArgumentError。HEAD の astrogre を別ディレクトリに
 展開しても同じなので今回の変更とは無関係。
-
-## 未: IO::Buffer.for(string) の間の元 String の一時ロック・プロセス間で共有する IO::Buffer.map (2026-10-16)
-- CRuby は block 付きの .for の間、元の String を rb_str_locktmp で守る（変更は RuntimeError
-  "can't modify string; temporarily locked"）。koruby の String に一時ロックの印が無い（FROZEN と別の
-  ビットと、frozen? / dup / バッファ自身の書き込みの扱いが要る）。
-- .map はファイル内容のコピーなので、fork した子の書き込みが親に見えない（本物の mmap(MAP_SHARED) が要る）。
-- rubyspec: core/io/buffer/for_spec 1 例、map_spec 1 例。
 
 ## 未: ObjectSpace.trace_object_allocations (2026-10-16)
 割り当て位置の記録は全オブジェクトの割り当て（korb_alloc）に確認が要り、moving GC で動くオブジェクトを
@@ -330,7 +336,8 @@ dispatch 後の scratch (`slots[0]`) ではなく `e` を使うようにした�
 "can't modify string; temporarily locked"。koruby の IO::Buffer は Ruby レベルの
 エミュレーションで実メモリを共有していないので、slice が root を参照してロックと
 有効性を共有する作りに変える必要がある。`map_spec` の「プロセス間で共有される」1 例は
-実 mmap が要るので対象外。
+実 mmap が要るので対象外。→ 2026-10-16: 一時ロック（FROZEN|CHILLED_SYM の組、KORB_STR_TMPLOCKED_P）と、
+SHARED な map をファイル経由で読み書きする形（pread / pwrite）で両方とも通した。
 
 ## String#tr の Hash 形 (Ruby 4.1) を実装 (2026-09-16)
 
