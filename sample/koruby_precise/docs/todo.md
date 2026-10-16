@@ -5,7 +5,8 @@
 
 
 
-## 未: TracePoint の残り (2026-10-16)
+## 未: TracePoint の残り (2026-10-16) — スコープ表では範囲外、ベストエフォート
+100% 互換は狙わない（AOT の SD は実行中に解釈系へ戻れない）。rubyspec の core/tracepoint（76 例）は通過率に数えない。
 実装（builtins/tracepoint.c）: parse がユーザコードの文の先頭（prism の newline フラグ、1 行 1 回）と def / ブロック /
 class の本体を記録し（head.line = 記録番号）、有効化した瞬間にユーザコードの全ノードを解釈系の dispatcher に戻して
 記録したノードだけ korb_trace_dispatch に差し替える（無効化で戻す、method_serial を上げ AOT の直接呼び出しを外す）。
@@ -2864,7 +2865,7 @@ exit 時に c->sp restore。 captured proc は snapshot_env_maybe で libc
 | Fiber Scheduler / Async I/O | 範囲外 |
 | ObjectSpace 走査 / 詳細 | excluded |
 | GC.* (start / stress 以外の細部) | runtime 内部依存 |
-| TracePoint | 実装済み（2026-10-16、c_call/c_return は未） |
+| TracePoint | 範囲外（2026-10-16 にベストエフォートで実装: 無効時ゼロの差し替え方式。AOT の実行中フレーム・c_call/c_return は対象外。rubyspec の数には入れない） |
 | RubyVM | 範囲外 |
 | NaN-boxing | 値表現変更禁止 (project memory) |
 | Refinements (`refine` / `using`) | 言語拡張、 範囲外 |
