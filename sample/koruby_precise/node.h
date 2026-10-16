@@ -43,6 +43,7 @@ struct NodeHead {
         bool is_vcall : 1;          /* bare identifier (`foo`): a miss is NameError */
         bool yield_simple : 1;      /* node_entry block: korb_block_yield's fast path applies (set on first yield) */
         bool lambda_lit : 1;        /* node_entry: a `-> {}` / `lambda {}` literal's body (an eval'd `return` stops there) */
+        bool thread_body : 1;       /* node_entry: the block of a Thread.new — a `break` in it has nowhere to go */
         bool ty_observed : 1;       /* EXPERIMENT KORB_TYHINT: ty_l / ty_r hold the operand kinds this site saw */
         uint8_t ty_l, ty_r;         /* bit (kind - 1) per korb_ty_kind seen (a body can be the site itself, so not head.line) */
         uint8_t sd_inl;             /* node_send: which AOT-only inline body its SD calls (enum korb_sdi, 0 = none) */
@@ -285,6 +286,7 @@ RESULT korb_str_interp(CTX *c, korb_value *slots, korb_ref acc, korb_value part,
 /* Array (korb_runtime.c) */
 RESULT korb_ary_new(CTX *c, korb_value *slots, uint32_t capa);
 RESULT korb_capture_backtrace(CTX *c, korb_value *slots, const korb_value *fbase);   /* position list into the exc at slots[0]; fbase = the rescuing frame's base (NULL: unwound frames only) */
+RESULT korb_capture_backtrace_thread(CTX *c, korb_value *slots);   /* the same for a thread's uncaught raise (no '<main>' closer) */
 RESULT korb_ary_push_val(CTX *c, korb_value *slots, korb_ref aref, korb_value elem);
 void   korb_ary_store_at(CTX *c, korb_value ary, uint32_t i, korb_value val);   /* in-range ary[i]=val (WB) */
 int32_t korb_hash_find(const KorbHash *h, korb_value key);   /* index of key in pair array, or -1 (Hash#[] fast path) */
@@ -626,6 +628,7 @@ RESULT korb_yield_outer(CTX *c, korb_value *slots, uint32_t argc, uint32_t line,
 korb_value *korb_outer_frame_base(korb_value prev_handle, uint32_t depth);
 korb_value *korb_outer_frame_base_at(korb_value *ep_cell, korb_value prev_handle, uint32_t depth);
 korb_value *korb_return_lambda_stop(korb_value *frame_base, korb_value prev_handle, uint32_t depth);
+RESULT korb_raise_break_lje_pub(CTX *c, korb_value *slots, korb_value value, uint32_t line);   /* LocalJumpError "break from proc-closure" */
 struct Node *korb_entry_plain_twin(struct korb_vm *vm, struct Node *entry);
 korb_value  korb_outer_handle_at(const korb_value *frame_base, korb_value prev_handle, uint32_t depth);
 /* The enclosing method's block trio, or NULL once that frame returned — then

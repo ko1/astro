@@ -58,6 +58,7 @@ struct kp_frame {
     bool depth_shift;         /* END { } body: prism resolved its locals against the ENCLOSING scope
                                * (depth 0), but the body runs as a closure, so every reference is one
                                * level out. */
+    uint32_t loop_depth;      /* while / until / for bodies around the code being transduced (a `break` there is the loop's) */
     bool lambda_body;         /* `-> { }` / `lambda { }` body: a `return` boundary like a method, so the
                                * walk for a non-local return stops here. */
     int32_t  fwd_slot;        /* `def m(...)` → synth rest local holding all positional args (-1 = none) */
@@ -620,6 +621,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->sclass_of_self = false;
     f->max_ref_depth = 0;
     f->yield_depth = 0;
+    f->loop_depth = 0;
     f->add_cells = NULL;
     f->add_cnt = f->add_capa = 0;
     f->prev = tc->frame;
@@ -6069,14 +6071,18 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
         const pm_while_node_t *wn = (const pm_while_node_t *)node;
         const bool post = PM_NODE_FLAG_P(wn, PM_LOOP_FLAGS_BEGIN_MODIFIER);   /* begin..end while → post-test */
         NODE *cond = transduce(tc, wn->predicate);
+        tc->frame->loop_depth++;
         NODE *body = transduce_statements(tc, wn->statements);
+        tc->frame->loop_depth--;
         return post ? ALLOC_node_post_while(cond, body, 0) : ALLOC_node_while(cond, body, 0);
       }
       case PM_UNTIL_NODE: {
         const pm_until_node_t *un = (const pm_until_node_t *)node;
         const bool post = PM_NODE_FLAG_P(un, PM_LOOP_FLAGS_BEGIN_MODIFIER);   /* begin..end until → post-test */
         NODE *cond = transduce(tc, un->predicate);
+        tc->frame->loop_depth++;
         NODE *body = transduce_statements(tc, un->statements);
+        tc->frame->loop_depth--;
         return post ? ALLOC_node_post_while(cond, body, 1) : ALLOC_node_while(cond, body, 1);
       }
       case PM_LAMBDA_NODE: {   /* ->(args) { body } — a lambda Proc */
@@ -6154,7 +6160,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
             NODE *decon = splat ? massign_general(tc, &none, fn->index, &none, bake_lget(tc, e_local))
                                 : massign_general(tc, &mt->lefts, mt->rest, &mt->rights, bake_lget(tc, e_local));
             if (decon == NULL) return kp_unsupported(tc, fn->index, "for-loop index target");
-            NODE *body0 = fn->statements ? transduce_statements(tc, fn->statements) : lit_nil();
+            tc->frame->loop_depth++; NODE *body0 = fn->statements ? transduce_statements(tc, fn->statements) : lit_nil(); tc->frame->loop_depth--;
             NODE *body = decon ? (body0 ? ALLOC_node_seq(decon, body0) : decon) : body0;
             NODE *fnode = ALLOC_node_for((int32_t)orig_local - tc->chain,
                                          (int32_t)iter_local - tc->chain,
@@ -6175,7 +6181,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
             NODE *coll = transduce(tc, fn->collection);
             NODE *store = assign_target_from_synth(tc, fn->index, e_local);
             if (store == NULL) return kp_unsupported(tc, fn->index, "for-loop index target");
-            NODE *body0 = fn->statements ? transduce_statements(tc, fn->statements) : lit_nil();
+            tc->frame->loop_depth++; NODE *body0 = fn->statements ? transduce_statements(tc, fn->statements) : lit_nil(); tc->frame->loop_depth--;
             NODE *body = body0 ? ALLOC_node_seq(store, body0) : store;
             NODE *fnode = ALLOC_node_for((int32_t)orig_local - tc->chain,
                                          (int32_t)iter_local - tc->chain,
@@ -6192,7 +6198,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
         uint32_t orig_local = alloc_synth_local(tc);
         uint32_t iter_local = alloc_synth_local(tc);
         NODE *coll = transduce(tc, fn->collection);
-        NODE *body = fn->statements ? transduce_statements(tc, fn->statements) : lit_nil();
+        tc->frame->loop_depth++; NODE *body = fn->statements ? transduce_statements(tc, fn->statements) : lit_nil(); tc->frame->loop_depth--;
         NODE *fnode = ALLOC_node_for((int32_t)orig_local - tc->chain,
                                      (int32_t)iter_local - tc->chain,
                                      (int32_t)lvar_index(tc, fn->index, iv->name) - tc->chain,
@@ -6522,6 +6528,12 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
       }
       case PM_BREAK_NODE: {
         const pm_break_node_t *bn = (const pm_break_node_t *)node;
+        if (tc->frame->loop_depth == 0 && tc->frame->block_body) {   /* the block's own break (not a loop's) */
+            NODE *const v = kp_jump_args_value(tc, bn->arguments);
+            NODE *const b = ALLOC_node_break_blk(-4 - tc->chain, v, kp_line(tc, node));
+            bake_add(tc, &b->u.node_break_blk.dc_off);
+            return b;
+        }
         return ALLOC_node_break(kp_jump_args_value(tc, bn->arguments));   /* `break a, b` → [a, b] */
       }
       case PM_REDO_NODE:  return ALLOC_node_redo();      /* re-run the block / loop body */

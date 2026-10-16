@@ -862,6 +862,9 @@ korb_thread_trampoline(unsigned hi, unsigned lo)
         if (r.value == KORB_THREAD_KILL) {
             t->result = KORB_NIL;             /* #kill: 正常終了扱い (join は self を返す) */
         } else {
+            base[0] = r.value;
+            (void)korb_capture_backtrace_thread(c, base);   /* fixed now, before a join re-raises it (may GC) */
+            r.value = base[0];
             t->raised = 1; t->exc = r.value;
             /* SystemExit ends the whole program, so it is delivered to the main
              * thread even without abort_on_exception (CRuby). */
@@ -923,6 +926,14 @@ korb_thread_init_body(CTX *c, korb_value *slots, korb_ref self, korb_slice a,
     /* &blk / &method(:m) / &sym: どちらも既に Proc が captured_self にある */
     if (def_env == KORB_BLK_FWD || block == KORB_BLK_CPROC) slots[1] = KORB_CSELF_VAL(captured_self);
     else slots[1] = UNWRAP(korb_make_proc(c, slots + 1, block, def_env, KORB_CSELF_VAL(captured_self), 0));
+    {                                                 /* a `break` in the body raises where it stands (node_break_blk) */
+        NODE *const body = (def_env != KORB_BLK_FWD && block != KORB_BLK_CPROC) ? block
+                         : KORB_PROC_P(slots[1]) ? VAL2PROC(slots[1])->iseq : NULL;
+        if (body != NULL && body != KORB_BLK_CPROC && body->head.kind == &kind_node_entry && !body->head.flags.thread_body) {
+            body->head.flags.thread_body = 1;
+            c->vm->thread_body_any = true;
+        }
+    }
     t->args = slots[0];
     t->blk = slots[1];
     korb_scope_stacks_init(c, &t->ss);

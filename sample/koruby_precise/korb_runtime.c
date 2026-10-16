@@ -12361,8 +12361,20 @@ korb_frames_at(CTX *c, uint32_t nb, uint32_t d, uint32_t i, char *buf, size_t bu
  * preserves it across re-raise.  slots[1..2] stage the array + each string.
  * The raise's own position is the innermost live frame's, which the link the
  * rescuing frame's callee left behind already carries. */
+static RESULT korb_capture_backtrace_core(CTX *c, korb_value *slots, const korb_value *fbase, bool main_closer);
 RESULT
 korb_capture_backtrace(CTX *c, korb_value *slots, const korb_value *fbase)
+{
+    return korb_capture_backtrace_core(c, slots, fbase, true);
+}
+/* A thread's uncaught raise: its bottom is the block, no '<main>' below it (the joiner's frames are not its). */
+RESULT
+korb_capture_backtrace_thread(CTX *c, korb_value *slots)
+{
+    return korb_capture_backtrace_core(c, slots, NULL, false);
+}
+static RESULT
+korb_capture_backtrace_core(CTX *c, korb_value *slots, const korb_value *fbase, bool main_closer)
 {
     if (!KORB_EXC_P(slots[0])) return RESULT_OK(KORB_NIL);
     if (VAL2EXC(slots[0])->backtrace != KORB_NIL) return RESULT_OK(KORB_NIL);
@@ -12384,7 +12396,7 @@ korb_capture_backtrace(CTX *c, korb_value *slots, const korb_value *fbase)
         slots[2] = UNWRAP(korb_str_new(c, slots + 2, buf, (uint32_t)len));
         UNWRAP(korb_ary_push_val(c, slots, KORB_REF_AT(&slots[1]), slots[2]));
     }
-    if (d == 0) {                        /* no link to walk: close the list the way the report does */
+    if (d == 0 && main_closer) {         /* no link to walk: close the list the way the report does */
         const int mlen = snprintf(buf, sizeof buf, "%s:%d:in '<main>'",
                                   korb_bt_cur_file(vm), (int32_t)VAL2EXC(slots[0])->line);
         slots[2] = UNWRAP(korb_str_new(c, slots + 2, buf, (uint32_t)mlen));
@@ -14041,6 +14053,11 @@ korb_send_kw(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, struct k
 }
 
 static RESULT korb_raise_break_lje(CTX *c, korb_value *slots, korb_value value);   /* fwd (builtins/symbol.c) */
+RESULT korb_raise_break_lje_pub(CTX *c, korb_value *slots, korb_value value, uint32_t line) {
+    const RESULT r = korb_raise_break_lje(c, slots, value);
+    if (r.state == KORB_RAISE && KORB_EXC_P(r.value)) VAL2EXC(r.value)->line = line;
+    return r;
+}
 /* A `&pr` of a `proc { }` came back breaking: the call it would end is gone. */
 static bool korb_frame_on_chain(const CTX *c, const korb_value *const from, const korb_value *const target);   /* fwd */
 /* Is a &b Proc's break target — the method that received the literal block —

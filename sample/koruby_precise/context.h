@@ -1774,6 +1774,7 @@ struct korb_vm {
     uint32_t twin_n, twin_cap;
     bool lambda_lit_any;               /* some block body is a lambda by a call (`lambda {}` / send(:lambda)): a
                                         * block's `return` checks for one on its way out (node_return_outer) */
+    bool thread_body_any;              /* some block is a thread's body: node_break_blk checks its frame */
 };
 struct korb_cov_meth { uint32_t name, sl, sc, el, ec; uint64_t count; };
 struct korb_cov_file {

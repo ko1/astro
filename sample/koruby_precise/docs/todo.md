@@ -5,11 +5,6 @@
 
 
 
-## 未: スレッドのブロックの `break` が LocalJumpError にならない (2026-10-16)
-`Thread.new { begin; break :x; rescue LocalJumpError => e; e; end }.value` が :x（CRuby は break の位置で
-LocalJumpError を出し、ブロック内の rescue が捕まえる）。node_break は状態を返すだけで、行き先の有無を
-見ない。while の break と同じノードなので検査を足すと全ループの break が遅くなる。rubyspec 1 例。
-
 ## 未: 正規表現の `\k<name-0>`（再帰の段ごとの後方参照）(2026-10-16)
 astrogre はキャプチャを段ごとに持たないので `\k<first_char-0>` を解決できない（mirror パターンが nil）。
 \g<> の呼び出しごとにキャプチャ履歴を積む必要がある。rubyspec: language/regexp/subexpression_call_spec 1 例。

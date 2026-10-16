@@ -1582,6 +1582,20 @@ node_break(CTX *c, NODE *n, korb_value *slots, korb_value v@child)
     return RESULT_BREAK_(v);
 }
 
+// `break` written directly in a block (not in a loop of it).  A thread's body has
+// no caller to break to: LocalJumpError right here, where the block can rescue it.
+NODE_DEF
+node_break_blk(CTX *c, NODE *n, korb_value *slots, int32_t dc_off, korb_value v@child, uint32_t line)
+{
+    (void)n;
+    if (UNLIKELY(c->vm->thread_body_any)) {
+        const korb_value id = slots[dc_off];
+        if ((id & 7u) == KORB_FID_BLOCK && ((const NODE *)(uintptr_t)(id & ~(korb_value)7u))->head.flags.thread_body)
+            return korb_raise_break_lje_pub(c, slots, v, line);
+    }
+    return RESULT_BREAK_(v);
+}
+
 // `return v` at method top-level: a nearest-method return (target = NULL → the
 // enclosing korb_invoke_method consumes it).
 NODE_DEF @nogc
