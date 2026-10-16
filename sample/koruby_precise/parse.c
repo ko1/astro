@@ -5135,6 +5135,82 @@ kp_cond_operand(struct kp_ctx *tc, const pm_node_t *node)
     return kp_send1(tc, korb_intern(tc->c->vm, "==", 2), kp_line(tc, node), recv, arg);
 }
 
+/* `for x in obj` over something not an Array / Range runs as CRuby does, obj.each { |x| … }: the body is this
+ * block, a depth_shift frame (for opens no scope, every local is the enclosing one's).  The targets bind from
+ * the block's arguments (a single one takes the first, as |x| does; `for a, b` is |a, b|).  NULL when the
+ * targets are a shape that cannot be bound so (node_for then materialises the collection). */
+static NODE *assign_target_from_synth(struct kp_ctx *tc, const pm_node_t *t, uint32_t src_local);   /* fwd */
+static bool
+kp_for_simple_target(const pm_node_t *const t)
+{
+    switch (PM_NODE_TYPE(t)) {
+      case PM_LOCAL_VARIABLE_TARGET_NODE: case PM_INSTANCE_VARIABLE_TARGET_NODE: case PM_GLOBAL_VARIABLE_TARGET_NODE:
+      case PM_CLASS_VARIABLE_TARGET_NODE: case PM_CONSTANT_TARGET_NODE:
+        return true;
+      default:
+        return false;
+    }
+}
+static NODE *
+kp_for_block(struct kp_ctx *tc, const pm_for_node_t *fn)
+{
+    const pm_node_t *one_tg[1];
+    const pm_node_t *const *tg;
+    uint32_t nt;
+    if (kp_for_simple_target(fn->index)) { one_tg[0] = fn->index; tg = one_tg; nt = 1; }
+    else if (PM_NODE_TYPE_P(fn->index, PM_MULTI_TARGET_NODE)) {
+        const pm_multi_target_node_t *const mt = (const pm_multi_target_node_t *)fn->index;
+        if (mt->rest || mt->rights.size || mt->lefts.size == 0 || mt->lefts.size > 16) return NULL;
+        for (size_t i = 0; i < mt->lefts.size; i++) if (!kp_for_simple_target(mt->lefts.nodes[i])) return NULL;
+        tg = (const pm_node_t *const *)mt->lefts.nodes; nt = (uint32_t)mt->lefts.size;
+    } else return NULL;
+    static const pm_constant_id_list_t none = { 0 };
+    tc->pending_depth_shift = true;
+    push_frame(tc, &none);
+    tc->frame->block_body = true;
+    tc->frame->anon_cref_method = tc->frame->prev != NULL && tc->frame->prev->anon_cref_method;
+    tc->frame->anon_class_block = tc->frame->prev != NULL &&
+                                  (tc->frame->prev->anon_class_body || tc->frame->prev->anon_class_block);
+    for (uint32_t i = 0; i < nt; i++) (void)alloc_synth_local(tc);   /* the arguments: locals 0 .. nt-1 */
+    NODE *body = fn->statements ? transduce_statements(tc, fn->statements) : lit_nil();
+    for (uint32_t i = nt; i-- > 0; ) {
+        const pm_node_t *const t = tg[i];
+        NODE *const as = PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)
+            ? lvar_write(tc, t, ((const pm_local_variable_target_node_t *)t)->name, ((const pm_local_variable_target_node_t *)t)->depth, bake_lget(tc, i))
+            : assign_target_from_synth(tc, t, i);
+        if (as == NULL) { (void)pop_frame(tc); return NULL; }
+        body = ALLOC_node_seq(as, body);
+    }
+    uint32_t cap_depth = tc->frame->max_ref_depth;
+    const uint32_t cap_yield = tc->frame->yield_depth;
+    uint16_t *cap_ns = NULL;
+    if (cap_depth > 0) {
+        cap_ns = malloc(sizeof(uint16_t) * cap_depth);
+        if (!cap_ns) abort();
+        for (uint32_t k = 0; k < cap_depth; k++) {
+            const struct kp_frame *const encl = kp_frame_at(tc, k + 1);
+            uint32_t n_enc = encl ? (uint32_t)(encl->locals->size + kp_it_shift(encl)) : 0;
+            if (encl && encl->cap_min > n_enc) n_enc = encl->cap_min;
+            cap_ns[k] = (uint16_t)n_enc;
+        }
+    }
+    kp_trace_body(tc, body, KORB_TR_BCALL, (const pm_node_t *)fn);
+    void *const linfo = build_locals_info(tc);
+    const bool bref_blk = tc->frame->block_backref;
+    const uint32_t frame_size = pop_frame(tc);
+    if (bref_blk) body = ALLOC_node_bref_block(body, frame_size);
+    uint32_t blk_top = 0;
+    const uint32_t blk_label = kp_block_label(tc, &blk_top);
+    NODE *const entry = ALLOC_node_entry(body, nt, frame_size, 0, NULL, 0, cap_depth, cap_ns, cap_yield, -1, NULL, nt, NULL,
+                                         build_param_info(tc, NULL), linfo, -1, 0, -1, 0, 0, blk_label, blk_top, 0);
+    if (tc->frame) entry->u.node_entry.def_top_off = KORB_ID_OFF;
+    entry->u.node_entry.def_line = kp_line(tc, (const pm_node_t *)fn);
+    korb_reg_srcloc(tc->c->vm, entry, korb_intern(tc->c->vm, tc->fname, strlen(tc->fname)), kp_line(tc, (const pm_node_t *)fn));
+    kp_reg_srcrange(tc, entry, (const pm_node_t *)fn);   /* Proc#source_range / syntax_tree: the `for` .. `end` */
+    code_repo_add("block", entry, true);
+    return entry;
+}
+
 static NODE *
 transduce(struct kp_ctx *tc, const pm_node_t *node)
 {
@@ -6273,13 +6349,17 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
             if (decon == NULL) return kp_unsupported(tc, fn->index, "for-loop index target");
             tc->frame->loop_depth++; NODE *body0 = fn->statements ? transduce_statements(tc, fn->statements) : lit_nil(); tc->frame->loop_depth--;
             NODE *body = decon ? (body0 ? ALLOC_node_seq(decon, body0) : decon) : body0;
+            NODE *const fblk = kp_for_block(tc, fn);
             NODE *fnode = ALLOC_node_for((int32_t)orig_local - tc->chain,
                                          (int32_t)iter_local - tc->chain,
                                          (int32_t)e_local - tc->chain,
-                                         coll, body, 0u);
+                                         coll, body, 0u | (fblk ? 2u : 0u), fblk ? fblk : lit_nil(),
+                                         -1 - tc->chain, 0 - tc->chain, kp_line(tc, node));
             bake_add(tc, &fnode->u.node_for.orig_off);
             bake_add(tc, &fnode->u.node_for.iter_off);
             bake_add(tc, &fnode->u.node_for.var_off);
+            bake_add(tc, &fnode->u.node_for.self_off);
+            bake_add(tc, &fnode->u.node_for.base_off);
             return fnode;
         }
         if (!PM_NODE_TYPE_P(fn->index, PM_LOCAL_VARIABLE_TARGET_NODE)) {
@@ -6294,29 +6374,37 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
             if (store == NULL) return kp_unsupported(tc, fn->index, "for-loop index target");
             tc->frame->loop_depth++; NODE *body0 = fn->statements ? transduce_statements(tc, fn->statements) : lit_nil(); tc->frame->loop_depth--;
             NODE *body = body0 ? ALLOC_node_seq(store, body0) : store;
+            NODE *const fblk = kp_for_block(tc, fn);
             NODE *fnode = ALLOC_node_for((int32_t)orig_local - tc->chain,
                                          (int32_t)iter_local - tc->chain,
                                          (int32_t)e_local - tc->chain,
-                                         coll, body, 1u);
+                                         coll, body, 1u | (fblk ? 2u : 0u), fblk ? fblk : lit_nil(),
+                                         -1 - tc->chain, 0 - tc->chain, kp_line(tc, node));
             bake_add(tc, &fnode->u.node_for.orig_off);
             bake_add(tc, &fnode->u.node_for.iter_off);
             bake_add(tc, &fnode->u.node_for.var_off);
+            bake_add(tc, &fnode->u.node_for.self_off);
+            bake_add(tc, &fnode->u.node_for.base_off);
             return fnode;
         }
         const pm_local_variable_target_node_t *iv = (const pm_local_variable_target_node_t *)fn->index;
-        if (iv->depth != 0)
+        if (kp_shift_depth(tc, iv->depth) != 0)
             return kp_unsupported(tc, fn->index, "for-loop with outer-scope index");
         uint32_t orig_local = alloc_synth_local(tc);
         uint32_t iter_local = alloc_synth_local(tc);
         NODE *coll = transduce(tc, fn->collection);
         tc->frame->loop_depth++; NODE *body = fn->statements ? transduce_statements(tc, fn->statements) : lit_nil(); tc->frame->loop_depth--;
+        NODE *const fblk = kp_for_block(tc, fn);
         NODE *fnode = ALLOC_node_for((int32_t)orig_local - tc->chain,
                                      (int32_t)iter_local - tc->chain,
                                      (int32_t)lvar_index(tc, fn->index, iv->name) - tc->chain,
-                                     coll, body, 1u);
+                                     coll, body, 1u | (fblk ? 2u : 0u), fblk ? fblk : lit_nil(),
+                                         -1 - tc->chain, 0 - tc->chain, kp_line(tc, node));
         bake_add(tc, &fnode->u.node_for.orig_off);
         bake_add(tc, &fnode->u.node_for.iter_off);
         bake_add(tc, &fnode->u.node_for.var_off);
+        bake_add(tc, &fnode->u.node_for.self_off);
+        bake_add(tc, &fnode->u.node_for.base_off);
         return fnode;
       }
       case PM_AND_NODE: {

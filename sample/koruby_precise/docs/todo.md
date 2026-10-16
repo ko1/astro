@@ -17,14 +17,6 @@ class の本体を記録し（head.line = 記録番号）、有効化した瞬�
 - :a_call / :a_return、:fiber_switch、:call の parameters（instance_method から取る近似）、TracePoint#instruction_sequence。
 - :raise は Kernel#raise だけ（C の korb_raise からは出ない）。:line の 1 行 1 回は文の並びの中だけで見る。
 
-## 未: `for x in obj`（Array / Range 以外）が先に全要素を配列にしてから回す (2026-10-16)
-node_for は `obj.to_enum(:each).to_a` で materialize してから本体を回すので、(1) 無限の Enumerator を
-`break` で抜ける for が止まらない、(2) #each の途中の副作用と本体の実行順が CRuby と違う、(3) #each に渡る
-ブロックが prelude の map のもの（Proc#source_range / syntax_tree が for 文を指さない。rubyspec 2 例）。
-本体を END { } と同じ depth_shift のブロックにして each に渡せばよいが、prism の depth をそのまま使う箇所
-（パターンマッチの束縛・多重代入の targets・rescue `=> e`・入れ子のブロックからの参照）が shift を見ないので、
-それらを kp_frame_at の手前で一括して換算する仕組みが先に要る（END の本体も同じ穴を持つ）。
-
 ## 未: 外側の変数を読まないブロックの Proc#binding に引数・局所変数が無い (2026-10-16)
 `def t(a) = -> {}; eval("a", t(1).binding)` が NameError。cap_depth == 0 のブロックは身元だけの env
 （n = 0）を作り、フレームを escape させない（return 時の局所変数の写しを省く高速化）。Proc#binding のために

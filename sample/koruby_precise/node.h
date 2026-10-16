@@ -663,6 +663,7 @@ RESULT korb_yield_outer(CTX *c, korb_value *slots, uint32_t argc, uint32_t line,
 korb_value *korb_outer_frame_base(korb_value prev_handle, uint32_t depth);
 korb_value *korb_outer_frame_base_at(korb_value *ep_cell, korb_value prev_handle, uint32_t depth);
 korb_value *korb_return_lambda_stop(korb_value *frame_base, korb_value prev_handle, uint32_t depth);
+RESULT korb_for_each(CTX *c, korb_value *slots, struct Node *blk, korb_value *fbase, korb_value *self_cell, uint32_t line);   /* node_for: slots[0].each { blk }; KORB_UNDEF = ran to the end, else a break's value */
 RESULT korb_raise_break_lje_pub(CTX *c, korb_value *slots, korb_value value, uint32_t line);   /* LocalJumpError "break from proc-closure" */
 struct Node *korb_entry_plain_twin(struct korb_vm *vm, struct Node *entry);
 korb_value  korb_outer_handle_at(const korb_value *frame_base, korb_value prev_handle, uint32_t depth);

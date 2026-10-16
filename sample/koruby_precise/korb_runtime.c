@@ -14150,6 +14150,15 @@ korb_send_kw(CTX *c, korb_value *slots, uint32_t mid, korb_value flink, struct k
 }
 
 static RESULT korb_raise_break_lje(CTX *c, korb_value *slots, korb_value value);   /* fwd (builtins/symbol.c) */
+RESULT
+korb_for_each(CTX *c, korb_value *slots, struct Node *blk, korb_value *fbase, korb_value *self_cell, uint32_t line)
+{
+    korb_value *const def_env = (korb_value *)((uintptr_t)fbase | 1u);   /* a live frame base (node_send_blk's form) */
+    const RESULT r = korb_send_impl(c, slots + 1, korb_intern_lit(c->vm, "each", 4), line, 0, blk, def_env, self_cell);
+    if (r.state == KORB_BREAK && korb_break_owned(c, blk, def_env)) return RESULT_OK(r.value);
+    if (r.state == KORB_NORMAL) return RESULT_OK(KORB_UNDEF);
+    return r;
+}
 RESULT korb_raise_break_lje_pub(CTX *c, korb_value *slots, korb_value value, uint32_t line) {
     const RESULT r = korb_raise_break_lje(c, slots, value);
     if (r.state == KORB_RAISE && KORB_EXC_P(r.value)) VAL2EXC(r.value)->line = line;
