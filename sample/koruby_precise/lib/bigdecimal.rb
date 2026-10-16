@@ -530,7 +530,6 @@ class BigDecimal < Numeric
     if keep <= 0
       dropped = @digits
       kept = 0
-      half = keep == 0 ? 10**ds.length : nil
     else
       kept, dropped = @digits.divmod(10**(ds.length - keep))
     end

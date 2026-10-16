@@ -427,7 +427,7 @@ RESULT korb_trace_dispatch(CTX *c, struct Node *n, korb_value *slots);
 void korb_trace_new_code(CTX *c, struct Node *root);   /* code parsed while tracing joins in */
 RESULT korb_trace_event(CTX *c, korb_value *sc, uint32_t ev, korb_value *base, korb_value self, korb_value val);   /* raise / rescue / thread / script events */
 void korb_ub_mid_used_note(struct korb_vm *vm, uint32_t mid);   /* a def by this name uses its block */
-void korb_unused_block_warn(CTX *c, korb_value *slots, const struct korb_method *m, uint32_t mid, uint32_t line, uint32_t argc, uint32_t shape);
+void korb_unused_block_warn(CTX *c, korb_value *slots, const struct korb_method *m, uint32_t mid, uint32_t line, uint32_t argc, uint32_t shape, bool passed);
 void   korb_class_def_method(CTX *c, korb_value klass, uint32_t mid, NODE *body, NODE *entry,
                              uint32_t params_cnt, uint32_t req_cnt, uint32_t post_cnt, int32_t rest_slot, uint32_t locals_cnt,
                              uint32_t uses_block, struct Node **opt_defaults, void *kw_info, void *param_info, void *locals_info);

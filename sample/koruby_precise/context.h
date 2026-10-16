@@ -1995,6 +1995,7 @@ struct CTX_struct {
     bool         trace_in_hook;           /* a TracePoint hook is running on this thread: no events from it */
     const struct korb_trace_rec *trace_cur_rec;   /* while swapped: the statement running (its file / line) … */
     korb_value  *trace_cur_base;          /* … and its frame's base (an allocation's position) */
+    uint8_t      blk_site;                /* korb_send_blk_x → korb_dispatch_method: 1 a literal block's call, 2 `&blk` passing one on */
     uint32_t     trace_ret_line;          /* the line of the `return` unwinding to the traced body (its :return lineno) */
 };
 

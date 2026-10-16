@@ -2688,6 +2688,17 @@ static const struct korb_ald *korb_autoload_busy_other(const struct korb_vm *con
             return vm->ald[i].th != vm->cur_thread ? &vm->ald[i] : NULL;
     return NULL;
 }
+/* … and is it this thread that is loading it?  Then the constant is not there yet (CRuby): `class X` in X's own
+ * autoload file opens it rather than requiring the file again (circular require). */
+static bool korb_autoload_busy_self(const struct korb_vm *const vm, korb_value owner, const uint32_t name)
+{
+    if (owner == KORB_NIL) owner = korb_builtin_class_obj(vm, KORB_C_OBJECT);
+    if (!KORB_CLASS_P(owner)) return false;
+    const uint32_t ser = VAL2CLASS(owner)->serial;
+    for (uint32_t i = vm->ald_n; i-- > 0; )
+        if (vm->ald[i].owner_serial == ser && vm->ald[i].name == name) return vm->ald[i].th == vm->cur_thread;
+    return false;
+}
 /* Module#__autoload_busy(name, on) — the prelude's autoload brackets its require
  * with it; the record keeps the registration's position for the other threads. */
 static RESULT korb_m_mod_autoload_busy(CTX *c, korb_value *slots, korb_ref self, korb_slice a) {

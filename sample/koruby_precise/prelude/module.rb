@@ -132,9 +132,12 @@ class Module
     # になる)。成功したときだけ一度きりの登録を外す。
     busy = owner || self                            # other threads see the constant only once this is done
     busy.send(:__autoload_busy, name, true)
+    loading = (Thread.current[:__autoload_paths] ||= [])
+    loading.push(path)
     begin
       Module.__autoload_require(path)               # main.require (CRuby; mockable in specs)
     ensure
+      loading.pop
       busy.send(:__autoload_busy, name, false)
     end
     __autoload_drop(name)
@@ -232,7 +235,16 @@ class Module
   def __autoload_open(name)
     path = __autoload_path_for(name)
     return nil unless path
-    Module.__autoload_require(path)
+    # `class BeNil` in be.rb while this thread loads be.rb for another of its autoloads: it is being defined
+    # right here (CRuby), not a file to require again (circular require)
+    loading = (Thread.current[:__autoload_paths] ||= [])
+    return nil if loading.include?(path)
+    loading.push(path)
+    begin
+      Module.__autoload_require(path)
+    ensure
+      loading.pop
+    end
     __autoload_table.delete(name.to_sym)
     nil
   end

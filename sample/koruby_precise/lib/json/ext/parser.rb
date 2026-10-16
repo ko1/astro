@@ -168,7 +168,6 @@ module JSON
           stack = @stack = []
           ostack = @ostack = []
           on_load = @on_load
-          b = @b
           c = skip_ws
           while true
             # expecting a value; c is the byte at @pos
