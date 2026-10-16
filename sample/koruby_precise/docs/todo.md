@@ -21,6 +21,7 @@ class の本体を記録し（head.line = 記録番号）、有効化した瞬�
 `def t(a) = -> {}; eval("a", t(1).binding)` が NameError。cap_depth == 0 のブロックは身元だけの env
 （n = 0）を作り、フレームを escape させない（return 時の局所変数の写しを省く高速化）。Proc#binding のために
 常に写すと proc を作るメソッドの return がすべて遅くなる。rubyspec core/proc/binding_spec 1 例。
+2026-10-16 に実装して測った: 非捕捉ブロックの Proc 生成 1 回 +約 270 命令（+22%）で却下（~/ruby/src/ideas/rejected/koruby-proc-binding-nocapture.md）。
 
 ## 未: Onigmo は失敗した経路で付いたキャプチャを戻さない (2026-10-16)
 `/^(()|a|())*?$/.match("aaa")` は CRuby が ["aaa", "a", "", nil]（2 番目の群の "" は捨てられた反復で付いたもの）、
