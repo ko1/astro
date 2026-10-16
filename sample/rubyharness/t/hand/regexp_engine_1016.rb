@@ -43,3 +43,7 @@ t(:level0_backref) do
   [mirror.match("abccba")&.[](0), mirror.match("abccbd"), mirror.match("abba")&.[](0), broken.match("abccba"), broken.match("aaaa")&.[](0),
    /(?<a>x)\k<a-0>/.match("xx")&.[](0), (Regexp.new('(?<a>x)\k<a-1>') rescue $!.class)]
 end
+t(:lazy_empty_capture) do
+  [/^(()|a|())*?$/.match("aaa").to_a, /(()|a)*?$/.match("aa").to_a, /^(?:()|a)*?$/.match("aa").to_a, /^(?:()|a)+?$/.match("aa").to_a,
+   /^(?:()|a){0,5}?$/.match("aa").to_a, /(?:()|a)*?b/.match("aab").to_a, /^(?:()|a)*$/.match("aa").to_a, /(a)b|ac/.match("ac").to_a]
+end

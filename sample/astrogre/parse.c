@@ -2266,6 +2266,29 @@ ire_must_consume(const ire_node_t *n)
     return false;
 }
 
+/* Does `n` hold a capture group?  A loop whose body can match empty and captures runs Onigmo's memory-status
+ * empty check (an empty iteration that changed a capture is not empty), with or without back-references. */
+static bool
+ire_has_capture(const ire_node_t *n)
+{
+    if (!n) return false;
+    switch (n->kind) {
+    case IRE_GROUP:         return true;
+    case IRE_NCGROUP:
+    case IRE_ATOMIC:        return ire_has_capture(n->u.nc.body);
+    case IRE_LOOKAHEAD: case IRE_NEG_LOOKAHEAD:
+    case IRE_LOOKBEHIND: case IRE_NEG_LOOKBEHIND:
+                            return ire_has_capture(n->u.nc.body);
+    case IRE_REP:           return ire_has_capture(n->u.rep.body);
+    case IRE_CONCAT:
+        for (size_t i = 0; i < n->u.cat.n; i++) if (ire_has_capture(n->u.cat.xs[i])) return true;
+        return false;
+    case IRE_ALT:           return ire_has_capture(n->u.alt.l) || ire_has_capture(n->u.alt.r);
+    case IRE_CONDITIONAL:   return ire_has_capture(n->u.cond.yes) || ire_has_capture(n->u.cond.no);
+    default:                return false;
+    }
+}
+
 /* Statically computed byte-length, or -1 if it varies.  Used for
  * lookbehind body sizing — we step pos back by this many bytes before
  * dispatching the body. */
@@ -2761,7 +2784,7 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
         lower_push_entry(L, tail);
         return ALLOC_node_re_rep(body, tail, n->u.rep.min, n->u.rep.max,
                                  n->u.rep.greedy ? 1 : 0,
-                                 ire_must_consume(n->u.rep.body) ? 1 : L->q->n_backrefs ? 2 : 0,
+                                 ire_must_consume(n->u.rep.body) ? 1 : (L->q->n_backrefs || ire_has_capture(n->u.rep.body)) ? 2 : 0,
                                  (uint32_t)L->next_branch_id++);
     }
     }

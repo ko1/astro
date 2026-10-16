@@ -23,11 +23,6 @@ class の本体を記録し（head.line = 記録番号）、有効化した瞬�
 常に写すと proc を作るメソッドの return がすべて遅くなる。rubyspec core/proc/binding_spec 1 例。
 2026-10-16 に実装して測った: 非捕捉ブロックの Proc 生成 1 回 +約 270 命令（+22%）で却下（~/ruby/src/ideas/rejected/koruby-proc-binding-nocapture.md）。
 
-## 未: Onigmo は失敗した経路で付いたキャプチャを戻さない (2026-10-16)
-`/^(()|a|())*?$/.match("aaa")` は CRuby が ["aaa", "a", "", nil]（2 番目の群の "" は捨てられた反復で付いたもの）、
-astrogre は戻すので nil。Onigmo は参照されない群を backtrack で戻さない（OP_MEMORY_END の push なし版）。
-合わせると他の結果を壊しうるので見送り。rubyspec: language/regexp/empty_checks_spec の 1 期待値。
-
 ## 未: 1 行目の `# Encoding::...` が CRuby は ArgumentError、koruby は SyntaxError (2026-10-16)
 マジックコメント扱いで encoding 名が不正になる。CRuby は "unknown or invalid encoding in the magic comment
 (ArgumentError)"、koruby は prism のエラーを SyntaxError で出す。
