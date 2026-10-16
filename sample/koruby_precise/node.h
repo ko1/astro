@@ -419,8 +419,9 @@ enum {   /* TracePoint events: bit = the index in prelude TracePoint::EVENTS */
     KORB_TRE_RETURN = 1u << 4, KORB_TRE_C_CALL = 1u << 5, KORB_TRE_C_RETURN = 1u << 6, KORB_TRE_B_CALL = 1u << 7,
     KORB_TRE_B_RETURN = 1u << 8, KORB_TRE_THREAD_BEGIN = 1u << 11, KORB_TRE_THREAD_END = 1u << 12,
     KORB_TRE_FIBER_SWITCH = 1u << 13, KORB_TRE_RAISE = 1u << 14, KORB_TRE_RESCUE = 1u << 15, KORB_TRE_SCRIPT_COMPILED = 1u << 16,
+    KORB_TRE_ALLOC = 1u << 20,   /* not a TracePoint event: ObjectSpace.trace_object_allocations wants the positions */
 };
-#define KORB_TRE_SWAP (KORB_TRE_LINE | KORB_TRE_CALL | KORB_TRE_RETURN | KORB_TRE_B_CALL | KORB_TRE_B_RETURN | KORB_TRE_CLASS | KORB_TRE_END)
+#define KORB_TRE_SWAP (KORB_TRE_LINE | KORB_TRE_CALL | KORB_TRE_RETURN | KORB_TRE_B_CALL | KORB_TRE_B_RETURN | KORB_TRE_CLASS | KORB_TRE_END | KORB_TRE_ALLOC)
 struct korb_trace_rec *korb_trace_rec_new(struct korb_vm *vm, struct Node *n, uint8_t kind);   /* parse.c bakes its offsets */
 RESULT korb_trace_dispatch(CTX *c, struct Node *n, korb_value *slots);
 void korb_trace_new_code(CTX *c, struct Node *root);   /* code parsed while tracing joins in */

@@ -276,7 +276,11 @@ korb_trace_dispatch(CTX *c, struct Node *n, korb_value *slots)
     if (r->kind & KORB_TR_LINE) c->trace_ret_line = 0;
     if (open & mask) CHECK(korb_trace_fire(c, slots, slots, open, r, r->body_line, NULL));
     if ((r->kind & KORB_TR_LINE) && (vm->trace_mask & KORB_TRE_LINE)) CHECK(korb_trace_fire(c, slots, slots, KORB_TRE_LINE, r, r->line, NULL));
+    const struct korb_trace_rec *const prev_rec = c->trace_cur_rec;
+    korb_value *const prev_base = c->trace_cur_base;
+    c->trace_cur_rec = r; c->trace_cur_base = (korb_value *)(uintptr_t)&slots[r->id_off] - KORB_ID_OFF;   /* a body too (`def m = expr`) */
     RESULT res = d(c, n, slots);
+    c->trace_cur_rec = prev_rec; c->trace_cur_base = prev_base;
     if ((r->kind & KORB_TR_LINE) && res.state == KORB_RETURN && c->trace_ret_line == 0) c->trace_ret_line = r->line;   /* the `return`'s line */
     if (close & vm->trace_mask && vm->trace_swapped) {
         const uint32_t line = (res.state == KORB_RETURN && c->trace_ret_line) ? c->trace_ret_line : r->end_line;
@@ -329,4 +333,87 @@ korb_bi_trace_reentry(CTX *c, korb_value *slots, korb_slice a)
     const bool prev = c->trace_in_hook;
     c->trace_in_hook = KORB_TRUTHY(KORB_SLICE_GET(a, 0));
     return RESULT_OK(prev ? KORB_TRUE : KORB_FALSE);
+}
+
+/* ---- ObjectSpace.trace_object_allocations ----------------------------------------------------------------- */
+
+/* aro_gc_alloc_raw's hook (every allocation goes there while tracing: see korb_alloc_trace_set).  Inside the
+ * allocator: no allocation here (the table is libc). */
+static void
+korb_alloc_trace_hook(void *const ctx, void *const payload)
+{
+    CTX *const c = ctx;
+    struct korb_vm *const vm = c->vm;
+    const struct korb_trace_rec *const r = c->trace_cur_rec;
+    if (r == NULL) return;                                /* not under user code */
+    const struct korb_method *m = NULL;
+    const korb_value *const cf = (c->cfunc_link & 1u) ? korb_flink_ptr(c->cfunc_link) : NULL;
+    if (cf != NULL && cf > c->trace_cur_base && (korb_id_get(cf) & 7u) == KORB_FID_CFUNC)
+        m = (const struct korb_method *)(uintptr_t)(korb_id_get(cf) & ~(korb_value)7u);   /* a C method running for the statement */
+    else if (c->trace_cur_base != NULL)
+        m = korb_frame_home_method(vm, c->trace_cur_base);
+    if (vm->alloc_n == vm->alloc_cap) {
+        vm->alloc_cap = vm->alloc_cap ? vm->alloc_cap * 2 : 1024;
+        vm->alloc_recs = realloc(vm->alloc_recs, sizeof(*vm->alloc_recs) * vm->alloc_cap);
+        if (!vm->alloc_recs) { fprintf(stderr, "koruby_precise: out of memory (allocation records)\n"); abort(); }
+    }
+    vm->alloc_recs[vm->alloc_n] = (struct korb_alloc_rec){ r->file, r->line ? r->line : r->body_line, m, ARO_GC_COMMON(c)->stats.gc_count };
+    korb_wtab_put(&vm->alloc_tab, (korb_value)(uintptr_t)payload, LONG2FIX((long)vm->alloc_n));
+    vm->alloc_n++;
+}
+
+static void
+korb_alloc_trace_set(CTX *const c, const bool on)
+{
+    struct korb_vm *const vm = c->vm;
+    AroGcCommonState *const g = ARO_GC_COMMON(c);
+    if (on) {
+        vm->alloc_saved_stress = g->stress; vm->alloc_saved_iv = g->stress_interval;
+        if (!g->stress) { g->stress = true; g->stress_interval = UINT64_MAX; }   /* every allocation to the hook, none collects */
+        g->alloc_hook = korb_alloc_trace_hook;
+        vm->trace_mask |= KORB_TRE_ALLOC;
+    } else {
+        g->alloc_hook = NULL;
+        g->stress = vm->alloc_saved_stress; g->stress_interval = vm->alloc_saved_iv;
+        vm->trace_mask &= ~KORB_TRE_ALLOC;
+    }
+    korb_trace_swap(vm, (vm->trace_mask & KORB_TRE_SWAP) != 0);
+}
+
+/* __alloc_trace(op[, obj]): 0 start / 1 stop (nested; answers the depth left) / 2 clear /
+ * 3 obj's [file, line, class path, method id, generation] or nil */
+static RESULT
+korb_bi_alloc_trace(CTX *c, korb_value *slots, korb_slice a)
+{
+    struct korb_vm *const vm = c->vm;
+    switch (FIX2LONG(KORB_SLICE_GET(a, 0))) {
+      case 0:
+        if (vm->alloc_depth++ == 0) korb_alloc_trace_set(c, true);
+        return RESULT_OK(LONG2FIX((long)vm->alloc_depth));
+      case 1:
+        if (vm->alloc_depth > 0 && --vm->alloc_depth == 0) korb_alloc_trace_set(c, false);
+        return RESULT_OK(LONG2FIX((long)vm->alloc_depth));
+      case 2:
+        vm->alloc_tab.cnt = 0;
+        if (vm->alloc_tab.idx) memset(vm->alloc_tab.idx, 0, sizeof(uint32_t) * ((size_t)vm->alloc_tab.idx_mask + 1));
+        vm->alloc_n = 0;
+        return RESULT_OK(KORB_NIL);
+      default: {
+        const korb_value obj = KORB_SLICE_GET(a, 1);
+        if (!AROH_IS_GC_OBJECT(obj)) return RESULT_OK(KORB_NIL);
+        const int32_t i = korb_wtab_find(&vm->alloc_tab, obj);
+        if (i < 0) return RESULT_OK(KORB_NIL);
+        const struct korb_alloc_rec ar = vm->alloc_recs[FIX2LONG(vm->alloc_tab.val[i])];
+        slots[0] = UNWRAP(korb_ary_new(c, slots + 1, 5));
+        const char *const f = korb_sym_name(vm, ar.file);
+        slots[1] = UNWRAP(korb_str_new(c, slots + 2, f, (uint32_t)strlen(f)));
+        CHECK(korb_ary_push_val(c, slots + 2, KORB_REF_AT(&slots[0]), slots[1]));
+        CHECK(korb_ary_push_val(c, slots + 2, KORB_REF_AT(&slots[0]), LONG2FIX((long)ar.line)));
+        const korb_value owner = ar.m && KORB_CLASS_P(ar.m->owner) && !VAL2CLASS(ar.m->owner)->is_singleton ? ar.m->owner : KORB_NIL;
+        CHECK(korb_ary_push_val(c, slots + 2, KORB_REF_AT(&slots[0]), owner));   /* the prelude names it (Module#name) */
+        CHECK(korb_ary_push_val(c, slots + 2, KORB_REF_AT(&slots[0]), ar.m ? ID2SYM(ar.m->orig_mid ? ar.m->orig_mid : ar.m->mid) : KORB_NIL));
+        CHECK(korb_ary_push_val(c, slots + 2, KORB_REF_AT(&slots[0]), LONG2FIX((long)ar.gen)));
+        return RESULT_OK(slots[0]);
+      }
+    }
 }

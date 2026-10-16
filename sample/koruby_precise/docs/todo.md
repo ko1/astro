@@ -51,10 +51,14 @@ korb_runtime.c の `#include <execinfo.h>`（EXPERIMENT acct45、2026-10-09 mast
 `ASTrogre.compile` が "failed to parse pattern: [\xNN]" で ArgumentError。HEAD の astrogre を別ディレクトリに
 展開しても同じなので今回の変更とは無関係。
 
-## 未: ObjectSpace.trace_object_allocations (2026-10-16)
-割り当て位置の記録は全オブジェクトの割り当て（korb_alloc）に確認が要り、moving GC で動くオブジェクトを
-鍵にした表（GC での付け替え）も要る。無効時の負担を出さない方法が無いので未着手。
-rubyspec: library/objectspace/trace_object_allocations_spec 14 例、trace_spec 1 例。
+## 未: ObjectSpace.trace_object_allocations の残り (2026-10-16)
+実装: 記録中は GC の `stress` を立て間隔を最大にして全割り当てを aro_gc_alloc_raw に通し、そこの alloc_hook
+（共有ランタイム、既定 NULL）が TracePoint の文の記録（いま走っているユーザコードの文とそのフレーム）から位置を取り、
+弱い表 alloc_tab（GC の移動に追従）に入れる。無効時の速い経路は不変。
+- 位置は文の粒度（同じ文の中の別の行の割り当ても文の行）。prelude で書いた組み込みメソッドの中の割り当ては
+  呼んだユーザの文とメソッドに付く（CRuby は C メソッドに付く）。
+- 記録の開始時点で走っているフレームの残り（AOT では融合 SD 全体）は記録されない（TracePoint と同じ制限）。
+- 記録中は GC の閾値が適応せず、realloc の in-place も使われない（stress の副作用、記録中だけ）。copy GC 以外は未対応。
 
 ## 未: autoload 中の定数をノードのキャッシュ経由で見る他スレッド (2026-10-16)
 const_get / const_source_location は読み込み中のスレッド以外には未定義に見せて require で待たせるようにした

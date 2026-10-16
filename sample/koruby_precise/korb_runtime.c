@@ -2785,6 +2785,7 @@ void korb_weak_walk(CTX *c) {
     korb_wtab_sweep(c, &c->vm->sklass);
     korb_wtab_sweep(c, &c->vm->objivar);
     korb_wtab_sweep(c, &c->vm->oid);
+    korb_wtab_sweep(c, &c->vm->alloc_tab);
     korb_wmap_sweep(c, &c->vm->wmap);
 }
 
@@ -21920,6 +21921,11 @@ korb_bi_require(CTX *c, korb_value *slots, korb_slice args)
         }
     }
     if (own_rb[0]) { korb_value out; return korb_load_abspath(c, slots, own_rb, true, &out, args.p); }
+    if (want_so && namebuf[0] != '/' && namebuf[0] != '.') {   /* `require "etc.so"`: koruby's own lib/etc.rb is that extension */
+        char rb[4096]; struct stat st;
+        snprintf(rb, sizeof rb, KORUBY_SRC_DIR "/lib/%.*s.rb", (int)(namelen - 3), namebuf);
+        if (stat(rb, &st) == 0 && S_ISREG(st.st_mode)) { korb_value out; return korb_load_abspath(c, slots, rb, true, &out, args.p); }
+    }
     /* the exact name already in $LOADED_FEATURES → false, even when no such
      * file exists any more (CRuby) */
     if (korb_feature_loaded_p(c, namebuf)) return RESULT_OK(KORB_FALSE);
@@ -25483,6 +25489,7 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__cov_setup", korb_bi_cov_setup, 2);
     korb_builtin_define(c, "__trace_hooks", korb_bi_trace_hooks, 1);
     korb_builtin_define(c, "__trace_reentry", korb_bi_trace_reentry, 1);
+    korb_builtin_define(c, "__alloc_trace", korb_bi_alloc_trace, -1);
     korb_builtin_define(c, "__cov_set_state", korb_bi_cov_set_state, 1);
     korb_builtin_define(c, "__cov_clear", korb_bi_cov_clear, 0);
     korb_builtin_define(c, "__cov_peek", korb_bi_cov_peek, 0);

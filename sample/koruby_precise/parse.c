@@ -1122,7 +1122,11 @@ static NODE *
 transduce_statements(struct kp_ctx *tc, const pm_statements_node_t *stmts)
 {
     if (stmts == NULL || stmts->body.size == 0) return lit_nil();
-    NODE *acc = NULL;
+    /* chained to the right, seq(s1, seq(s2, …)): a statement's dispatcher is read when the one before it is
+     * done, so a TracePoint enabled by s1 sees s2 (left-nested, the chain read them all up front) */
+    NODE *few[16];
+    NODE **const ones = stmts->body.size <= 16 ? few : malloc(sizeof(NODE *) * stmts->body.size);
+    if (!ones) abort();
     uint32_t cov_last = 0, tr_last = 0;
     for (size_t i = 0; i < stmts->body.size; i++) {
         const pm_node_t *const st = stmts->body.nodes[i];
@@ -1149,8 +1153,11 @@ transduce_statements(struct kp_ctx *tc, const pm_statements_node_t *stmts)
             }
         }
         if (tr_line && tr_ln != tr_last) { kp_trace_note(tc, one, KORB_TR_LINE, tr_ln); tr_last = tr_ln; }   /* one line event per line (CRuby) */
-        acc = acc ? ALLOC_node_seq(acc, one) : one;
+        ones[i] = one;
     }
+    NODE *acc = ones[stmts->body.size - 1];
+    for (size_t i = stmts->body.size - 1; i-- > 0; ) acc = ALLOC_node_seq(ones[i], acc);
+    if (ones != few) free(ones);
     return acc;
 }
 

@@ -1792,6 +1792,13 @@ struct korb_vm {
     uint32_t tr_saved_n, tr_saved_cap;
     uint32_t trace_mask;               /* KORB_TRE_* of the enabled TracePoints */
     bool trace_swapped;                /* user nodes run on the interpreter, records on korb_trace_dispatch */
+    /* ObjectSpace.trace_object_allocations: object -> FIX(index into alloc_recs), weak (korb_weak_walk) */
+    korb_wtab alloc_tab;
+    struct korb_alloc_rec { uint32_t file, line; const struct korb_method *m; uint64_t gen; } *alloc_recs;
+    uint32_t alloc_n, alloc_cap;
+    uint32_t alloc_depth;              /* trace_object_allocations_start nesting */
+    bool alloc_saved_stress;
+    uint64_t alloc_saved_iv;
 };
 struct korb_cov_meth { uint32_t name, sl, sc, el, ec; uint64_t count; };
 struct korb_cov_file {
@@ -1986,6 +1993,8 @@ struct CTX_struct {
     struct korb_cext_frame *cext_top;
     struct korb_cext_jmp   *cext_jmp;
     bool         trace_in_hook;           /* a TracePoint hook is running on this thread: no events from it */
+    const struct korb_trace_rec *trace_cur_rec;   /* while swapped: the statement running (its file / line) … */
+    korb_value  *trace_cur_base;          /* … and its frame's base (an allocation's position) */
     uint32_t     trace_ret_line;          /* the line of the `return` unwinding to the traced body (its :return lineno) */
 };
 

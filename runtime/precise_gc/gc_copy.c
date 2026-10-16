@@ -488,6 +488,7 @@ aro_gc_alloc_raw(CTX *c, size_t payload_size)
 
     ARO_GC_COMMON(c)->stats.total_bytes += payload_size;
     ARO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
+    if (__builtin_expect(ARO_GC_COMMON(c)->alloc_hook != NULL, 0)) ARO_GC_COMMON(c)->alloc_hook(c, payload);
     return payload;
 }
 

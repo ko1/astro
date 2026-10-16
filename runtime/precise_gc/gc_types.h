@@ -211,6 +211,10 @@ typedef struct AroGcCommonState {
      * Counted in BYTES (not slots). */
     size_t          external_bytes;
     size_t          finalize_cap;
+    /* Called with each object aro_gc_alloc_raw hands out (header set, payload zeroed), when non-NULL.  It must
+     * not allocate.  A sample that wants every allocation sets `stress` with a huge stress_interval too, so the
+     * inline fast path sends them all here (koruby's ObjectSpace.trace_object_allocations).  Copy backend only. */
+    void          (*alloc_hook)(void *ctx, void *payload);
 } AroGcCommonState;
 
 #endif  /* ASTRO_PRECISE_GC_TYPES_H */

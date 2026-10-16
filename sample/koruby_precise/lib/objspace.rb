@@ -1,7 +1,8 @@
-# objspace — the parts koruby can answer truthfully.  Allocation tracing is not
-# implemented (the allocator has no hook, and a moving GC would need the side
-# table keyed by identity), so the trace_* entry points raise NotImplementedError
-# and the allocation_* queries answer nil, as CRuby does for an untraced object.
+# objspace — the parts koruby can answer truthfully.
+#
+# Allocation tracing: while it is on, every allocation goes through the allocator's slow path to a hook
+# (builtins/tracepoint.c) that records the running user statement's file / line and the method it runs in,
+# in a weak table keyed by the object (it follows the moving GC).  Off, nothing is checked.
 #
 # reachable_objects_from / memsize_of read the object's own GC edges (C: __objspace_reachable /
 # __objspace_memsize); dump / dump_all write CRuby's JSON shape for the fields koruby has.
@@ -10,26 +11,34 @@ module ObjectSpace
   module_function
 
   def trace_object_allocations_start
-    raise NotImplementedError, "ObjectSpace.trace_object_allocations_start() function is unimplemented on this machine"
+    __alloc_trace(0)
+    nil
   end
 
   def trace_object_allocations_stop
-    raise NotImplementedError, "ObjectSpace.trace_object_allocations_stop() function is unimplemented on this machine"
+    __alloc_trace(1)
+    nil
   end
 
   def trace_object_allocations_clear
-    raise NotImplementedError, "ObjectSpace.trace_object_allocations_clear() function is unimplemented on this machine"
+    __alloc_trace(2)
+    nil
   end
 
   def trace_object_allocations
-    raise NotImplementedError, "ObjectSpace.trace_object_allocations() function is unimplemented on this machine"
+    __alloc_trace(0)
+    begin
+      yield
+    ensure
+      __alloc_trace(1)
+    end
   end
 
-  def allocation_sourcefile(obj) = nil
-  def allocation_sourceline(obj) = nil
-  def allocation_class_path(obj) = nil
-  def allocation_method_id(obj) = nil
-  def allocation_generation(obj) = nil
+  def allocation_sourcefile(obj) = (i = __alloc_trace(3, obj)) && i[0]
+  def allocation_sourceline(obj) = (i = __alloc_trace(3, obj)) && i[1]
+  def allocation_class_path(obj) = (i = __alloc_trace(3, obj)) && i[2]&.name
+  def allocation_method_id(obj) = (i = __alloc_trace(3, obj)) && i[3]
+  def allocation_generation(obj) = (i = __alloc_trace(3, obj)) && i[4]
 
   def reachable_objects_from(obj) = __objspace_reachable(obj)
   def memsize_of(obj) = __objspace_memsize(obj)
