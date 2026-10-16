@@ -37,3 +37,9 @@ ensure
   Regexp.timeout = nil
 end
 t(:timeout_kw_ok) { re = Regexp.new("b", timeout: 1); [re =~ "ab", re =~ "ab"] }
+t(:level0_backref) do
+  mirror = /^ (?<mirror> (?: (?<first_char>.) \g<mirror> \k<first_char-0> )? ) $/x
+  broken = /^ (?<mirror> (?: (?<first_char>.) \g<mirror> \k<first_char> )? ) $/x
+  [mirror.match("abccba")&.[](0), mirror.match("abccbd"), mirror.match("abba")&.[](0), broken.match("abccba"), broken.match("aaaa")&.[](0),
+   /(?<a>x)\k<a-0>/.match("xx")&.[](0), (Regexp.new('(?<a>x)\k<a-1>') rescue $!.class)]
+end

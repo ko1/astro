@@ -181,7 +181,8 @@ astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
     c.sub_chains   = p->sub_chains;
     c.sub_chains_n = p->sub_chains_n;
     c.sub_top      = NULL;
-    if (p->sub_chains_n) memset(c.open_cnt, 0, sizeof c.open_cnt);
+    c.ret_top      = NULL;
+    if (p->sub_chains_n) { memset(c.open_cnt, 0, sizeof c.open_cnt); memset(c.cap_lvl, 0, sizeof c.cap_lvl); }
     c.sub_depth    = 0;
     c.stack_base  = astrogre_stack_floor();   /* absolute low address the guard must not cross */
     c.stack_limit = 0;                        /* unused now (guard compares against stack_base directly) */
@@ -220,8 +221,9 @@ astrogre_search_from(astrogre_pattern *p, const char *str, size_t len,
             c.pos = start_from;
             c.rep_top = NULL;
             c.sub_top = NULL;
+            c.ret_top = NULL;
             c.sub_depth = 0;
-            if (p->sub_chains_n) memset(c.open_cnt, 0, sizeof c.open_cnt);
+            if (p->sub_chains_n) { memset(c.open_cnt, 0, sizeof c.open_cnt); memset(c.cap_lvl, 0, sizeof c.cap_lvl); }
             c.stack_base = alt_floor;
             c.stack_overflow = false;
             r = agre_eval_on_alt_stack(alt, &c, p->root);

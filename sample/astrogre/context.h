@@ -78,6 +78,12 @@ struct sub_call_frame {
     size_t saved_start;
     uint32_t idx;
     bool restore;
+    /* `\k<name-0>` patterns only: the captures as the call found them (this level's), the call's depth, and
+     * the chain of calls that returned into the continuation running now (node_re_backref_lv0) */
+    int depth;
+    const size_t *snap_s, *snap_e;
+    const bool *snap_v;
+    struct sub_call_frame *ret_prev;
 };
 
 /* One frame on the repetition stack.  Pushed by node_re_rep when entering
@@ -151,6 +157,8 @@ typedef struct CTX_struct {
     int           sub_chains_n;
     struct sub_call_frame *sub_top;
     int           sub_depth;
+    struct sub_call_frame *ret_top;     /* calls whose continuation is running (innermost first) */
+    uint16_t      cap_lvl[ASTROGRE_MAX_GROUPS];   /* the call depth each group last closed at (_rec captures) */
     uintptr_t     stack_base;
     size_t        stack_limit;
 

@@ -1529,14 +1529,17 @@ node_re_cap_end_rec(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *nex
     if ((uintptr_t)&stack_marker <= c->stack_base) { c->stack_overflow = true; c->stack_base = UINTPTR_MAX; return MR_FAIL; }
     size_t saved_end   = c->ends[idx];
     bool   saved_valid = c->valid[idx];
+    const uint16_t saved_lvl = c->cap_lvl[idx];
     c->ends[idx]  = c->pos;
     c->valid[idx] = true;
     c->open_cnt[idx]--;
+    c->cap_lvl[idx] = (uint16_t)c->sub_depth;
     VALUE r = EVAL_ARG(c, next);
     if (!r) {
         c->ends[idx]  = saved_end;
         c->valid[idx] = saved_valid;
         c->open_cnt[idx]++;
+        c->cap_lvl[idx] = saved_lvl;
     }
     return r;
 }
@@ -1643,6 +1646,41 @@ node_re_backref(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *next)
     if (!c->valid[idx]) return MR_FAIL;
     size_t s = c->starts[idx];
     size_t e = c->ends[idx];
+    size_t cap_len = e - s;
+    if (c->pos + cap_len > c->str_len) return MR_FAIL;
+    if (c->case_insensitive) {
+        for (size_t i = 0; i < cap_len; i++) {
+            uint8_t a = c->str[s + i], b = c->str[c->pos + i];
+            if (a >= 'A' && a <= 'Z') a += 32;
+            if (b >= 'A' && b <= 'Z') b += 32;
+            if (a != b) return MR_FAIL;
+        }
+    } else {
+        if (memcmp(c->str + s, c->str + c->pos, cap_len) != 0) return MR_FAIL;
+    }
+    c->pos += cap_len;
+    VALUE r = EVAL_ARG(c, next);
+    if (!r) c->pos -= cap_len;
+    return r;
+}
+
+// `\k<name±N>` (a \g recursion level relative to this one; level 0 also needs calls in the pattern)
+NODE_DEF
+node_re_backref_lv(CTX * restrict c, NODE * restrict n, uint32_t idx, uint32_t lvl_u, NODE *next)
+{
+    const int lvl = (int)lvl_u, target = c->sub_depth + lvl;
+    if (!c->sub_chains_n || target < 0) return MR_FAIL;   /* a level that does not exist */
+    /* the capture as level `target` has it: the current one when that level closed it last, else the copy a call
+     * took — the call `target` made (still running, for an outer level) or one that returned into it */
+    bool v = c->valid[idx];
+    size_t s = c->starts[idx], e = c->ends[idx];
+    if (lvl == 0 ? c->cap_lvl[idx] > c->sub_depth : (lvl < 0 || c->cap_lvl[idx] != target)) {
+        const struct sub_call_frame *fr = lvl < 0 ? c->sub_top : c->ret_top;
+        while (fr && fr->depth != target + 1) fr = lvl < 0 ? fr->prev : fr->ret_prev;
+        if (!fr || !fr->snap_v) return MR_FAIL;
+        v = fr->snap_v[idx]; s = fr->snap_s[idx]; e = fr->snap_e[idx];
+    }
+    if (!v) return MR_FAIL;
     size_t cap_len = e - s;
     if (c->pos + cap_len > c->str_len) return MR_FAIL;
     if (c->case_insensitive) {
@@ -1882,7 +1920,7 @@ node_re_conditional(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *yes
  * outer continuation when the subroutine succeeds.  Dynamic stack
  * guard via stack_base / stack_limit prevents runaway recursion. */
 NODE_DEF
-node_re_subroutine_call(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *outer_next)
+node_re_subroutine_call(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *outer_next, uint32_t snap)
 {
     if ((int)idx >= c->sub_chains_n) return MR_FAIL;
     NODE *const body = c->sub_chains[idx];
@@ -1899,8 +1937,18 @@ node_re_subroutine_call(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE 
     f.idx       = idx;
     f.restore   = c->open_cnt[idx] != 0;
     f.saved_start = c->starts[idx];
+    f.snap_s = NULL; f.snap_e = NULL; f.snap_v = NULL; f.ret_prev = NULL;
+    const size_t ng = (size_t)c->n_groups + 1;
+    size_t *const ss = snap ? __builtin_alloca(ng * sizeof(size_t) * 2 + ng) : NULL;
+    if (ss) {                                         /* this level's captures, for `\k<name-0>` after the call */
+        memcpy(ss, c->starts, ng * sizeof(size_t));
+        memcpy(ss + ng, c->ends, ng * sizeof(size_t));
+        memcpy((bool *)(ss + 2 * ng), c->valid, ng);
+        f.snap_s = ss; f.snap_e = ss + ng; f.snap_v = (const bool *)(ss + 2 * ng);
+    }
     c->sub_top  = &f;
     c->sub_depth++;
+    f.depth = c->sub_depth;
 
     const VALUE r = EVAL(c, body);
 
@@ -1920,7 +1968,10 @@ node_re_sub_return(CTX * restrict c, NODE * restrict n)
     c->sub_depth--;
     size_t inner = 0;
     if (f->restore) { inner = c->starts[f->idx]; c->starts[f->idx] = f->saved_start; }
+    f->ret_prev = c->ret_top;                         /* returned into its continuation (node_re_backref_lv0) */
+    c->ret_top = f;
     const VALUE r = EVAL(c, f->return_to);
+    c->ret_top = f->ret_prev;
     if (!r && f->restore) c->starts[f->idx] = inner;
     c->sub_top = f;
     c->sub_depth++;

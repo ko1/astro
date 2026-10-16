@@ -30,10 +30,6 @@ node_for は `obj.to_enum(:each).to_a` で materialize してから本体を回�
 （n = 0）を作り、フレームを escape させない（return 時の局所変数の写しを省く高速化）。Proc#binding のために
 常に写すと proc を作るメソッドの return がすべて遅くなる。rubyspec core/proc/binding_spec 1 例。
 
-## 未: 正規表現の `\k<name-0>`（再帰の段ごとの後方参照）(2026-10-16)
-astrogre はキャプチャを段ごとに持たないので `\k<first_char-0>` を解決できない（mirror パターンが nil）。
-\g<> の呼び出しごとにキャプチャ履歴を積む必要がある。rubyspec: language/regexp/subexpression_call_spec 1 例。
-
 ## 未: Onigmo は失敗した経路で付いたキャプチャを戻さない (2026-10-16)
 `/^(()|a|())*?$/.match("aaa")` は CRuby が ["aaa", "a", "", nil]（2 番目の群の "" は捨てられた反復で付いたもの）、
 astrogre は戻すので nil。Onigmo は参照されない群を backtrack で戻さない（OP_MEMORY_END の push なし版）。

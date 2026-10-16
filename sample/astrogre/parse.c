@@ -80,7 +80,7 @@ typedef struct ire_node {
         struct { struct ire_node *body; int32_t min; int32_t max; bool greedy; } rep;
         struct { int idx; struct ire_node *body; } group;
         struct { struct ire_node *body; } nc;
-        struct { int idx; } backref;
+        struct { int idx; bool lv0; int lvl; } backref;   /* lv0: `\k<name±N>`, the capture N \g recursion levels from this one */
         /* `.` captures /m where it appears: `(?m)` only applies from that
          * point on, and `(?m:…)` only inside the group. */
         struct { bool ml; } dot;
@@ -147,6 +147,9 @@ typedef struct re_parser {
     int               cap_groups;
     int               n_subcalls;   /* `\g<…>` references seen */
     int               n_backrefs;   /* back-references seen: loops then check captures for emptiness */
+    int               n_lv0_refs;   /* `\k<name-0>` (this recursion level's capture) seen: calls snapshot the captures */
+    bool              ref_lv0;      /* re_resolve_ref: the reference it just read had a `+N` / `-N` level … */
+    int               ref_lvl;      /* … this one */
 } re_parser_t;
 
 static void re_error(re_parser_t *q, const char *msg) {
@@ -1070,11 +1073,9 @@ re_resolve_ref(re_parser_t *q, const uint8_t *const s, const uint8_t *const e,
         }
         if (ne != e) {
             if (!ref_all_digits(ne + 1, e)) { re_error(q, "invalid group name"); return -1; }
-            /* Level 0 is the plain reference; other levels would need a
-             * per-recursion capture stack, which we don't keep. */
-            if (ref_decimal(ne + 1, e) != 0) {
-                re_error(q, "nesting level specifier is not supported"); return -1;
-            }
+            /* a recursion level relative to this one (node_re_backref_lv) */
+            q->ref_lv0 = true;
+            q->ref_lvl = (*ne == '-' ? -1 : 1) * ref_decimal(ne + 1, e);
         }
     }
     const size_t nl = (size_t)(ne - s);
@@ -1493,11 +1494,12 @@ static ire_node_t *parse_atom(re_parser_t *q) {
                 if (q->error) return NULL;
                 return ire_lit_byte(q, (uint8_t)e);
             }
+            q->ref_lv0 = false;
             const int idx = re_resolve_ref(q, ns, nend, kind);
             if (idx < 0) return NULL;
             ire_node_t *n = ire_new(kind == REF_CALL ? IRE_SUBROUTINE : IRE_BACKREF);
             if (kind == REF_CALL) { n->u.sub.idx = idx; q->n_subcalls++; }
-            else                { n->u.backref.idx = idx; q->n_backrefs++; }
+            else                { n->u.backref.idx = idx; n->u.backref.lv0 = q->ref_lv0; n->u.backref.lvl = q->ref_lvl; q->n_backrefs++; q->n_lv0_refs += q->ref_lv0; }
             return n;
         }
         case '0': case '1': case '2': case '3': case '4':
@@ -2603,7 +2605,10 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
     case IRE_EOL:           return ALLOC_node_re_eol(tail);
     case IRE_WB:            return ALLOC_node_re_word_boundary(agre_word_set(), tail);
     case IRE_NWB:           return ALLOC_node_re_non_word_boundary(agre_word_set(), tail);
-    case IRE_BACKREF:       return ALLOC_node_re_backref(n->u.backref.idx, tail);
+    case IRE_BACKREF:
+        if (n->u.backref.lv0 && (L->q->n_subcalls || n->u.backref.lvl != 0))   /* no recursion: only level 0 exists */
+            return ALLOC_node_re_backref_lv(n->u.backref.idx, (uint32_t)n->u.backref.lvl, tail);
+        return ALLOC_node_re_backref(n->u.backref.idx, tail);
     case IRE_CONCAT:        return lower_concat(L, n, tail);
     case IRE_ALT: {
         /* Both branches embed their own (shared) tail. */
@@ -2674,7 +2679,7 @@ lower(lower_ctx_t *L, ire_node_t *n, NODE *tail)
         /* node_re_sub_return dispatches `tail` via `c->sub_top->return_to`
          * at runtime — i.e. EVAL(c, target).  Mark `tail` as an AOT entry. */
         lower_push_entry(L, tail);
-        return ALLOC_node_re_subroutine_call((uint32_t)idx, tail);
+        return ALLOC_node_re_subroutine_call((uint32_t)idx, tail, L->q->n_lv0_refs > 0 ? 1u : 0u);
     }
     case IRE_REP: {
         /* Specialised greedy/lazy `.` rep — collapses N rep_cont
