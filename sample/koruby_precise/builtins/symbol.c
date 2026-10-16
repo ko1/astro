@@ -458,6 +458,8 @@ static RESULT korb_m_meth_call(CTX *c, korb_value *slots, korb_ref self, korb_sl
             slots[2] = 0;                                /* base[-2] (EP) */
             slots[3] = m->recv;                          /* base[-1] self (the bound receiver) */
             for (uint32_t i = 0; i < argc; i++) slots[4 + i] = KORB_SLICE_GET(a, i);
+            if (UNLIKELY(entry->blk_unused) && (block != NULL || (cself != NULL && KORB_PROC_P(*cself))))
+                korb_unused_block_warn(c, slots + 4 + argc, entry, mid, 0, argc, KORB_UB_METHOD_CALL);
             return korb_invoke_method(c, slots + 4 + argc, entry, argc, 0, mid, slots[3], owner, block, def_env, KORB_CSELF_VAL(cself));
         }
         if (entry != NULL) {                             /* builtin (cfunc/attr): still the CAPTURED entry — the

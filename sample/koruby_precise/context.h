@@ -1175,6 +1175,7 @@ struct korb_method {
     uint8_t  core;           /* defined by the prelude: a redefinition gets a fresh entry (a frame may be running it) */
     uint8_t  sdi_k;          /* the AOT inline send (enum korb_sdi) this entry is the builtin of, 0 = none (korb_sdi_init);
                               * every write of kind / rfn / rbfn clears it.  In the pad before `body`. */
+    uint8_t  blk_unused;     /* ISEQ: never yields / takes &b / ... / super: a block passed to it may be ignored (warning) */
     struct Node *body;       /* ISEQ */
     /* 呼び出しの入口。どちらも同じ本体ノードを指し、AOT が焼くのはこちら側。
      * 充填時に (site の argc, callee の形状) で片方を選んで cc/ic に載せる。 */
@@ -1775,6 +1776,10 @@ struct korb_vm {
     bool lambda_lit_any;               /* some block body is a lambda by a call (`lambda {}` / send(:lambda)): a
                                         * block's `return` checks for one on its way out (node_return_outer) */
     bool thread_body_any;              /* some block is a thread's body: node_break_blk checks its frame */
+    uint64_t *ub_seen;                 /* unused-block warnings given: (method, class, call shape) keys, 0 = empty */
+    uint32_t ub_n, ub_cap;
+    uint8_t *ub_mid_used;              /* by mid: some def parsed after boot uses its block (no unused-block warning for the name) */
+    uint32_t ub_mid_cap;
 };
 struct korb_cov_meth { uint32_t name, sl, sc, el, ec; uint64_t count; };
 struct korb_cov_file {

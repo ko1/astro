@@ -6722,6 +6722,8 @@ korb_class_def_method(CTX *c, korb_value klass, uint32_t mid, NODE *body, NODE *
     m->uses_block = (uint8_t)(uses_block & KORB_DEFF_USES_BLOCK);
     m->uses_backref = (uint8_t)((uses_block & KORB_DEFF_USES_BACKREF) != 0);
     m->ruby2_kw = (uint8_t)((uses_block & KORB_DEFF_FWD_ALL) != 0);   /* `def m(...)` carries keywords through its synth *rest */
+    m->blk_unused = (uint8_t)((uses_block & KORB_DEFF_BLK_UNUSED) != 0);
+    uses_block &= ~KORB_DEFF_BLK_UNUSED;
     m->no_block = korb_pi_no_block(param_info);
     m->params_cnt = (int32_t)params_cnt;
     m->req_cnt = req_cnt;
@@ -11301,6 +11303,8 @@ korb_method_define(CTX *c, uint32_t mid, NODE *body, NODE *entry,
     m->uses_block = (uint8_t)(uses_block & KORB_DEFF_USES_BLOCK);
     m->uses_backref = (uint8_t)((uses_block & KORB_DEFF_USES_BACKREF) != 0);
     m->ruby2_kw = (uint8_t)((uses_block & KORB_DEFF_FWD_ALL) != 0);   /* `def m(...)` carries keywords through its synth *rest */
+    m->blk_unused = (uint8_t)((uses_block & KORB_DEFF_BLK_UNUSED) != 0);
+    uses_block &= ~KORB_DEFF_BLK_UNUSED;
     m->no_block = korb_pi_no_block(param_info);
     m->params_cnt = (int32_t)params_cnt;
     m->req_cnt = req_cnt;
@@ -13207,6 +13211,80 @@ static RESULT korb_dm_yield_simple(CTX *c, korb_value *slots, NODE *block, korb_
 static RESULT korb_block_yield_full(CTX *c, korb_value *slots, NODE *block, korb_value *def_env,
                                     const korb_value *argv, uint32_t argc, korb_value *captured_self,
                                     NODE *bp_blk, korb_value *bp_denv, korb_value *bp_self, uint32_t is_lam);   /* fwd */
+/* Warning[:strict_unused_block] */
+static bool korb_warn_strict_unused_block_p(struct korb_vm *vm) {
+    const korb_value wm = korb_const_get(vm, korb_intern_lit(vm, "Warning", 7));
+    if (!KORB_CLASS_P(wm)) return false;
+    const uint32_t ci = korb_const_index_owned(vm, korb_intern_lit(vm, "CATEGORIES__", 12), wm);
+    if (ci == UINT32_MAX || !KORB_HASH_P(vm->const_vals[ci])) return false;
+    const int32_t hi = korb_hash_find(VAL2HASH(vm->const_vals[ci]), ID2SYM(korb_intern_lit(vm, "strict_unused_block", 19)));
+    return hi >= 0 && KORB_TRUTHY(korb_hash_pairs(VAL2HASH(vm->const_vals[ci]))[2 * hi + 1]);
+}
+/* Was this key seen?  Records it if not. */
+static bool korb_ub_seen(struct korb_vm *const vm, uint64_t key) {
+    if (key == 0) key = 1;
+    if (vm->ub_n * 2 >= vm->ub_cap) {
+        const uint32_t ncap = vm->ub_cap ? vm->ub_cap * 2 : 64;
+        uint64_t *const nt = calloc(ncap, sizeof *nt);
+        if (!nt) { fprintf(stderr, "koruby_precise: out of memory (unused-block table)\n"); abort(); }
+        for (uint32_t i = 0; i < vm->ub_cap; i++) {
+            if (vm->ub_seen[i] == 0) continue;
+            uint32_t j = (uint32_t)(vm->ub_seen[i] * 0x9e3779b97f4a7c15ull >> 32) & (ncap - 1);
+            while (nt[j] != 0) j = (j + 1) & (ncap - 1);
+            nt[j] = vm->ub_seen[i];
+        }
+        free(vm->ub_seen);
+        vm->ub_seen = nt; vm->ub_cap = ncap;
+    }
+    uint32_t j = (uint32_t)(key * 0x9e3779b97f4a7c15ull >> 32) & (vm->ub_cap - 1);
+    for (; vm->ub_seen[j] != 0; j = (j + 1) & (vm->ub_cap - 1))
+        if (vm->ub_seen[j] == key) return true;
+    vm->ub_seen[j] = key;
+    vm->ub_n++;
+    return false;
+}
+void korb_ub_mid_used_note(struct korb_vm *const vm, const uint32_t mid) {
+    if (mid >= vm->ub_mid_cap) {
+        uint32_t ncap = vm->ub_mid_cap ? vm->ub_mid_cap : 256;
+        while (ncap <= mid) ncap *= 2;
+        uint8_t *const nt = realloc(vm->ub_mid_used, ncap);
+        if (!nt) { fprintf(stderr, "koruby_precise: out of memory (unused-block names)\n"); abort(); }
+        memset(nt + vm->ub_mid_cap, 0, ncap - vm->ub_mid_cap);
+        vm->ub_mid_used = nt; vm->ub_mid_cap = ncap;
+    }
+    vm->ub_mid_used[mid] = 1;
+}
+/* CRuby's "the block passed to 'm' ... may be ignored": once per (method, receiver class, call shape), as CRuby's
+ * shared call caches give it.  Only the lookup paths reach here, not a filled inline cache. */
+__attribute__((noinline, cold)) void
+korb_unused_block_warn(CTX *c, korb_value *slots, const struct korb_method *m, uint32_t mid, uint32_t line,
+                       uint32_t argc, uint32_t shape)
+{
+    struct korb_vm *const vm = c->vm;
+    if (m->core || m->hidden) return;
+    const uint32_t omid = m->orig_mid ? m->orig_mid : mid;
+    const bool name_used = omid < vm->ub_mid_cap && vm->ub_mid_used[omid];   /* duck typing: some `m` uses it (CRuby's relaxed check) */
+    if (name_used && !korb_warn_strict_unused_block_p(vm)) return;
+    const korb_value self = slots[-(korb_sword_t)argc - 1];
+    const korb_value klass = korb_dispatch_class(c, self);
+    uint64_t key = (uint64_t)(uintptr_t)m->body * 0xff51afd7ed558ccdull;
+    key ^= ((uint64_t)(KORB_CLASS_P(klass) ? VAL2CLASS(klass)->serial : 0u) << 32 | mid) * 0xc4ceb9fe1a85ec53ull;   /* serial: the class moves */
+    key ^= ((uint64_t)argc << 2 | shape) * 0x9e3779b97f4a7c15ull;
+    if (korb_ub_seen(vm, key)) return;
+    const korb_value verbose = korb_const_get(vm, korb_intern_lit(vm, "$VERBOSE", 8));
+    if (verbose != KORB_TRUE && !(verbose != KORB_NIL && korb_warn_strict_unused_block_p(vm))) return;
+    uint32_t dfs = 0, dln = 0, cfs = 0, cln = 0;
+    const char *const label = korb_bt_label(c, mid, m);
+    const char *const cfile = korb_caller_pos(c, &slots[-(korb_sword_t)argc - 3], &cfs, &cln) ? korb_sym_name(vm, cfs) : korb_bt_cur_file(vm);
+    if (korb_srcloc_find(vm, m->body, &dfs, &dln))
+        korb_warn_at(c, slots, cfile, line ? line : cln, "the block passed to '%s' defined at %s:%u may be ignored", label, korb_sym_name(vm, dfs), dln);
+    else
+        korb_warn_at(c, slots, cfile, line ? line : cln, "the block may be ignored because '%s' does not use a block", label);
+}
+static inline bool korb_blk_passed(const NODE *block, const korb_value *def_env, const korb_value *cself) {
+    (void)def_env;
+    return block != NULL || (cself != NULL && KORB_PROC_P(*cself));
+}
 static __attribute__((no_stack_protector)) RESULT
 korb_dispatch_method(CTX *c, korb_value *slots, struct korb_method *m, uint32_t mid,
                      uint32_t line, uint32_t argc, korb_value def_class,
@@ -13336,6 +13414,8 @@ korb_dispatch_method(CTX *c, korb_value *slots, struct korb_method *m, uint32_t 
         return r;
       }
       default: /* KORB_METHOD_ISEQ */
+        if (UNLIKELY(korb_blk_passed(block, def_env, captured_self)) && m->blk_unused)
+            korb_unused_block_warn(c, slots, m, mid, line, argc, (block == NULL || def_env == KORB_BLK_FWD) ? KORB_UB_BLOCKARG : 0u);
         if (LIKELY(m->is_simple)) {
             /* korb_invoke_simple cannot install the callee's refinement set, so
              * once refinements are live a simple method is demoted on first call
@@ -13447,6 +13527,8 @@ korb_call_impl(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
                 return RESULT_OK(slots[-(korb_sword_t)argc]);
             }
             if (um->kind == KORB_METHOD_ISEQ) {
+                if (UNLIKELY(korb_blk_passed(block, def_env, captured_self)) && um->blk_unused)
+                    korb_unused_block_warn(c, slots, um, mid, line, argc, (block == NULL || def_env == KORB_BLK_FWD) ? KORB_UB_BLOCKARG : 0u);
                 if (LIKELY(um->is_simple))
                     return korb_invoke_simple(c, slots, um, argc, line, mid, self, def_class);
                 if (um->simple_blk && argc == (uint32_t)um->params_cnt && LIKELY(!vm->refinements_active)) {
@@ -13613,6 +13695,8 @@ korb_call_impl(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
             return nmr;
         }
         korb_cc_fill(cc, korb_ic_serial(c, mid), m, argc);
+        if (UNLIKELY(m->kind == KORB_METHOD_ISEQ && m->blk_unused) && korb_blk_passed(block, def_env, captured_self))
+            korb_unused_block_warn(c, slots, m, mid, line, argc, (block == NULL || def_env == KORB_BLK_FWD) ? KORB_UB_BLOCKARG : 0u);
     }
 
     korb_value *const base = slots - argc;     /* staged args = parameter window */
@@ -17466,6 +17550,8 @@ korb_send_blk_ic_x(CTX *c, korb_value *slots, uint32_t mid, uint32_t line,
                 def_class = KORB_NIL;
                 m = korb_mcache_find(vm, klass, mid, &def_class);
                 korb_ic_fill(c->vm, ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, UINT32_MAX);   /* no entry fast path: a block call never takes it */
+                if (UNLIKELY(m != NULL && m->kind == KORB_METHOD_ISEQ && m->blk_unused) && korb_blk_passed(block, def_env, captured_self))
+                    korb_unused_block_warn(c, slots, m, mid, line, argc, (block == NULL || def_env == KORB_BLK_FWD) ? KORB_UB_BLOCKARG : 0u);
             }
             if (m != NULL && m->visibility == 0 &&
                 (m->kind == KORB_METHOD_ISEQ || (m->kind == KORB_METHOD_CFUNC && m->uses_block))) {
@@ -17509,6 +17595,8 @@ korb_call_blk_ic(CTX *c, korb_value *slots, uint32_t mid, uint32_t line, struct 
                 def_class = KORB_NIL;
                 m = korb_mcache_find(vm, klass, mid, &def_class);
                 korb_ic_fill(vm, ic, korb_ic_serial_mc(c), klass, m, def_class, KORB_IC_INSTANCE, UINT32_MAX);   /* a miss is cached too */
+                if (UNLIKELY(m != NULL && m->kind == KORB_METHOD_ISEQ && m->blk_unused) && korb_blk_passed(block, def_env, captured_self))
+                    korb_unused_block_warn(c, slots, m, mid, line, argc, (block == NULL || def_env == KORB_BLK_FWD) ? KORB_UB_BLOCKARG : 0u);
             }
             if (m != NULL && (m->kind == KORB_METHOD_ISEQ || (m->kind == KORB_METHOD_CFUNC && m->uses_block))) {
                 RESULT r = m->kind != KORB_METHOD_ISEQ

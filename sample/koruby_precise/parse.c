@@ -3560,6 +3560,30 @@ kp_param_first_locals(struct kp_ctx *tc, const pm_constant_id_list_t *locals,
     return out;
 }
 
+/* Does a def use its block, as CRuby counts it (use_block): yield (also in defined?), super of any form,
+ * a block parameter or `...`.  block_given? / binding / Proc.new do not count. */
+static bool
+kp_blk_use_visit(const pm_node_t *node, void *data)
+{
+    switch (PM_NODE_TYPE(node)) {
+      case PM_DEF_NODE: case PM_CLASS_NODE: case PM_MODULE_NODE: case PM_SINGLETON_CLASS_NODE:
+        return false;                                        /* a scope of its own */
+      case PM_YIELD_NODE: case PM_SUPER_NODE: case PM_FORWARDING_SUPER_NODE:
+        *(bool *)data = true;
+        return false;
+      default:
+        return !*(bool *)data;
+    }
+}
+static bool
+kp_def_uses_block(const pm_def_node_t *const dn)
+{
+    const pm_parameters_node_t *const ps = dn->parameters;
+    if (ps && (ps->block || (ps->keyword_rest && PM_NODE_TYPE_P(ps->keyword_rest, PM_FORWARDING_PARAMETER_NODE)))) return true;
+    bool used = false;
+    if (dn->body) pm_visit_node(dn->body, kp_blk_use_visit, &used);
+    return used;
+}
 static NODE *
 transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *recv_override)
 {
@@ -3832,9 +3856,12 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         bake_add(tc, &bp->u.node_blkparam.base_off);
         body = ALLOC_node_seq(bp, body);
     }
+    const bool def_blk_used = kp_def_uses_block(dn);
+    if (def_blk_used && tc->fname && strcmp(tc->fname, KORB_PRELUDE_FILE) != 0) korb_ub_mid_used_note(tc->c->vm, kp_intern_cid(tc, dn->name));   /* not the prelude's (CRuby's builtins are C) */
     uint32_t uses_block = (tc->frame->uses_block ? KORB_DEFF_USES_BLOCK : 0u) |
                           (tc->frame->uses_backref ? KORB_DEFF_USES_BACKREF : 0u) |
-                          (tc->frame->fwd_slot >= 0 ? KORB_DEFF_FWD_ALL : 0u);
+                          (tc->frame->fwd_slot >= 0 ? KORB_DEFF_FWD_ALL : 0u) |
+                          (!def_blk_used && kp_intern_cid(tc, dn->name) != tc->c->vm->mid_initialize ? KORB_DEFF_BLK_UNUSED : 0u);
     void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);   /* = locals + 2 if the method yields */
 
