@@ -5,6 +5,18 @@
 
 
 
+## 未: TracePoint の残り (2026-10-16)
+実装（builtins/tracepoint.c）: parse がユーザコードの文の先頭（prism の newline フラグ、1 行 1 回）と def / ブロック /
+class の本体を記録し（head.line = 記録番号）、有効化した瞬間にユーザコードの全ノードを解釈系の dispatcher に戻して
+記録したノードだけ korb_trace_dispatch に差し替える（無効化で戻す、method_serial を上げ AOT の直接呼び出しを外す）。
+無効時に実行される命令は増えない（fib で ±0）。parse は記録の分 +0.9〜1.3%（net/http の require / 10 万行の -c）。
+- :c_call / :c_return は発火しない（C メソッドの呼び出し口が多数あり、無効時ゼロのまま全部に置く手がない）。rubyspec 1 例。
+- 有効化した時点で走っているフレームの、同じ node_seq の残りの兄弟には効かない（ASTro は子の dispatcher を親の
+  dispatch 開始時に読む）。後から dispatch される文（begin の中、呼んだメソッド）には効く。AOT では走っているフレームの
+  融合 SD 全体が対象外。
+- :a_call / :a_return、:fiber_switch、:call の parameters（instance_method から取る近似）、TracePoint#instruction_sequence。
+- :raise は Kernel#raise だけ（C の korb_raise からは出ない）。:line の 1 行 1 回は文の並びの中だけで見る。
+
 ## 未: `for x in obj`（Array / Range 以外）が先に全要素を配列にしてから回す (2026-10-16)
 node_for は `obj.to_enum(:each).to_a` で materialize してから本体を回すので、(1) 無限の Enumerator を
 `break` で抜ける for が止まらない、(2) #each の途中の副作用と本体の実行順が CRuby と違う、(3) #each に渡る
@@ -1514,7 +1526,7 @@ Ruby の `yield` 主体のマイクロ (20M yields) は **−8.10%**。
   直すには require に「読み込み中の feature」テーブル + 待ち合わせと、
   parked な green thread の backtrace が要る。
 
-- **TracePoint (76 例) — 設計検討と実測だけ済み、未着手**。
+- **TracePoint (76 例) — 2026-10-16 に実装（下の「TracePoint のイベント」）。以下は当時の検討記録**。
   部分評価は `EVAL_ARG` で子 dispatcher をインライン展開して融合するので、
   ノードの dispatcher を差し替えても**祖先 SD に取り込まれた複製には届かない**。
   一般の OSR/deopt も不可 (中間値は C コンパイラのレジスタに居て契約が無く、
@@ -2864,7 +2876,8 @@ exit 時に c->sp restore。 captured proc は snapshot_env_maybe で libc
 | Fiber Scheduler / Async I/O | 範囲外 |
 | ObjectSpace 走査 / 詳細 | excluded |
 | GC.* (start / stress 以外の細部) | runtime 内部依存 |
-| TracePoint / RubyVM | 範囲外 |
+| TracePoint | 実装済み（2026-10-16、c_call/c_return は未） |
+| RubyVM | 範囲外 |
 | NaN-boxing | 値表現変更禁止 (project memory) |
 | Refinements (`refine` / `using`) | 言語拡張、 範囲外 |
 | Ractor | 並列拡張、 範囲外 |
@@ -5069,7 +5082,7 @@ chilled にする。直すなら parse.c の PM_INTERPOLATED_STRING_NODE で
 「全パートが PM_STRING_NODE なら畳む」を入れる (実行時連結が消えるので
 わずかに速くもなる)。chilled_string_spec の残り 1 例。
 
-## TracePoint の :line / :call イベント (未実装)
+## TracePoint の :line / :call イベント（2026-10-16 に実装、以下は当時の記録）
 
 - `:line`: 文の境界に choke point が無い。単文のブロック本体
   (`trace.enable do line_event = true end`) は `node_seq` すら作られない

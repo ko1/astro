@@ -402,6 +402,29 @@ RESULT korb_definee_class(CTX *c, korb_value *slots);   /* c->def_definee, an in
 void korb_warn_method_redef_caller(CTX *c, korb_value *slots, korb_value klass, uint32_t mid, const korb_value *link, uint32_t line);   /* define_method / attr_* over one; link names the caller */
 void korb_warn_method_redef_frame(CTX *c, korb_value *slots, korb_value klass, uint32_t mid, const korb_value *fbase, uint32_t line);
 void korb_warn_method_redef_def(CTX *c, korb_value *slots, korb_value klass, uint32_t mid, const struct Node *body);   /* `def` over a method of the same table (nil klass: the global one) */
+/* TracePoint.  Parse records each user-code statement that starts a line (prism's newline flag, CRuby's line
+ * events) and each method / block / class body; head.line = record index + 1.  Nothing reads them until a
+ * TracePoint is enabled: then the user nodes go back to their interpreter dispatchers and the recorded ones to
+ * korb_trace_dispatch (korb_trace_swap), and back again when the last one is disabled. */
+enum { KORB_TR_LINE = 1u, KORB_TR_CALL = 2u, KORB_TR_BCALL = 4u, KORB_TR_CLASS = 8u };
+struct korb_trace_rec {
+    struct Node *n;
+    uint32_t line, body_line, end_line, file;   /* body_line / end_line: the def / block / class extent (call-ish events) */
+    int32_t id_off;                    /* from the node's cursor: the frame's identity cell, base[-4] (baked); self is base[-1] */
+    uint8_t kind;                      /* KORB_TR_* */
+};
+#define KORB_TR_CHUNK 1024u
+enum {   /* TracePoint events: bit = the index in prelude TracePoint::EVENTS */
+    KORB_TRE_LINE = 1u << 0, KORB_TRE_CLASS = 1u << 1, KORB_TRE_END = 1u << 2, KORB_TRE_CALL = 1u << 3,
+    KORB_TRE_RETURN = 1u << 4, KORB_TRE_C_CALL = 1u << 5, KORB_TRE_C_RETURN = 1u << 6, KORB_TRE_B_CALL = 1u << 7,
+    KORB_TRE_B_RETURN = 1u << 8, KORB_TRE_THREAD_BEGIN = 1u << 11, KORB_TRE_THREAD_END = 1u << 12,
+    KORB_TRE_FIBER_SWITCH = 1u << 13, KORB_TRE_RAISE = 1u << 14, KORB_TRE_RESCUE = 1u << 15, KORB_TRE_SCRIPT_COMPILED = 1u << 16,
+};
+#define KORB_TRE_SWAP (KORB_TRE_LINE | KORB_TRE_CALL | KORB_TRE_RETURN | KORB_TRE_B_CALL | KORB_TRE_B_RETURN | KORB_TRE_CLASS | KORB_TRE_END)
+struct korb_trace_rec *korb_trace_rec_new(struct korb_vm *vm, struct Node *n, uint8_t kind);   /* parse.c bakes its offsets */
+RESULT korb_trace_dispatch(CTX *c, struct Node *n, korb_value *slots);
+void korb_trace_new_code(CTX *c, struct Node *root);   /* code parsed while tracing joins in */
+RESULT korb_trace_event(CTX *c, korb_value *sc, uint32_t ev, korb_value *base, korb_value self, korb_value val);   /* raise / rescue / thread / script events */
 void korb_ub_mid_used_note(struct korb_vm *vm, uint32_t mid);   /* a def by this name uses its block */
 void korb_unused_block_warn(CTX *c, korb_value *slots, const struct korb_method *m, uint32_t mid, uint32_t line, uint32_t argc, uint32_t shape);
 void   korb_class_def_method(CTX *c, korb_value klass, uint32_t mid, NODE *body, NODE *entry,

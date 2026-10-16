@@ -853,8 +853,10 @@ korb_thread_trampoline(unsigned hi, unsigned lo)
         for (uint32_t i = 0; i < n; i++) base[1 + i] = korb_ary_ptr(aa)[i];   /* no alloc in this loop */
         t->args = KORB_NIL;
     }
+    if (UNLIKELY(c->vm->trace_mask & KORB_TRE_THREAD_BEGIN)) (void)korb_trace_event(c, base + 1 + n, KORB_TRE_THREAD_BEGIN, NULL, t->thval, KORB_NIL);
     RESULT r = korb_send(c, base + 1 + n, korb_intern_lit(c->vm, "call", 4), 0, n);
     base[0] = r.value;                        /* rooted while the scheduler closes */
+    if (UNLIKELY(c->vm->trace_mask & KORB_TRE_THREAD_END)) (void)korb_trace_event(c, base + 1, KORB_TRE_THREAD_END, NULL, t->thval, KORB_NIL);
     const RESULT er = korb_fiber_thread_end(c, base + 1);
     r.value = base[0];
     if (UNLIKELY(er.state == KORB_RAISE) && r.state != KORB_RAISE) r = er;

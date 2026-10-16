@@ -1785,6 +1785,13 @@ struct korb_vm {
     uint32_t ub_n, ub_cap;
     uint8_t *ub_mid_used;              /* by mid: some def parsed after boot uses its block (no unused-block warning for the name) */
     uint32_t ub_mid_cap;
+    /* TracePoint (korb_trace_*): what parse recorded about user code, and the dispatchers swapped while tracing */
+    struct korb_trace_rec **tr_chunk;  /* chunks of KORB_TR_CHUNK records (cells stay put: parse bakes into them) */
+    uint32_t tr_n, tr_nchunk;
+    struct korb_trace_save { struct Node *n; void *d; } *tr_saved;   /* d: the node_dispatcher_func_t it had */
+    uint32_t tr_saved_n, tr_saved_cap;
+    uint32_t trace_mask;               /* KORB_TRE_* of the enabled TracePoints */
+    bool trace_swapped;                /* user nodes run on the interpreter, records on korb_trace_dispatch */
 };
 struct korb_cov_meth { uint32_t name, sl, sc, el, ec; uint64_t count; };
 struct korb_cov_file {
@@ -1978,6 +1985,8 @@ struct CTX_struct {
     /* C extensions (builtins/cext.c): the running extension frames and their unwind targets */
     struct korb_cext_frame *cext_top;
     struct korb_cext_jmp   *cext_jmp;
+    bool         trace_in_hook;           /* a TracePoint hook is running on this thread: no events from it */
+    uint32_t     trace_ret_line;          /* the line of the `return` unwinding to the traced body (its :return lineno) */
 };
 
 /* Exchange CTX's scope save stacks with a switched-out thread's / fiber's. */

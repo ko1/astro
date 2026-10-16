@@ -1406,6 +1406,7 @@ node_rescue(CTX *c, NODE *n, korb_value *slots, NODE *match, NODE *body, NODE *n
          * observe it via `e.backtrace` / `$!.backtrace` (once; re-raise keeps it) */
         UNWRAP(korb_capture_backtrace(c, slots, &slots[base_off]));
         c->break_blk = NULL;   /* the unwind stopped here: no break is in flight any more */
+        if (UNLIKELY(c->vm->trace_mask & KORB_TRE_RESCUE)) CHECK(korb_trace_event(c, slots + 1, KORB_TRE_RESCUE, &slots[base_off], slots[base_off - 1], slots[0]));
         if (flags & 1u) slots[resc_var] = slots[0];    /* bind `=> e` */
         /* push the exception onto the per-CTX `$!` stack for the body; pop on
          * exit (nesting + restore-to-outer fall out of push/pop, top == $!). */

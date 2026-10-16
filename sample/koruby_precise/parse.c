@@ -156,6 +156,9 @@ struct kp_ctx {
     const uint32_t *seed_chain;
     uint32_t seed_chain_len;
     int32_t cov_fi;           /* Coverage: this source's entry in vm->cov_files, -1 = not measured */
+    size_t ln_idx;            /* kp_line: the line offset index found last */
+    bool tr_ok;               /* TracePoint records for this source (not the prelude) */
+    uint32_t tr_file;         /* its file symbol */
     bool in_eval;             /* eval(String): the program's namespace is the cref the eval
                                * installed, never the running self (it can be rebound). */
     /* eval under a binding: the binding's lexical levels, nearest first.  They sit
@@ -387,12 +390,62 @@ kp_line_column(const pm_parser_t *const parser, const uint32_t offset)
 }
 
 static uint32_t
+kp_line_off(struct kp_ctx *tc, const uint32_t off)
+{
+    /* the nodes come mostly in source order: walk on from the last line found, else search */
+    const pm_line_offset_list_t *const lo = pm_parser_line_offsets(tc->parser);
+    size_t i = tc->ln_idx;
+    if (i < lo->size && lo->offsets[i] <= off) {
+        const size_t lim = i + 16 < lo->size ? i + 16 : lo->size - 1;   /* a short walk; a far one searches */
+        while (i < lim && lo->offsets[i + 1] <= off) i++;
+        if (i < lim || i + 1 >= lo->size || lo->offsets[i + 1] > off) {
+            tc->ln_idx = i;
+            return (uint32_t)((int32_t)i + pm_parser_start_line(tc->parser));   /* eval can set a negative first line: kept as-is, printed signed */
+        }
+    }
+    const int32_t line = kp_line_column(tc->parser, off).line;
+    tc->ln_idx = (size_t)(line - pm_parser_start_line(tc->parser));
+    return (uint32_t)line;
+}
+static uint32_t
 kp_line(struct kp_ctx *tc, const pm_node_t *node)
 {
-    const int32_t line = kp_line_column(tc->parser, node->location.start).line;
-    return (uint32_t)line;                  /* eval can set a negative first line: kept as-is, printed signed */
+    return kp_line_off(tc, node->location.start);
 }
 static uint32_t kp_cur_line(struct kp_ctx *tc) { return tc->cur_node ? kp_line(tc, tc->cur_node) : 0; }
+static void bake_add(struct kp_ctx *tc, int32_t *cell);   /* fwd */
+/* TracePoint: record `n` (a statement starting a line, or a def / block / class body) for korb_trace_swap.  The
+ * frame's self / identity cells are recorded from here, so this runs before the frame is popped (bake). */
+static struct korb_trace_rec *
+kp_trace_note(struct kp_ctx *tc, NODE *n, uint8_t kind, uint32_t line)
+{
+    if (n == NULL || !tc->tr_ok) return NULL;
+    struct korb_vm *const vm = tc->c->vm;
+    if (tc->tr_file == 0) tc->tr_file = korb_intern(vm, tc->fname, strlen(tc->fname));
+    struct korb_trace_rec *r = NULL;
+    if (n->head.line > 0 && (uint32_t)n->head.line <= vm->tr_n) {
+        const uint32_t i = (uint32_t)n->head.line - 1;
+        r = &vm->tr_chunk[i / KORB_TR_CHUNK][i % KORB_TR_CHUNK];
+        if (r->n != n) r = NULL;
+    }
+    if (r == NULL) {
+        r = korb_trace_rec_new(vm, n, 0);
+        r->file = tc->tr_file;
+        r->id_off = -4 - tc->chain;
+        bake_add(tc, &r->id_off);
+    }
+    r->kind |= kind;
+    if (kind == KORB_TR_LINE) r->line = line; else r->body_line = line;
+    return r;
+}
+static void
+kp_trace_body(struct kp_ctx *tc, NODE *body, uint8_t kind, const pm_node_t *const node)
+{
+    if (!tc->tr_ok) return;
+    const uint32_t end = kp_line_off(tc, node->location.start + node->location.length - 1);   /* first: the cursor is near it */
+    struct korb_trace_rec *const r = kp_trace_note(tc, body, kind, kp_line(tc, node));
+    if (r) r->end_line = end;
+}
 
 /* Ruby 4.1 #source_range: register the full extent of a def/block/lambda node.
  * Columns are 0-based BYTE offsets into their line (what the spec asks for, and
@@ -1070,9 +1123,11 @@ transduce_statements(struct kp_ctx *tc, const pm_statements_node_t *stmts)
 {
     if (stmts == NULL || stmts->body.size == 0) return lit_nil();
     NODE *acc = NULL;
-    uint32_t cov_last = 0;
+    uint32_t cov_last = 0, tr_last = 0;
     for (size_t i = 0; i < stmts->body.size; i++) {
         const pm_node_t *const st = stmts->body.nodes[i];
+        const bool tr_line = tc->tr_ok && PM_NODE_FLAG_P(st, PM_NODE_FLAG_NEWLINE) && !PM_NODE_TYPE_P(st, PM_BEGIN_NODE);
+        const uint32_t tr_ln = tr_line ? kp_line(tc, st) : 0;   /* before its insides move kp_line's cursor on */
         NODE *one;
         /* A `defined?(...)` whose value is discarded is not evaluated at all (prism warns) */
         if (i + 1 < stmts->body.size && PM_NODE_TYPE_P(st, PM_DEFINED_NODE)) {
@@ -1093,6 +1148,7 @@ transduce_statements(struct kp_ctx *tc, const pm_statements_node_t *stmts)
                 one = ALLOC_node_seq(ALLOC_node_cov_line((uint32_t)tc->cov_fi, ln), one);
             }
         }
+        if (tr_line && tr_ln != tr_last) { kp_trace_note(tc, one, KORB_TR_LINE, tr_ln); tr_last = tr_ln; }   /* one line event per line (CRuby) */
         acc = acc ? ALLOC_node_seq(acc, one) : one;
     }
     return acc;
@@ -2433,6 +2489,7 @@ transduce_block_parts(struct kp_ctx *tc, const pm_constant_id_list_t *blk_locals
             cap_ns[k] = (uint16_t)n_enc;
         }
     }
+    if (tc->cur_node) kp_trace_body(tc, body, KORB_TR_BCALL, tc->cur_node);
     void *const linfo = build_locals_info(tc);      /* before pop_frame: it frees the frame */
     const bool bref_blk = tc->frame->block_backref;
     uint32_t frame_size = pop_frame(tc);    /* block locals (+2 if the block yields) */
@@ -3856,6 +3913,7 @@ transduce_def_recv(struct kp_ctx *tc, const pm_def_node_t *dn, const pm_node_t *
         bake_add(tc, &bp->u.node_blkparam.base_off);
         body = ALLOC_node_seq(bp, body);
     }
+    kp_trace_body(tc, body, KORB_TR_CALL, (const pm_node_t *)dn);
     const bool def_blk_used = kp_def_uses_block(dn);
     if (def_blk_used && tc->fname && strcmp(tc->fname, KORB_PRELUDE_FILE) != 0) korb_ub_mid_used_note(tc->c->vm, kp_intern_cid(tc, dn->name));   /* not the prelude's (CRuby's builtins are C) */
     uint32_t uses_block = (tc->frame->uses_block ? KORB_DEFF_USES_BLOCK : 0u) |
@@ -4024,6 +4082,7 @@ transduce_class(struct kp_ctx *tc, const pm_class_node_t *cn)
         body = transduce_statements(tc, (const pm_statements_node_t *)cn->body);
     else
         body = transduce(tc, cn->body);   /* a begin/rescue/ensure body is just another node */
+    kp_trace_body(tc, body, KORB_TR_CLASS, (const pm_node_t *)cn);
     void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);
 
@@ -4522,6 +4581,7 @@ transduce_module(struct kp_ctx *tc, const pm_module_node_t *mn)
         body = transduce_statements(tc, (const pm_statements_node_t *)mn->body);
     else
         body = transduce(tc, mn->body);   /* a begin/rescue/ensure body is just another node */
+    kp_trace_body(tc, body, KORB_TR_CLASS, (const pm_node_t *)mn);
     void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
     uint32_t frame_size = pop_frame(tc);
 
@@ -6590,6 +6650,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
             body = transduce_statements(tc, (const pm_statements_node_t *)sc->body);
         else
             body = transduce(tc, sc->body);   /* a begin/rescue/ensure body is just another node */
+        kp_trace_body(tc, body, KORB_TR_CLASS, node);
         void *const linfo = build_locals_info(tc);   /* before pop_frame: it frees the frame */
         uint32_t frame_size = pop_frame(tc);
         NODE *entry = ALLOC_node_entry(body, 0, frame_size, 0, NULL, 0, 0, NULL, 0, -1, NULL, 0, NULL, NULL, linfo, -1, 0, -1, 0, blabel, 0, 0, 0);
@@ -7246,6 +7307,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
     };
     korb_note_source(c->vm, fname, src, len, first_line, in_eval);
     tc.cov_fi = UNLIKELY(c->vm->cov_state != 0) ? korb_cov_attach(c->vm, fname, src, len, first_line, in_eval) : -1;
+    tc.tr_ok = fname != NULL && strcmp(fname, KORB_PRELUDE_FILE) != 0;
     NODE *ast = transduce(&tc, root);
     if (ast == NULL) ast = lit_nil();
     for (uint32_t pi = tc.pre_cnt; pi-- > 0; ) ast = ALLOC_node_seq(tc.pre_list[pi], ast);   /* BEGIN { } first */
@@ -7264,6 +7326,7 @@ koruby_parse_source_at(CTX *c, const char *src, size_t len, const char *fname, i
     }
 
     kp_parser_free(parser, arena, options);
+    if (UNLIKELY(c->vm->trace_swapped) && ast) korb_trace_new_code(c, ast);   /* parsed while tracing */
     return ast;
 }
 
@@ -7460,6 +7523,7 @@ kp_parse_binding_eval_src(CTX *c, const char *src, size_t len, const char *fname
                          .in_eval = true, .eval_outer = outer, .eval_outer_cnt = outer_levels };
     korb_note_source(c->vm, fname, src, len, first_line, true);
     tc.cov_fi = UNLIKELY(c->vm->cov_state != 0) ? korb_cov_attach(c->vm, fname, src, len, first_line, true) : -1;
+    tc.tr_ok = fname != NULL && strcmp(fname, KORB_PRELUDE_FILE) != 0;
     NODE *ast = transduce(&tc, root);
     for (uint32_t lv = 0; lv < outer_levels; lv++) free(outer_lists[lv].ids);
     free(outer_lists); free(outer); free(dummy);
@@ -7471,5 +7535,6 @@ kp_parse_binding_eval_src(CTX *c, const char *src, size_t len, const char *fname
     bool serr = tc.syntax_error;
     if (serr && tc.syntax_err) c->vm->last_syntax_msg = tc.syntax_err;   /* the real reason, not the generic */
     kp_parser_free(parser, arena, options);
+    if (UNLIKELY(c->vm->trace_swapped) && ast && !serr) korb_trace_new_code(c, ast);   /* parsed while tracing */
     return serr ? NULL : ast;   /* binding in alternative pattern → SyntaxError */
 }

@@ -18065,6 +18065,7 @@ RESULT korb_str_dup_pub(CTX *c, korb_value *slots, korb_value *src) {
     return korb_str_slice_new(c, slots, KORB_REF_AT(src), 0, VAL2STR(*src)->len);
 }
 #include "builtins/symbol.c"
+#include "builtins/tracepoint.c"
 #include "builtins/enumerator.c"
 #include "builtins/set.c"
 /* Mark klass's own `mid` as written `def recv.m` (see korb_method.sdef). */
@@ -18880,6 +18881,9 @@ korb_register_core_methods(CTX *c)
     korb_def_cmethod(c, KORB_C_PROC, "refined", korb_m_proc_refined, -1);
     korb_def_cmethod(c, KORB_C_PROC, "lambda?", korb_m_proc_lambda_q, 0);
     korb_def_cmethod(c, KORB_C_PROC, "binding", korb_m_proc_binding, 0);
+    korb_def_cmethod(c, KORB_C_PROC, "__trace_key", korb_m_tp_target_key, 0);
+    korb_def_cmethod(c, KORB_C_METHOD, "__trace_key", korb_m_tp_target_key, 0);
+    korb_def_cmethod(c, KORB_C_UNBOUND_METHOD, "__trace_key", korb_m_tp_target_key, 0);
     korb_def_cmethod(c, KORB_C_PROC, "arity", korb_m_proc_arity, 0);
     korb_def_cmethod(c, KORB_C_PROC, "parameters", korb_m_proc_parameters, -1);
     korb_def_cmethod(c, KORB_C_PROC, "source_location", korb_m_proc_source_location, 0);
@@ -23374,6 +23378,7 @@ korb_eval_str_self(CTX *c, korb_value *slots, korb_value str, korb_value self_va
      * methods, compiled ERB views) ran on the interpreter: 16% of railsbench's AOT instructions */
     korb_load_time_specialize(c, ast, repo_before, fname);
     const uint32_t locals = koruby_toplevel_locals_cnt;
+    if (UNLIKELY(c->vm->trace_mask & KORB_TRE_SCRIPT_COMPILED)) CHECK(korb_trace_event(c, slots, KORB_TRE_SCRIPT_COMPILED, NULL, KORB_NIL, str));
     slots[0] = 0; slots[1] = 0; slots[2] = 0; slots[3] = 0;   /* eval frame meta: fb[-4..-1] */
     korb_value *const fb = slots + 4;
     korb_value *const cur = fb + locals;                     /* the eval program's body cursor */
@@ -23564,6 +23569,7 @@ korb_eval_binding_core(CTX *c, korb_value *slots, korb_value *src_slot, korb_val
     const uint32_t L = koruby_toplevel_locals_cnt;
     const uint32_t ncnt = koruby_toplevel_local_cnt;
     const uint32_t *const nsyms = koruby_toplevel_local_syms;   /* stable malloc'd array; capture before EVAL */
+    if (UNLIKELY(c->vm->trace_mask & KORB_TRE_SCRIPT_COMPILED)) CHECK(korb_trace_event(c, slots, KORB_TRE_SCRIPT_COMPILED, NULL, KORB_NIL, *src_slot));
     slots[0] = 0; slots[1] = 0; slots[2] = 0; slots[3] = 0;   /* eval frame meta: fb[-4..-1] */
     korb_value *const fb = slots + 4;
     korb_value *const cur = fb + L;
@@ -23749,6 +23755,7 @@ korb_bi_eval(CTX *c, korb_value *slots, korb_slice args)
     if (UNLIKELY(ast == NULL)) return korb_raise_syntax_at(c, slots, "syntax error in eval string", fname);
     korb_load_time_specialize(c, ast, repo_before, fname);   /* AOT: bind (+ compile when producing), as a loaded file */
     const uint32_t locals = koruby_toplevel_locals_cnt;
+    if (UNLIKELY(c->vm->trace_mask & KORB_TRE_SCRIPT_COMPILED)) CHECK(korb_trace_event(c, slots, KORB_TRE_SCRIPT_COMPILED, NULL, KORB_NIL, sv));
     slots[0] = 0; slots[1] = 0; slots[2] = 0; slots[3] = 0;   /* eval frame meta: fb[-4..-1] */
     korb_value *const fb = slots + 4;
     korb_value *const cur = fb + locals;                     /* the eval program's body cursor */
@@ -24734,7 +24741,13 @@ korb_exc_build_with_cause(CTX *c, korb_value *slots, korb_slice args)
 static RESULT
 korb_bi_raise(CTX *c, korb_value *slots, korb_slice args)
 {
-    const RESULT r = korb_exc_build_with_cause(c, slots, args);
+    RESULT r = korb_exc_build_with_cause(c, slots, args);
+    if (UNLIKELY(c->vm->trace_mask & KORB_TRE_RAISE) && r.state == KORB_NORMAL) {
+        slots[0] = r.value;
+        korb_value *const fb = korb_link_base(c, args.p + KORB_FLINK_OFF);
+        CHECK(korb_trace_event(c, slots + 1, KORB_TRE_RAISE, fb, fb ? fb[-1] : KORB_NIL, slots[0]));
+        r.value = slots[0];
+    }
     /* Start a fresh unwind, as korb_raise does.  Without this the capture at the
      * rescue prepends whatever an EARLIER (already handled) raise left in
      * vm->bt — `raise SomeError.new(...)` never went through korb_raise, so the
@@ -25468,6 +25481,8 @@ korb_ctx_new(void)
     korb_builtin_define(c, "__syscall", korb_bi_syscall, -1);
     korb_builtin_define(c, "__trace_var_on", korb_bi_trace_var_on, 1);
     korb_builtin_define(c, "__cov_setup", korb_bi_cov_setup, 2);
+    korb_builtin_define(c, "__trace_hooks", korb_bi_trace_hooks, 1);
+    korb_builtin_define(c, "__trace_reentry", korb_bi_trace_reentry, 1);
     korb_builtin_define(c, "__cov_set_state", korb_bi_cov_set_state, 1);
     korb_builtin_define(c, "__cov_clear", korb_bi_cov_clear, 0);
     korb_builtin_define(c, "__cov_peek", korb_bi_cov_peek, 0);
