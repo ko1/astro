@@ -653,6 +653,7 @@ push_frame(struct kp_ctx *tc, const pm_constant_id_list_t *locals)
     f->dm_body = false;
     f->method_params = 0;
     f->depth_shift = tc->pending_depth_shift;
+    tc->pending_depth_shift = false;   /* single-use: a block inside the END body is a scope of its own */
     f->lambda_body = tc->pending_lambda_body;
     tc->pending_lambda_body = false;   /* single-use: a block nested in the lambda body is not one */
     f->fwd_slot = -1;
@@ -962,7 +963,7 @@ kp_frame_outer(struct kp_ctx *const tc, struct kp_frame *const f)
 static bool
 kp_fwd_find(struct kp_ctx *tc, uint32_t *depth_out, int32_t *slot_out, int32_t *blk_out)
 {
-    uint32_t d = tc->frame->depth_shift ? 1u : 0u;
+    uint32_t d = 0;                              /* frames out from tc->frame (each hop below counts one) */
     for (struct kp_frame *f = tc->frame; f; ) {
         if (f->fwd_slot >= 0) {
             *depth_out = d; *slot_out = f->fwd_slot; *blk_out = f->fwd_blk_slot;
@@ -1007,7 +1008,7 @@ enum kp_anon_kind { KP_ANON_BLK, KP_ANON_REST, KP_ANON_KWREST };
 static bool
 kp_anon_find(struct kp_ctx *const tc, const enum kp_anon_kind kind, uint32_t *const depth_out, int32_t *const slot_out)
 {
-    uint32_t d = tc->frame->depth_shift ? 1u : 0u;
+    uint32_t d = 0;                              /* frames out from tc->frame (each hop below counts one) */
     for (struct kp_frame *f = tc->frame; f; ) {
         const int32_t slot = kind == KP_ANON_BLK  ? f->anon_blk_slot
                            : kind == KP_ANON_REST ? f->anon_rest_slot
@@ -1075,13 +1076,28 @@ bake_cvar_set(struct kp_ctx *tc, uint32_t name, NODE *val)
 /* depth==0 → local, depth>=1 → outer.  Centralizes the read/write dispatch. */
 /* record the deepest outer-scope read/write so a reified Proc knows how many
  * enclosing scopes to materialize on escape (B3). */
+/* A prism depth (scopes out from the innermost prism scope) as frames out from tc->frame: a depth_shift frame
+ * (an END { } body) is a koruby frame but not a prism scope, so it is passed over wherever it sits. */
+static struct kp_frame *kp_frame_outer(struct kp_ctx *const tc, struct kp_frame *const f);   /* fwd */
+static uint32_t
+kp_shift_depth(const struct kp_ctx *const tc0, uint32_t d)
+{
+    struct kp_ctx *const tc = (struct kp_ctx *)(uintptr_t)tc0;
+    uint32_t kd = 0;
+    struct kp_frame *f = tc->frame;
+    for (;;) {
+        while (f && f->depth_shift) { kd++; f = kp_frame_outer(tc, f); }
+        if (d == 0 || f == NULL) return kd + d;
+        d--; kd++; f = kp_frame_outer(tc, f);
+    }
+}
 static void kp_note_depth(struct kp_ctx *tc, uint32_t depth) {
     if (depth > tc->frame->max_ref_depth) tc->frame->max_ref_depth = depth;
 }
 static NODE *
 lvar_read(struct kp_ctx *tc, const pm_node_t *node, pm_constant_id_t cid, uint32_t depth)
 {
-    if (tc->frame->depth_shift) depth++;
+    depth = kp_shift_depth(tc, depth);
     if (depth == 0) return bake_lget(tc, lvar_index(tc, node, cid));
     kp_note_depth(tc, depth);
     return bake_eget(tc, depth, lvar_index_at(tc, node, cid, depth));
@@ -1090,7 +1106,7 @@ lvar_read(struct kp_ctx *tc, const pm_node_t *node, pm_constant_id_t cid, uint32
 static NODE *
 lvar_write(struct kp_ctx *tc, const pm_node_t *node, pm_constant_id_t cid, uint32_t depth, NODE *rval)
 {
-    if (tc->frame->depth_shift) depth++;
+    depth = kp_shift_depth(tc, depth);
     if (depth == 0) return bake_lset(tc, lvar_index(tc, node, cid), rval);
     kp_note_depth(tc, depth);
     return bake_eset(tc, depth, lvar_index_at(tc, node, cid, depth), rval);
@@ -1199,7 +1215,7 @@ build_rescue_chain(struct kp_ctx *tc, const pm_rescue_node_t *rc)
         body = ALLOC_node_seq(ALLOC_node_seq(store, assign), body);
     } else if (rc->reference) {
         const pm_local_variable_target_node_t *ref = (const pm_local_variable_target_node_t *)rc->reference;
-        if (ref->depth == 0) {                   /* `=> e` binds a current-frame slot */
+        if (kp_shift_depth(tc, ref->depth) == 0) {   /* `=> e` binds a current-frame slot */
             uint32_t idx = lvar_index(tc, rc->reference, ref->name);
             resc_var = (int32_t)idx - tc->chain; /* frame-size fixup via bake_add below */
             flags |= 1u;
@@ -1333,10 +1349,11 @@ kp_blkfwd_outer_arg_p(struct kp_ctx *tc, const pm_block_argument_node_t *ba, uin
 {
     if (!ba->expression || !PM_NODE_TYPE_P(ba->expression, PM_LOCAL_VARIABLE_READ_NODE)) return false;
     const pm_local_variable_read_node_t *const r = (const pm_local_variable_read_node_t *)ba->expression;
-    if (r->depth == 0) return false;
-    struct kp_frame *const f = kp_frame_at(tc, r->depth);
+    const uint32_t kd = kp_shift_depth(tc, r->depth);
+    if (kd == 0) return false;
+    struct kp_frame *const f = kp_frame_at(tc, kd);
     if (f == NULL || f->method_mid == 0 || f->blk_fwd_name == 0 || f->blk_fwd_name != r->name) return false;
-    *depth = r->depth; *mf = f;
+    *depth = kd; *mf = f;
     return true;
 }
 /* the block that forwards reaches the method's trio: escaping, it must reify it (as `yield` in a block does) */
@@ -1353,7 +1370,7 @@ kp_blkfwd_arg_p(const struct kp_ctx *tc, const pm_block_argument_node_t *ba)
 {
     return tc->frame->blk_fwd_name != 0 && ba->expression && PM_NODE_TYPE_P(ba->expression, PM_LOCAL_VARIABLE_READ_NODE) &&
            ((const pm_local_variable_read_node_t *)ba->expression)->name == tc->frame->blk_fwd_name &&
-           ((const pm_local_variable_read_node_t *)ba->expression)->depth == 0;
+           kp_shift_depth(tc, ((const pm_local_variable_read_node_t *)ba->expression)->depth) == 0;
 }
 
 /* true if the constant-pool name is a bindable variable — i.e. NOT underscore
@@ -1441,7 +1458,7 @@ kp_pat_value(struct kp_ctx *tc, const pm_node_t *node)
 static int32_t
 kp_pat_slot(struct kp_ctx *tc, const pm_node_t *t, pm_constant_id_t name, uint32_t depth)
 {
-    if (depth == 0) return (int32_t)lvar_index(tc, t, name) - tc->chain;
+    if (kp_shift_depth(tc, depth) == 0) return (int32_t)lvar_index(tc, t, name) - tc->chain;
     const uint32_t tmp = alloc_synth_local(tc);
     tc->chain += 1;                                     /* EVAL'd at the root match's cur */
     NODE *const w = lvar_write(tc, t, name, depth, bake_lget(tc, tmp));
@@ -5675,7 +5692,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
             do {                                                                \
                 if (!PM_NODE_TYPE_P((t), PM_LOCAL_VARIABLE_TARGET_NODE))        \
                     return kp_unsupported(tc, (t), "non-local multi-assign target"); \
-                if (((const pm_local_variable_target_node_t *)(t))->depth != 0) \
+                if (kp_shift_depth(tc, ((const pm_local_variable_target_node_t *)(t))->depth) != 0) \
                     return kp_unsupported(tc, (t), "outer-scope multi-assign target"); \
                 (outcid) = ((const pm_local_variable_target_node_t *)(t))->name; \
             } while (0)
@@ -5695,7 +5712,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
             for (uint32_t i = 0; i < nt; i++) {
                 const pm_node_t *t = mw->lefts.nodes[i];
                 if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
-                    if (((const pm_local_variable_target_node_t *)t)->depth != 0) {
+                    if (kp_shift_depth(tc, ((const pm_local_variable_target_node_t *)t)->depth) != 0) {
                         all_local = false; needs_general = true;   /* outer-scope local → general synth-temp desugar (depth-aware) */
                     }
                 } else if (PM_NODE_TYPE_P(t, PM_INSTANCE_VARIABLE_TARGET_NODE)) {
@@ -5768,7 +5785,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
         {
             bool all_local = true;
             #define IS_L0(t) (PM_NODE_TYPE_P((t), PM_LOCAL_VARIABLE_TARGET_NODE) && \
-                              ((const pm_local_variable_target_node_t *)(t))->depth == 0)
+                              kp_shift_depth(tc, ((const pm_local_variable_target_node_t *)(t))->depth) == 0)
             for (uint32_t i = 0; i < mw->lefts.size && all_local; i++) if (!IS_L0(mw->lefts.nodes[i])) all_local = false;
             for (uint32_t i = 0; i < mw->rights.size && all_local; i++) if (!IS_L0(mw->rights.nodes[i])) all_local = false;
             if (all_local && !anon_splat && !IS_L0(sp->expression)) all_local = false;
