@@ -3055,6 +3055,10 @@ static RESULT korb_m_kernel_makeproc(CTX *c, korb_value *slots, korb_ref self, k
         return RESULT_OK(fwd);
     }
     korb_value *const denv = (korb_value *)((uintptr_t)def_env & ~(uintptr_t)1u);   /* block-arg def_env arrives tagged (base|1) */
+    if (is_lambda && block->head.kind == &kind_node_entry && !block->head.flags.lambda_lit) {
+        block->head.flags.lambda_lit = 1;           /* `send(:lambda) { return }`: its `return` ends the lambda */
+        c->vm->lambda_lit_any = true;
+    }
     RESULT r = korb_make_proc(c, slots, block, denv, KORB_CSELF_VAL(cself), is_lambda);
     if (LIKELY(r.state == KORB_NORMAL) && !is_lambda && KORB_PROC_P(r.value)) VAL2PROC(r.value)->brk_orphan = 1;
     return r;

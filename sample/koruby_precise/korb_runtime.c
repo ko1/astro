@@ -5037,6 +5037,69 @@ static uint32_t korb_bind_method_mid(const struct korb_vm *const vm, const KorbB
     (void)vm;
     return b->method_mid;                              /* resolved at capture (korb_make_binding) */
 }
+/* Where an eval'd top-level `return` goes: the binding's scope chain, out through
+ * its blocks, to the first lambda literal's frame or the method's (CRuby).  NULL
+ * (the nearest boundary) when the chain closes or ends first. */
+static korb_value *
+korb_eval_return_target(const struct korb_vm *const vm, const KorbBinding *const b)
+{
+    korb_value ev = b->env;
+    for (uint32_t d = 0; d < 64 && ev != 0 && (ev & 7u) == 0; d++) {
+        const KorbEnv *const e = VAL2ENV(ev);
+        const korb_value id = e->id;
+        const uintptr_t p = (uintptr_t)(id & ~(korb_value)7u);
+        if (e->vals != 0 || e->loc == NULL) return NULL;          /* closed: that frame has returned */
+        if ((id & 7u) == KORB_FID_METHOD) return korb_bt_known_ptr(vm, p) ? e->loc : NULL;
+        if ((id & 7u) != KORB_FID_BLOCK) return NULL;
+        if (((const NODE *)p)->head.flags.lambda_lit) return e->loc;
+        ev = e->prev;
+    }
+    return NULL;
+}
+
+/* An eval'd bare `super` forwards the binding's METHOD's parameters: spell them as
+ * explicit arguments ("a, *r, k: k, &b") for parse.c to put in place of the
+ * keyword.  NULL when there is no such method or a parameter has no name. */
+static char *
+korb_bind_zsuper_args(const struct korb_vm *const vm, const KorbBinding *const b)
+{
+    korb_value ev = b->env;
+    const struct korb_method *m = NULL;
+    for (uint32_t d = 0; d < 64 && ev != 0 && (ev & 7u) == 0 && m == NULL; d++) {
+        const korb_value id = VAL2ENV(ev)->id;
+        const uintptr_t p = (uintptr_t)(id & ~(korb_value)7u);
+        if ((id & 7u) == KORB_FID_METHOD) { if (!korb_bt_known_ptr(vm, p)) return NULL; m = (const struct korb_method *)p; break; }
+        if ((id & 7u) != KORB_FID_BLOCK) return NULL;
+        ev = VAL2ENV(ev)->prev;
+    }
+    const struct korb_param_info *const pi = m && m->kind == KORB_METHOD_ISEQ ? (const struct korb_param_info *)m->param_info : NULL;
+    if (pi == NULL) return NULL;
+    char *out = NULL; size_t olen = 0;
+    FILE *const f = open_memstream(&out, &olen);
+    if (!f) return NULL;
+    bool ok = true, first = true;
+    for (uint32_t i = 0; i < pi->n && ok; i++) {
+        const uint32_t nm = pi->e[i].name;
+        const uint8_t k = pi->e[i].kind;
+        if (k == 7 || k == 8) continue;                     /* **nil / &nil: nothing to pass */
+        if (nm == 0) { ok = false; break; }                 /* anonymous `*` / `**` / `&`: not spelled here */
+        const char *const s = korb_sym_name(vm, nm);
+        if (!first) fputs(", ", f);
+        first = false;
+        switch (k) {
+          case 0: case 1: fputs(s, f); break;                           /* req / opt */
+          case 2: fprintf(f, "*%s", s); break;                           /* rest */
+          case 3: case 4: fprintf(f, "%s: %s", s, s); break;             /* keyreq / key */
+          case 5: fprintf(f, "**%s", s); break;                          /* keyrest */
+          case 6: fprintf(f, "&%s", s); break;                           /* block */
+          default: ok = false; break;
+        }
+    }
+    fclose(f);
+    if (!ok) { free(out); return NULL; }
+    return out;
+}
+
 static uint32_t korb_bind_method_mid_walk(const struct korb_vm *const vm, const KorbBinding *const b)
 {
     korb_value ev = b->env;
@@ -13227,6 +13290,10 @@ korb_dispatch_method(CTX *c, korb_value *slots, struct korb_method *m, uint32_t 
         const bool dm_refine = UNLIKELY(c->vm->refinements_active) && p->refine_set != KORB_NIL &&
                                p->refine_set != c->refinements;
         if (dm_refine) { korb_refine_push(c); c->refinements = p->refine_set; }
+        if (UNLIKELY(!p->iseq->head.flags.lambda_lit) && p->iseq->head.kind == &kind_node_entry) {
+            p->iseq->head.flags.lambda_lit = 1;      /* a define_method body is a lambda: its `return`s stop here */
+            c->vm->lambda_lit_any = true;
+        }
         RESULT r = (block == NULL && !dm_refine && korb_dm_simple_p(p->iseq, argc))
                  ? korb_dm_yield_simple(c, slots, p->iseq, p->env, &slots[-(korb_sword_t)argc], argc, recv_slot)
                  : korb_block_yield_full(c, slots, p->iseq, (korb_value *)(uintptr_t)p->env,
@@ -13245,11 +13312,12 @@ korb_dispatch_method(CTX *c, korb_value *slots, struct korb_method *m, uint32_t 
          * group block). */
         if (r.state == KORB_BREAK) { r.state = KORB_NORMAL; c->return_target = NULL; }
         else if (r.state == KORB_RETURN) {
-            /* ... unless the `return` came from a block the CALLER handed in and
-             * is aimed at a method still on the stack: that one keeps unwinding
-             * (rspec's `RSpec.describe` is define_method'd, and a spec returns
-             * out of the group block it passes). */
-            if (c->return_target == NULL || block == NULL) { r.state = KORB_NORMAL; c->return_target = NULL; }
+            /* ... unless it came from a block or proc of an outer method (handed in by
+             * the caller, or as an argument) and is aimed at that method: it keeps
+             * unwinding (rspec's `RSpec.describe` is define_method'd, and a spec
+             * returns out of the group block it passes). */
+            /* ours: written in the body (aimed at its frame or a block inside it, above `slots`) */
+            if (c->return_target == NULL || c->return_target >= slots) { r.state = KORB_NORMAL; c->return_target = NULL; }
         }
         else if (UNLIKELY(r.state == KORB_RAISE) && KORB_EXC_P(r.value))   /* a non-exception RAISE payload (e.g. thread kill) carries no line */
             korb_bt_unwind(c, VAL2EXC(r.value), line, mid, m);
@@ -15014,6 +15082,56 @@ korb_outer_frame_base_at(korb_value *frame_base, korb_value prev_handle, uint32_
     if (h & 1u) return (korb_value *)(uintptr_t)(h & ~(uintptr_t)1u);
     const KorbEnv *const e = VAL2ENV(h);               /* an open env still names its live frame */
     return e->closed ? NULL : e->loc;
+}
+/* A block's `return` aimed `depth` levels out stops at a lambda-by-call body on the
+ * way (this frame included): the frame base of the first one, else NULL. */
+static bool korb_id_lambda_lit(const korb_value id) {
+    return (id & 7u) == KORB_FID_BLOCK && ((const NODE *)(uintptr_t)(id & ~(korb_value)7u))->head.flags.lambda_lit;
+}
+korb_value *
+korb_return_lambda_stop(korb_value *frame_base, korb_value prev_handle, uint32_t depth)
+{
+    if (korb_id_lambda_lit(korb_id_get(frame_base))) return frame_base;
+    korb_value h = prev_handle;
+    if (h != 0 && (h & 7u) == 0 && VAL2ENV(h)->closed == 0 && VAL2ENV(h)->loc == frame_base) h = VAL2ENV(h)->prev;
+    for (uint32_t k = 1; k < depth && h != 0; k++) {
+        if (h & 1u) {
+            korb_value *const fb = (korb_value *)(uintptr_t)(h & ~(uintptr_t)1u);
+            if (korb_id_lambda_lit(korb_id_get(fb))) return fb;
+            h = korb_ep_get(fb);
+            if (h != 0 && (h & 7u) == 0 && VAL2ENV(h)->closed == 0 && VAL2ENV(h)->loc == fb) h = VAL2ENV(h)->prev;
+        } else if ((h & 7u) == 0) {
+            const KorbEnv *const e = VAL2ENV(h);
+            if (korb_id_lambda_lit(e->id)) return e->closed ? NULL : e->loc;
+            h = e->prev;
+        } else return NULL;
+    }
+    return NULL;
+}
+/* The same literal block handed to a REDEFINED #lambda is a plain block: a copy
+ * of its entry without the lambda mark (same body), made once per entry. */
+struct Node *
+korb_entry_plain_twin(struct korb_vm *vm, struct Node *entry)
+{
+    if (entry->head.kind != &kind_node_entry) return entry;
+    for (uint32_t i = 0; i < vm->twin_n; i++) if (vm->twins[i].orig == entry) return vm->twins[i].twin;
+    NODE *const t = calloc(1, sizeof(NODE));   /* immortal, as every node; the entry part is copied below */
+    if (!t) abort();
+    memcpy(t, entry, sizeof(struct NodeHead) + sizeof(struct node_entry_struct));
+    t->head.flags.lambda_lit = 0;
+    /* the interpreter's dispatcher: the original may hold an AOT trampoline keyed by
+     * its own address (korb_first_dispatch) or an SD instance's hole pool */
+    t->head.dispatcher = t->head.kind->default_dispatcher;
+    t->head.pool = NULL; t->head.nholes = 0;
+    uint32_t fs, ln;
+    if (korb_srcloc_find(vm, entry, &fs, &ln)) korb_reg_srcloc(vm, t, fs, ln);   /* Proc#source_location, backtraces */
+    if (vm->twin_n == vm->twin_cap) {
+        vm->twin_cap = vm->twin_cap ? vm->twin_cap * 2 : 8;
+        vm->twins = realloc(vm->twins, sizeof *vm->twins * vm->twin_cap);
+        if (!vm->twins) abort();
+    }
+    vm->twins[vm->twin_n].orig = entry; vm->twins[vm->twin_n].twin = t; vm->twin_n++;
+    return t;
 }
 /* The same walk, stopping at the raw handle: odd = a live frame, even non-zero =
  * a materialized KorbEnv (open or closed), 0 = the chain ended.  Callers that
@@ -23235,11 +23353,14 @@ korb_eval_binding_core(CTX *c, korb_value *slots, korb_value *src_slot, korb_val
     const uint32_t bind_mid = bind_mid0 ? bind_mid0 : c->eval_mid;
     c->vm->parse_anon_cref = cref != KORB_UNDEF && KORB_CLASS_P(cref) && VAL2CLASS(cref)->name_sym == 0 &&
                              (!VAL2CLASS(cref)->is_singleton || cref_is_caller);   /* class_eval on an unnamed class / instance_eval */
+    /* only a string that spells `super` can need the binding's method's parameters */
+    char *const zsuper_args = (s->len >= 5 && memmem(korb_str_ptr(s), s->len, "super", 5) != NULL) ? korb_bind_zsuper_args(c->vm, b0) : NULL;
     NODE *entry = koruby_parse_binding_eval(c, korb_str_ptr(s), s->len, fname, eline,
                                             korb_enc_name_of(c->vm, KORB_STR_ENC(*src_slot)), decl, dn,
                                             outer_names, outer_cnt, outer_levels,
                                             bind_mid,
-                                            cref_name, nencl ? encl : NULL, nencl, cref_is_caller);
+                                            cref_name, nencl ? encl : NULL, nencl, cref_is_caller, zsuper_args);
+    free(zsuper_args);
     c->vm->parse_anon_cref = false;
     korb_flush_parse_warnings(c, slots);
     free(decl); free(outer_names); free(outer_cnt);
@@ -23310,6 +23431,8 @@ korb_eval_binding_core(CTX *c, korb_value *slots, korb_value *src_slot, korb_val
     c->vm->cur_load_file = saved_load;
     c->vm->cur_load_abs = saved_abs;
     c->vm->script_name = saved_name;
+    if (UNLIKELY(er.state == KORB_RETURN && c->return_target == NULL))
+        c->return_target = korb_eval_return_target(c->vm, VAL2BIND(*bind_slot));
     if (UNLIKELY(er.state != KORB_NORMAL)) return er;
     fb[L] = er.value;                               /* park result across writeback allocs */
     /* Re-read the binding from the rooted slot each step — the hash allocs

@@ -2771,10 +2771,13 @@ transduce_func_call_1(struct kp_ctx *tc, const pm_call_node_t *cn)
             const char *cnm = kp_cid_cstr(tc, cn->name);
             int is_lam = !strcmp(cnm, "lambda");
             if (is_lam || !strcmp(cnm, "proc")) {
-                tc->pending_lambda_body = is_lam != 0;
+                /* `lambda {}` is a CALL (a class may redefine it): its `return`s are a
+                 * block's, stopped at the body at run time while it is a lambda */
+                tc->pending_lambda_body = false;
                 NODE *entry = transduce_block(tc, (const pm_block_node_t *)cn->block);
                 tc->pending_lambda_body = false;
                 if (entry->head.kind != &kind_node_entry) return entry;   /* unsupported params → propagate (don't reify a non-entry) */
+                if (is_lam) { entry->head.flags.lambda_lit = 1; tc->c->vm->lambda_lit_any = true; }
                 int32_t self_off = -1 - tc->chain;
                 NODE *mk = ALLOC_node_make_proc(entry, -tc->chain, self_off, (uint32_t)is_lam, 1u);
                 bake_add(tc, &mk->u.node_make_proc.def_env_off);
@@ -6082,6 +6085,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
         NODE *entry = transduce_block_parts(tc, &ln->locals, ln->parameters, ln->body);
         tc->pending_lambda_body = false;
         if (entry->head.kind != &kind_node_entry) return entry;   /* unsupported params → propagate (don't reify a non-entry) */
+        entry->head.flags.lambda_lit = 1;
         korb_reg_srcloc(tc->c->vm, entry, korb_intern(tc->c->vm, tc->fname, strlen(tc->fname)), kp_line(tc, node));   /* Proc#source_location */
         kp_reg_srcrange(tc, entry, node);   /* Proc#source_range: the whole `-> () { }` */
         entry->u.node_entry.def_line = kp_line(tc, node);
@@ -7236,8 +7240,84 @@ koruby_parse_source(CTX *c, const char *src, size_t len, const char *fname, bool
  * program AST; koruby_toplevel_locals_cnt / koruby_toplevel_local_{syms,cnt} are
  * set to the eval program's frame (caller seeds those slots from the binding and
  * writes them back).  NULL on syntax error. */
+static NODE *
+kp_parse_binding_eval_src(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, const char *src_enc,
+                          const uint32_t *name_syms, uint32_t name_cnt,
+                          const uint32_t *outer_names, const uint32_t *outer_cnt, uint32_t outer_levels,
+                          uint32_t method_mid,
+                          uint32_t cref_name, const uint32_t *cref_chain, uint32_t cref_chain_len,
+                          bool cref_is_caller);
+
+/* the bare `super`s an eval'd string writes outside any def of its own */
+struct kp_zsup { uint32_t *pos; uint32_t n, cap; };
+static bool
+kp_zsuper_visit(const pm_node_t *node, void *data)
+{
+    if (PM_NODE_TYPE_P(node, PM_DEF_NODE)) return false;      /* its own method: its own params */
+    if (PM_NODE_TYPE_P(node, PM_FORWARDING_SUPER_NODE)) {
+        struct kp_zsup *const z = data;
+        if (z->n == z->cap) {
+            z->cap = z->cap ? z->cap * 2 : 4;
+            z->pos = realloc(z->pos, sizeof *z->pos * z->cap);
+            if (!z->pos) abort();
+        }
+        z->pos[z->n++] = node->location.start;
+    }
+    return true;
+}
+static int kp_u32_cmp(const void *a, const void *b) { const uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b; return x < y ? -1 : x > y; }
+
+/* eval(str) with the binding's frame.  A bare `super` written outside a def of the
+ * string's own forwards the binding's method's parameters: `zsuper_args` spells
+ * them ("a, b: b, &block"), and each such `super` keyword is reparsed as
+ * `super(<args>)` — on the same line, so positions keep their lines. */
 NODE *
 koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, const char *src_enc,
+                          const uint32_t *name_syms, uint32_t name_cnt,
+                          const uint32_t *outer_names, const uint32_t *outer_cnt, uint32_t outer_levels,
+                          uint32_t method_mid,
+                          uint32_t cref_name, const uint32_t *cref_chain, uint32_t cref_chain_len,
+                          bool cref_is_caller, const char *zsuper_args)
+{
+    if (zsuper_args != NULL) {
+        pm_options_t *const options = pm_options_new();
+        if (src_enc) pm_options_encoding_set(options, src_enc);
+        pm_options_line_set(options, first_line);
+        pm_arena_t *const arena = pm_arena_new();
+        pm_parser_t *const parser = pm_parser_new(arena, (const uint8_t *)src, len, options);
+        pm_node_t *const root = pm_parse(parser);
+        struct kp_zsup z = { NULL, 0, 0 };
+        if (pm_parser_errors_size(parser) == 0) pm_visit_node(root, kp_zsuper_visit, &z);
+        kp_parser_free(parser, arena, options);
+        if (z.n > 0) {
+            qsort(z.pos, z.n, sizeof *z.pos, kp_u32_cmp);
+            const size_t alen = strlen(zsuper_args);
+            char *const ns = malloc(len + z.n * (alen + 2) + 1);
+            if (!ns) abort();
+            size_t o = 0, from = 0;
+            for (uint32_t i = 0; i < z.n; i++) {
+                const size_t at = (size_t)z.pos[i] + 5;           /* just past the `super` keyword */
+                memcpy(ns + o, src + from, at - from); o += at - from;
+                ns[o++] = '('; memcpy(ns + o, zsuper_args, alen); o += alen; ns[o++] = ')';
+                from = at;
+            }
+            memcpy(ns + o, src + from, len - from); o += len - from;
+            ns[o] = '\0';
+            free(z.pos);
+            NODE *const r = kp_parse_binding_eval_src(c, ns, o, fname, first_line, src_enc, name_syms, name_cnt, outer_names,
+                                                      outer_cnt, outer_levels, method_mid, cref_name, cref_chain, cref_chain_len,
+                                                      cref_is_caller);
+            free(ns);
+            return r;
+        }
+        free(z.pos);
+    }
+    return kp_parse_binding_eval_src(c, src, len, fname, first_line, src_enc, name_syms, name_cnt, outer_names, outer_cnt,
+                                     outer_levels, method_mid, cref_name, cref_chain, cref_chain_len, cref_is_caller);
+}
+
+static NODE *
+kp_parse_binding_eval_src(CTX *c, const char *src, size_t len, const char *fname, int32_t first_line, const char *src_enc,
                           const uint32_t *name_syms, uint32_t name_cnt,
                           const uint32_t *outer_names, const uint32_t *outer_cnt, uint32_t outer_levels,
                           uint32_t method_mid,

@@ -42,6 +42,7 @@ struct NodeHead {
         bool no_inline : 1;
         bool is_vcall : 1;          /* bare identifier (`foo`): a miss is NameError */
         bool yield_simple : 1;      /* node_entry block: korb_block_yield's fast path applies (set on first yield) */
+        bool lambda_lit : 1;        /* node_entry: a `-> {}` / `lambda {}` literal's body (an eval'd `return` stops there) */
         bool ty_observed : 1;       /* EXPERIMENT KORB_TYHINT: ty_l / ty_r hold the operand kinds this site saw */
         uint8_t ty_l, ty_r;         /* bit (kind - 1) per korb_ty_kind seen (a body can be the site itself, so not head.line) */
         uint8_t sd_inl;             /* node_send: which AOT-only inline body its SD calls (enum korb_sdi, 0 = none) */
@@ -624,6 +625,8 @@ RESULT korb_yield_outer(CTX *c, korb_value *slots, uint32_t argc, uint32_t line,
                         const korb_value *ep, uint32_t depth, int32_t trio_base);
 korb_value *korb_outer_frame_base(korb_value prev_handle, uint32_t depth);
 korb_value *korb_outer_frame_base_at(korb_value *ep_cell, korb_value prev_handle, uint32_t depth);
+korb_value *korb_return_lambda_stop(korb_value *frame_base, korb_value prev_handle, uint32_t depth);
+struct Node *korb_entry_plain_twin(struct korb_vm *vm, struct Node *entry);
 korb_value  korb_outer_handle_at(const korb_value *frame_base, korb_value prev_handle, uint32_t depth);
 /* The enclosing method's block trio, or NULL once that frame returned — then
  * *proc_out is the Proc its env kept (0 = there is no such block at all). */
@@ -932,7 +935,7 @@ NODE *koruby_parse_binding_eval(CTX *c, const char *src, size_t len, const char 
                                 const uint32_t *outer_names, const uint32_t *outer_cnt, uint32_t outer_levels,
                                 uint32_t method_mid,
                                 uint32_t cref_name, const uint32_t *cref_chain, uint32_t cref_chain_len,
-                                bool cref_is_caller);
+                                bool cref_is_caller, const char *zsuper_args);
 extern uint32_t koruby_toplevel_locals_cnt;
 extern const uint32_t *koruby_toplevel_local_syms;   /* toplevel local-name table (for TOPLEVEL_BINDING) */
 extern uint32_t koruby_toplevel_local_cnt;

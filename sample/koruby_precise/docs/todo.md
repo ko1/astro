@@ -5,13 +5,6 @@
 
 
 
-## 未: `return` の行き先がパース時に決まるので、lambda かどうかを実行時に変えられない (2026-10-16)
-- `send(:lambda) { return }.call` はメソッドを抜けてしまう（CRuby は lambda からだけ抜ける）。
-- `def lambda(&b) = b` と再定義したクラスで `lambda { return 1 }.call` が 2 を返す（CRuby は proc として
-  メソッドから 1 で抜ける）。`lambda { }` 字句は lambda の本体として組まれ、return は本体の境界で止まる。
-- 直すには node_return_outer が通るフレームごとに「その Proc が lambda か」を実行時に知る必要がある
-  （ブロックのフレームは Proc を持たない）。rubyspec: core/kernel/lambda_spec の 2 例。
-
 ## 未: スレッドのブロックの `break` が LocalJumpError にならない (2026-10-16)
 `Thread.new { begin; break :x; rescue LocalJumpError => e; e; end }.value` が :x（CRuby は break の位置で
 LocalJumpError を出し、ブロック内の rescue が捕まえる）。node_break は状態を返すだけで、行き先の有無を
@@ -62,22 +55,14 @@ const_get / const_source_location は読み込み中のスレッド以外には�
 ## 未: eval(str) の中の yield / block_given? / bare super / return が binding のメソッドに届かない (2026-10-16)
 - `def m; eval("yield"); end; m { }` が LocalJumpError（`block_given?` も false）。メソッドが字句上 yield を
   持たないとブロックの 3 つ組を確保しないうえ、eval のフレームは binding のメソッドの組を読まない。
-- `def foo(a, b:, &blk) = eval("super")` が "super outside a method body"（引数の並びを実行時にフレームから
-  組み直す必要がある。spec: core/kernel/eval_spec）。
-- `-> { proc { eval("return :x") }.call }` で LocalJumpError（eval の先頭の return に行き先が無い。binding の
-  各段がブロックかラムダかを解析時に知る必要がある。spec: core/kernel/eval_spec の eval_return_with_lambda）。
+- (2026-10-16 修正) eval の素の `super` は binding のメソッドの引数並びで `super(a, b: b, &blk)` に書き換えて
+  parse、eval の最上位の `return` は binding の鎖の最初の lambda 本体かメソッドへ。匿名の `*` / `**` / `&` を
+  持つメソッドからの eval の素の `super` は未対応のまま。
 
 ## 未: `$_` がフレーム局所でなくグローバル（require の中の readline が main に漏れる） (2026-10-15)
 `require "json"` の後で main の `$_` が "\n" になる（rubygems の StubSpecification が gemspec を readline で読む）。
 CRuby の `$_` は `$~` と同じくメソッドのフレームごと。koruby は `$_` を大域の定数表に置いている。`$~` の仕組み
 （kp_note_backref とフレームの backref セル）に載せれば直る見込み。
-
-## 未: define_method に渡した proc の中で、外のブロックの `return` がメソッドを抜けない (2026-10-15)
-- `pr = mp { return :good }; define_method(:foo, proc { |x| x.call }); foo(pr)` → CRuby は :good（pr の
-  return は pr を作ったメソッドを抜ける）、koruby は DM 呼び出しが return を飲み込み :bad。
-  DM の dispatch は「ブロックを渡された呼び出しで return_target が付いている」ときだけ通す。
-  正しく分けるには、その return が DM の本体（とその中のブロック）に字句的に書かれたものかを知る必要がある
-  （DM の定義元メソッドが pr の定義元と同じ場合もあるので、家のフレームの比較では足りない）。rubyspec 1 例。
 
 ## 検討: codeql の value_param.ql（引数の korb_value を may-GC 呼び出しの後に使う）を gate に入れるか (2026-10-15)
 - korb_puts_one_to が変換の呼び出しの後で引数 `v` を根に戻していた（2cab5fb8 で修正、STRESS+PURGE で SEGV）。

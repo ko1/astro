@@ -1770,6 +1770,10 @@ struct korb_vm {
      * (const_get / const_source_location), which wait in require instead */
     struct korb_ald { uint32_t owner_serial, name, reg_fsym, reg_line; const struct korb_thread *th; bool reg_loc; } *ald;
     uint32_t ald_n, ald_cap;
+    struct korb_twin { struct Node *orig, *twin; } *twins;   /* korb_entry_plain_twin */
+    uint32_t twin_n, twin_cap;
+    bool lambda_lit_any;               /* some block body is a lambda by a call (`lambda {}` / send(:lambda)): a
+                                        * block's `return` checks for one on its way out (node_return_outer) */
 };
 struct korb_cov_meth { uint32_t name, sl, sc, el, ec; uint64_t count; };
 struct korb_cov_file {
