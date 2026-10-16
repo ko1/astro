@@ -1176,6 +1176,7 @@ struct korb_method {
     uint8_t  sdi_k;          /* the AOT inline send (enum korb_sdi) this entry is the builtin of, 0 = none (korb_sdi_init);
                               * every write of kind / rfn / rbfn clears it.  In the pad before `body`. */
     uint8_t  blk_unused;     /* ISEQ: never yields / takes &b / ... / super: a block passed to it may be ignored (warning) */
+    uint8_t  aliased;        /* an alias shares this definition: redefining either name does not warn (CRuby's alias_count) */
     struct Node *body;       /* ISEQ */
     /* 呼び出しの入口。どちらも同じ本体ノードを指し、AOT が焼くのはこちら側。
      * 充填時に (site の argc, callee の形状) で片方を選んで cc/ic に載せる。 */

@@ -1919,7 +1919,12 @@ main(int argc, char *argv[])
          * rubygems on the load path simply has none, so a LoadError here is the
          * normal case and stays quiet; anything else is a real failure. */
         if (!OPTION.no_gems) {
-            const RESULT gr = korb_require_feature(c, toplevel_cursor, "rubygems");
+            /* quiet: koruby's own operating_system.rb and prelude stand-ins redefine rubygems methods (-w) */
+            const uint32_t vsym = korb_intern(c->vm, "$VERBOSE", 8);
+            toplevel_cursor[0] = korb_const_get(c->vm, vsym);
+            korb_const_define(c, vsym, KORB_NIL);
+            const RESULT gr = korb_require_feature(c, toplevel_cursor + 1, "rubygems");
+            korb_const_define(c, vsym, toplevel_cursor[0]);
             if (gr.state == KORB_RAISE) {
                 char enm[128];
                 korb_class_desc_into(c, korb_class_obj_of(c, gr.value), enm, sizeof enm);

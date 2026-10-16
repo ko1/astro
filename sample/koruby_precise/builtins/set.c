@@ -1286,6 +1286,7 @@ static RESULT korb_m_class_attr_n(CTX *c, korb_value *slots, korb_ref self, korb
     /* the calling scope's default visibility, as define_method (ai4r's parameters_info) */
     const uint8_t scope_vis = korb_define_method_scope_vis(c, a.p - 3, VAL2CLASS(slots[0])->cur_visibility);
     #define KORB_ATTR_DEF(id, w) do { const uint8_t sv_ = VAL2CLASS(slots[0])->cur_visibility; \
+        korb_warn_method_redef_caller(c, slots + 2, slots[0], (id), a.p + KORB_FLINK_OFF, 0); \
         VAL2CLASS(slots[0])->cur_visibility = scope_vis; korb_class_def_attr(c, slots[0], (id), ivar, (w)); \
         VAL2CLASS(slots[0])->cur_visibility = sv_; } while (0)
     slots[1] = UNWRAP(korb_ary_new(c, slots + 2, n * 2));    /* defined method names → return value */

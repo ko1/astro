@@ -6034,7 +6034,8 @@ static RESULT korb_m_alias_send2(CTX *c, korb_value *slots, korb_ref self, korb_
 static RESULT korb_m_alias_public_send(CTX *c, korb_value *slots, korb_ref self, korb_slice a, NODE *block, korb_value *def_env, korb_value *cself)
 { return korb_send_alias_tramp(c, slots, self, a, block, def_env, cself, c->vm->mid_public_send); }
 
-RESULT korb_do_alias(CTX *c, korb_value *slots, korb_value klass, uint32_t newm, uint32_t oldm) {
+RESULT korb_do_alias(CTX *c, korb_value *slots, korb_value klass, uint32_t newm, uint32_t oldm,
+                     const korb_value *const where, const uint32_t line) {
     if (!KORB_CLASS_P(klass)) klass = korb_class_obj_of(c, klass);   /* top-level (self=main) → alias on its class (Object), not main's singleton */
     if (UNLIKELY(!KORB_CLASS_P(klass)))
         return korb_raise(c, slots, KORB_E_TYPE, 0, "alias on a non-class");
@@ -6085,9 +6086,16 @@ RESULT korb_do_alias(CTX *c, korb_value *slots, korb_value klass, uint32_t newm,
         return korb_raise(c, slots, KORB_E_NAME, 0, "undefined method '%s' for class '%s'",   /* CRuby: NameError, not NoMethodError */
                           korb_sym_name(c->vm, oldm), korb_type_name(klass));
     korb_check_basic_op_redef(c, klass, newm);          /* an alias can redefine a basic op too */
+    if (newm != oldm) {
+        slots[0] = klass;                                 /* the warning may run Ruby (Warning.warn) */
+        if (line != 0) korb_warn_method_redef_frame(c, slots + 1, klass, newm, where, line);
+        else korb_warn_method_redef_caller(c, slots + 1, klass, newm, where, 0);
+        klass = slots[0];                                 /* entries are libc: src stays put */
+    }
     /* snapshot BEFORE taking the slot: it may be src itself (`alias_method :m, :m`,
      * graphql's define_accessor_method), which the slot resets — and the slot
      * array may grow under src */
+    ((struct korb_method *)(uintptr_t)src)->aliased = 1;   /* the two names now share the definition */
     const struct korb_method tmp = *src;
     struct korb_method *dst = korb_class_method_slot(c->vm, VAL2CLASS(klass), newm);   /* libc alloc, no GC */
     *dst = tmp; dst->mid = newm;
@@ -6135,7 +6143,7 @@ static RESULT korb_m_class_alias_method(CTX *c, korb_value *slots, korb_ref self
     uint32_t newm, oldm;
     { RESULT r = korb_alias_argsym(c, slots + 1, KORB_SLICE_GET(a, 0), &newm); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
     { RESULT r = korb_alias_argsym(c, slots + 1, KORB_SLICE_GET(a, 1), &oldm); if (UNLIKELY(r.state != KORB_NORMAL)) return r; }
-    return korb_do_alias(c, slots + 1, slots[0], newm, oldm);
+    return korb_do_alias(c, slots + 1, slots[0], newm, oldm, a.p + KORB_FLINK_OFF, 0);
 }
 static korb_value korb_klass_override_get(const struct korb_vm *vm, korb_value obj);   /* fwd */
 static uint8_t korb_define_method_scope_vis(CTX *c, const korb_value *link, uint8_t body_vis);   /* fwd (below the frame walk) */
@@ -6222,6 +6230,7 @@ static RESULT korb_m_define_method(CTX *c, korb_value *slots, korb_ref self, kor
             return korb_raise(c, slots, KORB_E_TYPE, 0, "bind argument must be a subclass of %s", onm);
         }
         korb_check_basic_op_redef(c, slots[0], mid);
+        korb_warn_method_redef_caller(c, slots + 2, slots[0], mid, a.p + KORB_FLINK_OFF, 0);
         struct korb_method tmp = *src;                   /* src may dangle once the slot array grows; snapshot first */
         const char *const src_label = tmp.label_src ? tmp.label_src : korb_bt_label(c, tmp.mid, &tmp);
         struct korb_method *dst = korb_class_method_slot(c->vm, VAL2CLASS(slots[0]), mid);
@@ -6255,6 +6264,7 @@ static RESULT korb_m_define_method(CTX *c, korb_value *slots, korb_ref self, kor
     if (UNLIKELY(KORB_PROC_P(slots[1]) && VAL2PROC(slots[1])->refined_copy))
         return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "cannot define a method from a refined Proc");
     korb_check_basic_op_redef(c, slots[0], mid);
+    korb_warn_method_redef_caller(c, slots + 2, slots[0], mid, a.p + KORB_FLINK_OFF, 0);
     struct korb_method *m = korb_class_method_slot(c->vm, VAL2CLASS(slots[0]), mid);
     m->kind = KORB_METHOD_DM;
     m->dm_proc = slots[1];
@@ -22553,6 +22563,80 @@ static void korb_warn_emit(CTX *c, korb_value *slots, const char *msg, size_t le
     }
     bool def; const korb_value out = korb_out_target(c, "$stderr", 7, &def);
     (void)korb_out_emit(c, slots, out, 2, msg, len);
+}
+/* CRuby's "method redefined; discarding old m" ($VERBOSE true), about to replace `old` in its own table.  An
+ * aliased definition, an undef tombstone and a visibility-only copy do not count.  A Ruby-written one adds
+ * "previous definition of m was here" in the same warning; a C (or prelude) method has no such line. */
+static void
+korb_warn_method_redef(CTX *c, korb_value *slots, const struct korb_method *old, uint32_t mid, const char *file, uint32_t line)
+{
+    struct korb_vm *const vm = c->vm;
+    if (old == NULL || old->kind == KORB_METHOD_UNDEF || old->kind == KORB_METHOD_BUILTIN ||
+        old->aliased || old->vis_clone || old->hidden || old->retired || !vm->boot_done) return;
+    if (korb_const_get(vm, korb_intern_lit(vm, "$VERBOSE", 8)) != KORB_TRUE) return;
+    uint32_t pfs = 0, pln = 0;
+    bool prev = false;
+    if (!old->core) {
+        if (old->kind == KORB_METHOD_DM) prev = KORB_PROC_P(old->dm_proc) && VAL2PROC(old->dm_proc)->iseq != NULL &&
+                                                korb_srcloc_find(vm, VAL2PROC(old->dm_proc)->iseq, &pfs, &pln);
+        else if (old->kind == KORB_METHOD_ISEQ || old->kind == KORB_METHOD_ATTR_R) prev = old->body != NULL && korb_srcloc_find(vm, old->body, &pfs, &pln);
+    }
+    const char *const name = korb_sym_name(vm, mid);
+    char msg[1600];
+    int ml = file ? snprintf(msg, sizeof msg, "%s:%u: warning: method redefined; discarding old %s\n", file, line, name)
+                  : snprintf(msg, sizeof msg, "warning: method redefined; discarding old %s\n", name);
+    if (ml < 0 || ml >= (int)sizeof msg) return;
+    if (prev) {
+        const int pl = snprintf(msg + ml, sizeof msg - (size_t)ml, "%s:%u: warning: previous definition of %s was here\n",
+                                korb_sym_name(vm, pfs), pln, korb_sym_name(vm, old->orig_mid ? old->orig_mid : mid));
+        if (pl < 0 || pl >= (int)sizeof msg - ml) return;
+        ml += pl;
+    }
+    korb_warn_emit(c, slots, msg, (size_t)ml);
+}
+void
+korb_warn_method_redef_def(CTX *c, korb_value *slots, korb_value klass, uint32_t mid, const struct Node *body)
+{
+    const struct korb_method *old = NULL;
+    if (KORB_CLASS_P(klass)) {
+        const int32_t s = korb_mtab_slot(VAL2CLASS(klass), mid);
+        if (s < 0) return;
+        old = VAL2CLASS(klass)->methods[s];
+    } else {
+        old = korb_method_lookup(c->vm, mid);
+        if (old == NULL || old->retired || old->core) return;   /* a prelude global is Kernel's in CRuby: another owner */
+    }
+    uint32_t fs = 0, ln = 0;
+    if (!korb_get_srcloc(c->vm, body, &fs, &ln)) return;
+    korb_warn_method_redef(c, slots, old, mid, korb_sym_name(c->vm, fs), ln);
+}
+/* the same for define_method / attr_*, positioned by `link` (a link cell naming the caller frame) */
+void
+korb_warn_method_redef_caller(CTX *c, korb_value *slots, korb_value klass, uint32_t mid, const korb_value *link, uint32_t line)
+{
+    const int32_t s = korb_mtab_slot(VAL2CLASS(klass), mid);
+    if (s < 0) return;
+    const char *file = NULL;
+    uint32_t ln = line;
+    if (korb_frames_snapshot(c, link) != 0) {          /* the frame `link` names: its file (and line, unless given) */
+        const struct korb_frame_rec *const r = &c->vm->fscratch[0];
+        file = r->file ? r->file : korb_bt_cur_file(c->vm);
+        if (ln == 0) ln = r->line;
+    }
+    korb_warn_method_redef(c, slots, VAL2CLASS(klass)->methods[s], mid, ln ? file : NULL, ln);
+}
+/* … for the frame whose base is `fbase` (node_attr), at `line` */
+void
+korb_warn_method_redef_frame(CTX *c, korb_value *slots, korb_value klass, uint32_t mid, const korb_value *fbase, uint32_t line)
+{
+    const int32_t s = korb_mtab_slot(VAL2CLASS(klass), mid);
+    if (s < 0) return;
+    const char *file = NULL;
+    if (korb_frames_snapshot_at(c, c->slots, c->slots_limit, fbase, line, NULL) != 0) {
+        const struct korb_frame_rec *const r = &c->vm->fscratch[0];
+        file = r->file ? r->file : korb_bt_cur_file(c->vm);
+    }
+    korb_warn_method_redef(c, slots, VAL2CLASS(klass)->methods[s], mid, file, line);
 }
 /* rb_warn with a source position: "file:line: warning: msg" (CRuby's shape). */
 void korb_warn_at(CTX *c, korb_value *slots, const char *file, uint32_t line, const char *fmt, ...) {

@@ -311,7 +311,8 @@ RESULT korb_hash_merge_val(CTX *c, korb_value *slots, korb_ref href, korb_value 
 RESULT korb_range_new(CTX *c, korb_value *slots, korb_ref bref, korb_value end, uint32_t exclude_end);
 
 /* alias new old (and Module#alias_method) — copy a method under a new name. */
-RESULT korb_do_alias(CTX *c, korb_value *slots, korb_value klass, uint32_t newm, uint32_t oldm);
+RESULT korb_do_alias(CTX *c, korb_value *slots, korb_value klass, uint32_t newm, uint32_t oldm,
+                     const korb_value *where, uint32_t line);   /* where: the frame base at `line`, or (line 0) the caller's link — for the redefinition warning */
 
 /* Object / instance variables (korb_runtime.c) */
 RESULT korb_obj_new(CTX *c, korb_value *slots, korb_value klass);
@@ -398,6 +399,9 @@ RESULT korb_definee_class(CTX *c, korb_value *slots);   /* c->def_definee, an in
 /* the unused-block warning for a call to m with a block (shape: how it was passed, KORB_UB_*) */
 #define KORB_UB_BLOCKARG 1u
 #define KORB_UB_METHOD_CALL 2u
+void korb_warn_method_redef_caller(CTX *c, korb_value *slots, korb_value klass, uint32_t mid, const korb_value *link, uint32_t line);   /* define_method / attr_* over one; link names the caller */
+void korb_warn_method_redef_frame(CTX *c, korb_value *slots, korb_value klass, uint32_t mid, const korb_value *fbase, uint32_t line);
+void korb_warn_method_redef_def(CTX *c, korb_value *slots, korb_value klass, uint32_t mid, const struct Node *body);   /* `def` over a method of the same table (nil klass: the global one) */
 void korb_ub_mid_used_note(struct korb_vm *vm, uint32_t mid);   /* a def by this name uses its block */
 void korb_unused_block_warn(CTX *c, korb_value *slots, const struct korb_method *m, uint32_t mid, uint32_t line, uint32_t argc, uint32_t shape);
 void   korb_class_def_method(CTX *c, korb_value klass, uint32_t mid, NODE *body, NODE *entry,
