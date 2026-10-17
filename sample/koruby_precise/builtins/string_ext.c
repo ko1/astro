@@ -488,8 +488,10 @@ static RESULT korb_str_format_at(CTX *c, korb_value *slots, korb_ref self, korb_
             break;
           }
           case 's': {
-            /* Thread / Fiber: the C printer has no form for them (irb's jobs prints threads with %s) */
-            #define KORB_FMT_ASK_P(v) (AROH_IS_GC_OBJECT(v) && (KORB_OBJ_TYPE(v) == KORB_OBJ_THREAD || KORB_OBJ_TYPE(v) == KORB_OBJ_FIBER))
+            /* Thread / Fiber: the C printer has no form for them (irb's jobs prints threads with %s);
+             * Array / Hash: the C printer would not call the elements' own #inspect */
+            #define KORB_FMT_ASK_P(v) (AROH_IS_GC_OBJECT(v) && (KORB_OBJ_TYPE(v) == KORB_OBJ_THREAD || KORB_OBJ_TYPE(v) == KORB_OBJ_FIBER || \
+                                                             KORB_OBJ_TYPE(v) == KORB_OBJ_ARRAY || KORB_OBJ_TYPE(v) == KORB_OBJ_HASH))
             /* fprintf stops at a NUL; a Ruby String may carry one.  A bare "%s"
              * (no width/precision) can write the bytes straight through. */
             #define KORB_FMT_S_WRITE(out, sp, buf, len) do { \

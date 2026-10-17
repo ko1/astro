@@ -2470,7 +2470,7 @@ node_const(CTX *c, NODE *n, korb_value *slots, uint32_t name_sym@sym, uint32_t o
 }
 
 // `defined?(expr)` → a description String or nil (expr is NOT evaluated).
-// kind: 0=method-on-self, 1=constant, 2=@ivar, 3=$global, 4="local-variable",
+// kind: 0=method-on-self, 2=@ivar, 3=$global, 4="local-variable",
 // 5="expression", 6="self", 7="method"(fixed, receiver call), 8="nil",
 // 9="true", 10="false".  Fixed kinds ignore id/self_off.
 NODE_DEF
@@ -2485,46 +2485,6 @@ node_defined(CTX *c, NODE *n, korb_value *slots, uint32_t kind, uint32_t id@sym,
         for (uint32_t i = 0; i < vm->method_cnt; i++)            /* top-level / global function table */
             if (vm->methods[i]->mid == id) { res = "method"; break; }
         break;
-      case 1: {
-        /* Resolve the way a bare constant READ does — lexical cref, its
-         * ancestry, then top level.  The by-name table is FLAT, so asking it
-         * directly answered for a constant in any namespace at all: once
-         * net/http was loaded, `defined?(HTTP)` was "constant" everywhere and
-         * webmock branched into code that then raised NameError. */
-        /* Two starting points, innermost first.  `self` is the namespace in a
-         * class/module body, in a `def self.x` on one, and in a block written in
-         * either; the method entry names the owner from inside an instance
-         * method (and the singleton class from inside a `class << self` body). */
-        const korb_value self_cref = (self_off != INT32_MIN && KORB_CLASS_P(slots[self_off])) ? slots[self_off] : KORB_NIL;
-        const korb_value entry_cref = (self_off != INT32_MIN && dc_off != INT32_MIN)
-                               ? korb_const_cref_at(c->vm, slots[self_off], &slots[dc_off]) : KORB_NIL;
-        uint32_t i = UINT32_MAX;
-        for (int pass = 0; pass < 2 && i == UINT32_MAX && res == NULL; pass++) {
-            korb_value start = pass == 0 ? self_cref : entry_cref;
-            for (korb_value o = start; i == UINT32_MAX && res == NULL && KORB_CLASS_P(o); o = VAL2CLASS(o)->enclosing) {
-                i = korb_const_index_owned(vm, id, o);
-                if (i == UINT32_MAX) i = korb_const_in_ancestry(vm, o, id);
-                /* a pending autoload is already "constant", and must not be loaded to say so */
-                if (i == UINT32_MAX && korb_autoload_registered_p(c, o, id)) res = "constant";
-            }
-        }
-        /* a class below BasicObject but not Object (and no module) never reaches the top level (rb_const_get) */
-        const korb_value inner = KORB_CLASS_P(self_cref) ? self_cref : entry_cref;
-        bool no_top = KORB_CLASS_P(inner) && !VAL2CLASS(inner)->is_module;
-        if (no_top) {
-            const korb_value objc0 = korb_const_get(vm, vm->class_name[KORB_C_OBJECT]);
-            for (korb_value k = inner; KORB_CLASS_P(k); k = VAL2CLASS(k)->superclass) if (k == objc0) { no_top = false; break; }
-        }
-        if (i == UINT32_MAX && res == NULL && !no_top) i = korb_const_index_owned(vm, id, KORB_NIL);
-        if (i == UINT32_MAX && res == NULL && !no_top) {
-            const korb_value objc = korb_const_get(vm, vm->class_name[KORB_C_OBJECT]);
-            if (KORB_CLASS_P(objc)) {
-                i = korb_const_in_ancestry(vm, objc, id);
-                if (i == UINT32_MAX && korb_autoload_registered_p(c, objc, id)) res = "constant";
-            }
-        }
-        if (i != UINT32_MAX) res = "constant";   /* a nil-valued constant still counts */
-        break; }
       case 2: if (korb_ivar_defined(c, slots[self_off], ID2SYM(id))) res = "instance-variable"; break;   /* membership, not value (nil counts) */
       case 3: { uint32_t i = korb_const_index(vm, id); if (i != UINT32_MAX) res = "global-variable"; break; }   /* a global assigned nil is still defined */
       case 4: res = "local-variable"; break;
@@ -2543,6 +2503,51 @@ node_defined(CTX *c, NODE *n, korb_value *slots, uint32_t kind, uint32_t id@sym,
     }
     if (!res) return RESULT_OK(KORB_NIL);
     RESULT dr = korb_str_new(c, slots, res, (uint32_t)strlen(res));   /* defined? returns a frozen String */
+    if (LIKELY(dr.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(dr.value))
+        ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_FROZEN;
+    return dr;
+}
+
+// `defined?(X)`: resolve the way a bare constant READ does, without loading an
+// autoload — the runtime cref, the baked lexical nesting (Module.nesting: a
+// `module A::B` body does not see A's constants), the innermost cref's
+// ancestry, then the top level.
+NODE_DEF
+node_defined_const(CTX *c, NODE *n, korb_value *slots, uint32_t id@sym, int32_t self_off, int32_t dc_off, struct korb_constcache *cache@ref)
+{
+    (void)n;
+    struct korb_vm *const vm = c->vm;
+    /* `self` is the namespace in a class/module body, in a `def self.x` on one, and in a block written
+     * in either; the method entry names the owner from inside an instance method (and the singleton
+     * class from inside a `class << self` body) */
+    const korb_value self_cref = (self_off != INT32_MIN && KORB_CLASS_P(slots[self_off])) ? slots[self_off] : KORB_NIL;
+    const korb_value entry_cref = (self_off != INT32_MIN && dc_off != INT32_MIN) ? korb_const_cref_at(vm, slots[self_off], &slots[dc_off]) : KORB_NIL;
+    korb_value inner = KORB_CLASS_P(self_cref) ? self_cref : entry_cref;
+    uint32_t i = UINT32_MAX;
+    bool found = false;   /* a pending autoload is already "constant", and must not be loaded to say so */
+    for (int pass = 0; pass < 2 && !found; pass++) {
+        const korb_value o = pass == 0 ? self_cref : entry_cref;
+        if (!KORB_CLASS_P(o) || (pass == 1 && o == self_cref)) continue;
+        i = korb_const_index_owned(vm, id, o);
+        found = i != UINT32_MAX || korb_autoload_registered_p(c, o, id);
+    }
+    for (int32_t k = (int32_t)cache->chain_len - 1; !found && k >= 0; k--) {
+        const korb_value o = korb_cref_resolve(vm, cache->owner_chain, (uint32_t)k + 1, 0);
+        if (!KORB_CLASS_P(o)) continue;
+        if (!KORB_CLASS_P(inner)) inner = o;
+        i = korb_const_index_owned(vm, id, o);
+        found = i != UINT32_MAX || korb_autoload_registered_p(c, o, id);
+    }
+    if (!found && KORB_CLASS_P(inner)) found = korb_const_in_ancestry(vm, inner, id) != UINT32_MAX;
+    /* a class below BasicObject but not Object (and no module) never reaches the top level (rb_const_get) */
+    if (!found && korb_const_object_fallback_p(vm, inner)) {
+        found = korb_const_index_owned(vm, id, KORB_NIL) != UINT32_MAX;
+        const korb_value objc = korb_const_get(vm, vm->class_name[KORB_C_OBJECT]);
+        if (!found && KORB_CLASS_P(objc))
+            found = korb_const_in_ancestry(vm, objc, id) != UINT32_MAX || korb_autoload_registered_p(c, objc, id);
+    }
+    if (!found) return RESULT_OK(KORB_NIL);   /* a nil-valued constant still counts */
+    RESULT dr = korb_str_new(c, slots, "constant", 8);   /* defined? returns a frozen String */
     if (LIKELY(dr.state == KORB_NORMAL) && AROH_IS_GC_OBJECT(dr.value))
         ((AroObjectHeader *)(uintptr_t)dr.value)->flags |= KORB_FL_FROZEN;
     return dr;

@@ -172,8 +172,11 @@ static RESULT korb_m_ary_insert(CTX *c, korb_value *slots, korb_ref self, korb_s
 
 /* Hash#sort without a block: by key; an incomparable pair keeps its order */
 static RESULT korb_hash_sort_cmp_key(CTX *c, korb_value *slots, korb_value a, korb_value b, const void *ud, int *out) {
-    (void)slots; (void)ud;
-    *out = korb_cmp_full(c, korb_ary_ptr(VAL2ARY(a))[0], korb_ary_ptr(VAL2ARY(b))[0]) == 1 ? 1 : 0;
+    (void)ud;
+    const korb_value ka = korb_ary_ptr(VAL2ARY(a))[0], kb = korb_ary_ptr(VAL2ARY(b))[0];
+    if (UNLIKELY(korb_eq_needs_send(ka) || korb_eq_needs_send(kb) || KORB_CLASS_P(ka) || KORB_CLASS_P(kb)))
+        return korb_cmp_spaceship(c, slots, a, b, out);   /* whole pairs: Array#<=> dispatches the keys' own <=> (Gem::Version) */
+    *out = korb_cmp_full(c, ka, kb) == 1 ? 1 : 0;
     return RESULT_OK(KORB_NIL);
 }
 /* Hash#sort → array of [k,v] pairs sorted by key; fetch_values(*keys) */
@@ -782,6 +785,7 @@ static RESULT korb_obj_copy_impl(CTX *c, korb_value *slots, korb_ref self, uint3
         RESULT icr = korb_copy_hook(c, slots, self, hook_mid, hook_kw, &fin_done);
         if (UNLIKELY(icr.state != KORB_NORMAL)) return icr;
     } else if (KORB_CLASS_P(v)) {                          /* Module/Class → anonymous copy with its own method table */
+        if (UNLIKELY(VAL2CLASS(v)->is_singleton)) return korb_raise(c, slots, KORB_E_TYPE, 0, "can't copy singleton class");
         RESULT cr = korb_class_dup(c, slots + 1, v);
         if (UNLIKELY(cr.state != KORB_NORMAL)) return cr;
         slots[1] = cr.value;

@@ -829,6 +829,7 @@ module Marshal
       a
     when 0x7b, 0x7d                                      # '{' hash / '}' hash-with-default
       n = _rlong(st); h = {}; _reg(st, h)
+      h.compare_by_identity if st.delete(:cbi)          # before the entries: equal keys stay apart
       _elems(st, n, 2) { k = _read(st); h[k] = _read(st) }
       h.default = _read(st) if t == 0x7d
       h
@@ -929,6 +930,7 @@ module Marshal
       idx = st[:objs].size; st[:objs] << nil
       cls = _const(_read0(st))
       st[:reuse] = idx
+      st[:cbi] = true if cls == Hash && [0x7b, 0x7d].include?(st[:s].getbyte(st[:i]))
       inner = _read(st)
       _uclass_check(cls, inner)
       obj = _reclass(cls, inner)

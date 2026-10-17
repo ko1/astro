@@ -4,10 +4,19 @@
 # is not CRuby are adjusted here.
 
 module Gem
+  # replaced below; removed first so `ruby -W` does not report the redefinitions
+  class << self
+    remove_method :default_bindir, :user_dir, :operating_system_defaults
+  end
+
   # Executables go to the install root's bin/, not beside the koruby binary
-  # (RbConfig bindir is the running binary's directory).
+  # (RbConfig bindir is the running binary's directory).  A bindir someone set
+  # afterwards (rubygems' own tests do) is followed, as CRuby does.
+  KORB_EXE_BINDIR = RbConfig::CONFIG["bindir"].dup.freeze
+  private_constant :KORB_EXE_BINDIR
   def self.default_bindir
-    File.join(RbConfig::CONFIG["prefix"], "bin")
+    b = RbConfig::CONFIG["bindir"]
+    b == KORB_EXE_BINDIR ? File.join(RbConfig::CONFIG["prefix"], "bin") : b
   end
 
   # Gems a user installs with koruby stay apart from CRuby's (~/.gem/ruby/...):

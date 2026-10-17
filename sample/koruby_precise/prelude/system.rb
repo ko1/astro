@@ -2951,9 +2951,9 @@ class << ENV
   def replace(other)
     h = other.is_a?(Hash) ? other : (other.respond_to?(:to_hash) ? other.to_hash : nil)
     raise TypeError, "no implicit conversion of #{other.class} into Hash" unless h.is_a?(Hash)
-    pairs = h.map { |k, v| [__env_name(k), __env_value(v)] }
+    pairs = h.map { |k, v| [__env_name(k), (__env_value(v) unless v.nil?)] }
     clear
-    pairs.each { |k, v| self[k] = v }
+    pairs.each { |k, v| self[k] = v unless v.nil? }
     self
   end
 

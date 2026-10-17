@@ -4963,6 +4963,16 @@ bake_cref_chain(struct kp_ctx *tc, struct korb_constcache *cache)
     cache->chain_len = depth;
 }
 
+/* `defined?(NAME)` (self_off as the caller has it) */
+static NODE *
+kp_defined_const(struct kp_ctx *tc, uint32_t name, int32_t self_off)
+{
+    NODE *const d = ALLOC_node_defined_const(name, self_off, -4 - tc->chain);
+    bake_add(tc, &d->u.node_defined_const.self_off); bake_add(tc, &d->u.node_defined_const.dc_off);
+    bake_cref_chain(tc, &d->u.node_defined_const.cache);
+    return d;
+}
+
 /* Build a bare constant read (`NAME`) node, resolving via the cref owner + the
  * baked lexical enclosing chain — same as the PM_CONSTANT_READ_NODE case.  Used
  * to synthesize the read side of `NAME op= v` op-assignments. */
@@ -6465,9 +6475,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
         if (PM_NODE_TYPE_P(v, PM_CONSTANT_READ_NODE))
             /* self_off: inside a module body self is the module, which is where a
              * pending autoload for this name would be registered */
-            { NODE *_d = ALLOC_node_defined(1, kp_intern_cid(tc, ((const pm_constant_read_node_t *)v)->name), self_off,
-                                             -4 - tc->chain);
-              bake_add(tc, &_d->u.node_defined.self_off); bake_add(tc, &_d->u.node_defined.dc_off); return _d; }
+            return kp_defined_const(tc, kp_intern_cid(tc, ((const pm_constant_read_node_t *)v)->name), self_off);
         if (PM_NODE_TYPE_P(v, PM_CONSTANT_PATH_NODE)) {             /* `A::B` */
             const pm_constant_path_node_t *cp = (const pm_constant_path_node_t *)v;
             if (cp->parent && PM_NODE_TYPE_P(cp->parent, PM_CONSTANT_READ_NODE))   /* static `A::B` → owner-aware check */
@@ -6918,8 +6926,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
         NODE *set = build_const_set(tc, name, val);
         /* `defined?(X) && X || (X = v)`: the `&&` short-circuits before the read
          * when X is undefined (no NameError); a truthy X is kept, else assign. */
-        NODE *dfn = ALLOC_node_defined(1, name, -1 - tc->chain, -4 - tc->chain);
-        bake_add(tc, &dfn->u.node_defined.self_off); bake_add(tc, &dfn->u.node_defined.dc_off);
+        NODE *dfn = kp_defined_const(tc, name, -1 - tc->chain);
         NODE *guarded = ALLOC_node_and(dfn, build_const_read(tc, name, kp_line(tc, node)));
         return ALLOC_node_or(guarded, set);
       }
@@ -6996,8 +7003,7 @@ transduce_1(struct kp_ctx *tc, const pm_node_t *node)
         WITH_CHAIN(tc, kind_node_const_set.slot_count, (val = transduce(tc, ow->value)));
         NODE *set = kp_alloc_const_set(tc, name, owner, INT32_MIN, val);
         /* guard the read with a flat defined? probe of the rightmost name (no NameError) */
-        NODE *dfn = ALLOC_node_defined(1, name, -1 - tc->chain, -4 - tc->chain);
-        bake_add(tc, &dfn->u.node_defined.self_off); bake_add(tc, &dfn->u.node_defined.dc_off);
+        NODE *dfn = kp_defined_const(tc, name, -1 - tc->chain);
         NODE *guarded = ALLOC_node_and(dfn, KP_CONST(tc, name, owner, INT32_MIN, INT32_MIN, kp_line(tc, node)));
         return ALLOC_node_or(guarded, set);
       }

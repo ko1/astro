@@ -497,6 +497,13 @@ class Date
 
   # mk_inspect shows the UTC jd / day seconds
   def inspect
+    jd, df = __utc_jd_df
+    sf = @sf.is_a?(Rational) && @sf.denominator == 1 ? @sf.to_i : @sf
+    format("#<%s: %s ((%sj,%ds,%sn),%+ds,%sj)>",
+           self.class.inspect, to_s, jd.to_s, df, sf.to_s, @of, __sg_str).force_encoding(Encoding::US_ASCII)
+  end
+
+  private def __utc_jd_df
     jd = @jd
     df = @df - @of
     if df < 0
@@ -506,9 +513,42 @@ class Date
       jd += 1
       df -= 86400
     end
-    sf = @sf.is_a?(Rational) && @sf.denominator == 1 ? @sf.to_i : @sf
-    format("#<%s: %s ((%sj,%ds,%sn),%+ds,%sj)>",
-           self.class.inspect, to_s, jd.to_s, df, sf.to_s, @of, __sg_str).force_encoding(Encoding::US_ASCII)
+    [jd, df]
+  end
+
+  # CRuby's format: [nth, jd, df, sf, of, sg] with jd / df in UTC; the old
+  # [ajd, of, sg] / [ajd, sg] (of a fraction of a day) still loads
+  def marshal_dump
+    jd, df = __utc_jd_df
+    [0, jd, df, @sf.is_a?(Rational) && @sf.denominator == 1 ? @sf.to_i : @sf, @of, start]
+  end
+
+  def marshal_load(a)
+    raise TypeError, "expected an array" unless a.is_a?(Array)
+    case a.size
+    when 2, 3
+      ajd, of, sg = a.size == 2 ? [a[0], 0, a[1]] : a
+      of = (of * 86400).round
+      t = ajd + Rational(1, 2)
+      jd = t.floor
+      secs = (t - jd) * 86400
+      df = secs.floor
+      sf = ((secs - df) * 1_000_000_000).round
+    when 6
+      _nth, jd, df, sf, of, sg = a
+    else
+      raise TypeError, "invalid size"
+    end
+    sg = sg.to_i if sg.is_a?(Float) && sg.finite? && sg == sg.floor
+    df += of
+    if df >= 86400
+      jd += 1
+      df -= 86400
+    elsif df < 0
+      jd -= 1
+      df += 86400
+    end
+    __setup(jd, df, sf, of, sg)
   end
 
   private def __sg_str

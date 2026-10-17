@@ -1334,7 +1334,7 @@ static RESULT korb_hash_minmax_by(CTX *c, korb_value *slots, korb_ref self, NODE
         slots[5] = r.value;
         if (!have) { slots[0] = slots[4]; slots[1] = slots[5]; have = true; continue; }
         int cmp = korb_cmp_full(c, slots[5], slots[1]);
-        if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+        if (UNLIKELY(cmp == 2)) CHECK(korb_cmp_spaceship(c, slots + 6, slots[5], slots[1], &cmp));   /* user object key → <=> */
         if ((want < 0 && cmp < 0) || (want > 0 && cmp > 0)) { slots[0] = slots[4]; slots[1] = slots[5]; }
     }
     return RESULT_OK(slots[0]);
@@ -1504,7 +1504,15 @@ static RESULT korb_hash_minmax(CTX *c, korb_value *slots, korb_ref self, int wan
         h = VAL2HASH(KORB_REF_GET(self));
         int kc = korb_cmp_full(c, korb_hash_pairs(h)[2*i], korb_hash_pairs(h)[2*best]);
         int cmp = (kc != 0) ? kc : korb_cmp_full(c, korb_hash_pairs(h)[2*i+1], korb_hash_pairs(h)[2*best+1]);
-        if (UNLIKELY(cmp == 2)) return korb_raise(c, slots, KORB_E_ARGUMENT, 0, "comparison failed");
+        if (UNLIKELY(cmp == 2)) {   /* a key / value with its own <=> (Gem::Version): compare the pairs as Array#<=> */
+            slots[0] = korb_hash_pairs(h)[2*i]; slots[1] = korb_hash_pairs(h)[2*i+1];
+            CHECK(korb_hash_make_pair(c, slots + 5, &slots[0], &slots[1], &slots[2]));
+            h = VAL2HASH(KORB_REF_GET(self));
+            slots[0] = korb_hash_pairs(h)[2*best]; slots[1] = korb_hash_pairs(h)[2*best+1];
+            CHECK(korb_hash_make_pair(c, slots + 5, &slots[0], &slots[1], &slots[3]));
+            CHECK(korb_cmp_spaceship(c, slots + 5, slots[2], slots[3], &cmp));
+            h = VAL2HASH(KORB_REF_GET(self));
+        }
         if ((want > 0 && cmp > 0) || (want < 0 && cmp < 0)) best = i;
     }
     h = VAL2HASH(KORB_REF_GET(self));
