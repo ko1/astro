@@ -1,177 +1,100 @@
 # koruby_precise
 
-Ruby サブセットの言語実装。**ASTro フレームワーク**（AST を辿るインタプリタの部分評価による高速化）の上に、
-**precise rooting + moving/copy GC** で構築されている。CRuby drop-in を目標に、core 言語・core クラス・
-正規表現・stdlib の広範囲をカバーし、実物の **optcarrot（NES エミュレータ）を CRuby と checksum 完全一致**で動かす。
+**ASTro**（AST を辿るインタプリタの部分評価で速くするフレームワーク）の上に作った Ruby 処理系。
+**precise rooting + moving/copy GC**。目標は CRuby の drop-in で、CRuby の rubygems・bundler・stdlib を
+そのまま読み、**Rails 8.1 のアプリと ruby-bench の 79 本（railsbench・lobsters・optcarrot ほか）が動く**。
 
-> v1（2026-06 以前）は slots ABI で全面再構築（v2）した。以降 M0（calc 級 subset）から出発し、
-> 現在は下記の通り実用 core Ruby 処理系まで到達している。設計は [docs/v2_design.md](./docs/v2_design.md)、
-> CLI/AOT/gate 仕様は [docs/v2_spec.md](./docs/v2_spec.md)。
+> v1（2026-06 以前）は slots ABI で全面的に作り直した（v2）。設計は [docs/v2_design.md](./docs/v2_design.md)、
+> CLI / AOT / gate の仕様は [docs/v2_spec.md](./docs/v2_spec.md)、いまの状況の一覧は [docs/status.html](./docs/status.html)。
 
 ## 実行モデル
 
-同じ AST から2通りに実行できる（ASTro の核心）:
+同じ AST を 2 通りに実行できる（ASTro の核心）:
 
-- **インタプリタ**（tree-walk, `--plain`）— コード生成なしの共通エンジン。全 125 個の
-  `DISPATCH_node_*` を合計しても **~34 KB**（平均 275 B/ノード）と極小。
-- **AOT**（`--aot-compile` → `--compiled-only`）— 各ノードを部分評価して特殊化ディスパッチャ（SD）を C に吐き、
-  `code_store/all.so` として dlopen。プログラムごとに特殊化コードを生成する。
+- **インタプリタ**（tree-walk、`--plain`）— コード生成なしの共通エンジン。
+- **AOT**（`--aot-compile` / `--pg-compile` で焼く → 以後の実行で使う）— 各ノードを部分評価して特殊化した
+  ディスパッチャ（SD）を C で吐き、`code_store/all.so` として dlopen する。prelude（Ruby で書いた組み込み）は
+  `preload_store/` に 1 度だけ焼いて全プログラムで共有する。
+- **WASI**（wasm32-wasip1）: インタプリタと、AOT を全部埋め込んだ単体 .wasm（[wasi/README.md](./wasi/README.md)）。
+  ※ 2026-10-09 以降の `<execinfo.h>` の include で WASI ビルドが止まっている（[docs/todo.md](./docs/todo.md)）。
 
-GC は **precise moving/copy GC**（`GC=copy` default）。全ての alloc-heavy path を
-`BARUBY_GC_STRESS=1 BARUBY_GC_PURGE=1`（毎 alloc で GC + retired plane を mprotect）で検証している。
+GC は **precise moving/copy GC**（`GC=copy` が既定）。割り当ての多い経路は
+`BARUBY_GC_STRESS=64 BARUBY_GC_PURGE=1`（64 回の割り当てごとに GC + 旧領域を mprotect）で検証している。
 
-## 性能（optcarrot, 180 フレーム, checksum 59662 全モード一致）
+## 何が動くか（2026-10 時点）
 
-2026-09-05、専用機 sp4（Ryzen 9 8945HS / 8 cores, 16 threads、Linux 7.0、
-performance governor、gcc 15.2、他ジョブなし）で計測。比較対象は自前ビルドの
-**CRuby 4.0.2 +PRISM**（`v4.0.2`, revision `d3da9fec82`）。master と修正版を
-1 round 内で交互に、各 3 round の median（2026-09-06、sp4 専有、CRuby 4.1.0dev master
-`69b49ac7ae` +PRISM、gcc 15.2。koruby と YJIT は同 round、素の CRuby は同日の別 round）:
-
-| 実行系 | fps | 対 素の CRuby | 対 CRuby+YJIT |
-|---|---:|---:|---:|
-| **koruby AOT**（aot+cached） | **172.1** (171.8–172.8) | **2.83×** | 0.58× |
-| （参考）koruby AOT + 即値 bake 実験パッチ | 189.9 (189.8–190.1) | 3.13× | 0.64× |
-| CRuby (no yjit) | 60.7 (59.8–61.2) | 1.00× | 0.20× |
-| CRuby + YJIT | 296.3 (295.8–297.0) | 4.88× | 1.00× |
-
-- optcarrot では **warm AOT が素の CRuby の 2.83×**。YJIT は AOT の 1.73×。即値 bake は SD を 1 プログラムの intern 順に鍵づけする（別プログラムと SD を共有できない）のでツリーには入れていない（上限の参照値、[docs/copy_and_patch.md](./docs/copy_and_patch.md)）。
-- **2026-09-06 に 97.1 → 172.1 fps (1.77×、即値 bake 込みなら 189.9)**。内訳: `send` のたびに「受け側が自前の
-  #send を持つか」を Object/Kernel の method table まで線形走査していた (perf で 25.6%)
-  のを method cache 経由に + implicit-self `send(:sym, …)` の直接 invoke + 単独 splat
-  `f(*x)` のコピー省略 (97 → 164)、void* オペランドの runtime 参照で massign を AOT
-  特殊化 + rotate!/splice の bulk store + builtin レシーバの型タグ (→ 167)、
-  fat inline cache (ic に callee の body/dispatcher/frame size を複製) + block 形状
-  flag (→ 172)。symbol ID / 行番号 / Symbol リテラルを SD に即値で焼くと 190 だが
-  共有性を壊すので実験のみ ([docs/copy_and_patch.md](./docs/copy_and_patch.md))。optcarrot の CPU は `-b` だと
-  `--opt` 無しで 1 命令あたり 2〜3 回 `send` する。計測一式は
-  `~/ruby/src/trials/2026-09-06-koruby-precise-perf/`。
-- その前の 2026-09-05 は **`node_vcall` のラッパノードを外して 81.7 → 96.4 fps (+18.0%)**
-  （同 sp4、CRuby 4.0.2 比較: CRuby 62.5 / YJIT 297.6）。裸の識別子 `foo` の miss を
-  NameError にするために call ノードを `@noinline` のラッパで包んでいたのを、パーサが
-  `NodeHead` に印を付けて miss 側だけが読む形に変えた。経緯と切り分けは
-  `~/ruby/src/trials/2026-09-05-koruby-optcarrot-regression/`。
-- 修正前の 2026-09-04 計測（同じ sp4、CRuby 4.0.6 比較、各 7 回 median）は
-  AOT **81.3** (80.5–82.2) / interp **51.9** (51.6–52.9) / CRuby 63.1 / YJIT 300.1。
-  interp と cold bake は測り直していない（09-06 の `--plain` 単発は 72.3 fps）。
-- 標準の `make optcarrot-report FRAMES=180 BENCHRUNS=3` では AOT 80.9 fps、
-  AOT cold（bake + 1 run）35.738 s、warm run 2.321 s（いずれも vcall 修正前の値）。
-- optcarrot の AOT bake 単体は **33.350 s**。Ruby ソース42ファイル合計 **233,406 bytes**、
-  bundle **134,350 bytes**、生成 `code_store/all.so` **3,252,600 bytes**。
-- 純 Ruby DOOM（E1M1、60フレーム）は CRuby 1.095 s / YJIT 0.529 s / koruby interpreter
-  0.991 s / AOT warm 0.503 s（checksum `17930386881013214317` 全モード一致）。AOT bake は **11.275 s**。
-- 53 本の microbench（各5モード、best-of-3、`GC=copy`）の実時間 geomean は、素の CRuby = 1.00 に対し
-  **YJIT 0.49 / interp 0.74 / AOT cold 1.04 / AOT warm 0.37**。warm AOT は素の
-  CRuby の 2.70×、YJIT の 1.32×で、YJIT に 32/53 ベンチで勝つ。再帰・method send・
-  ivar/object 系は YJIT が強い。
-- 同じ条件で `GC=copy_gen` も測定した（geomean: AOT warm 0.38）。`ary` / `gen_gc` は改善したが、
-  `gcchurn` / `strscan` は copy より約9%遅く、効果は workload 依存だった。
-- `GC=mark_gen` も同条件で測定し、AOT warm geomean は CRuby 比 0.42（YJIT 比 約0.86）。
-  さらに `bump` / `immix` / `immix_gen` / `mark_compact_gen` / `mark_bump_gen` も同条件で測定した。
-  8 backend・全53本の CRuby/YJIT 比較と各 raw log は [docs/perf.md](./docs/perf.md) に記載した。
-- 比は CPU、コンパイラ、CRuby/YJIT バージョンで大きく動く。数字を引用するときは
-  比較対象も同じ環境で測り直すこと。詳細と過去値は [docs/perf.md](./docs/perf.md)。
-- **計測前に optcarrot 配下の `code_store` を消すこと。** 古い store を新しい binary で
-  読むと素の実行は SEGV、`--compiled-only` は compile-miss で即死する。
-
-## rubyspec 充足（core, CRuby drop-in 目標）
-
-2026-09-04 時点（koruby_precise `0a908f2a`、rubyspec `4eaa9145`、`spec/ruby/core`）。
-計測は **本物の mspec を無改造の spec に噛ませる** `tools/mspec_real_run.rb`
-（`DUMP=core.tsv ruby tools/mspec_real_run.rb ~/ruby/src/master/spec/ruby/core 12`）。
-
-| 指標 | 値 |
-|---|---:|
-| **example pass-rate** | **97.0%** |
-| examples | 22,910 (pass 22,215 / fail 523 / err 172) |
-| fully-clean files | 1,633 / 2,144 (76.2%) |
-| 完走しない files | 4（CRuby 上で計 45 examples） |
-| 保守的下限（未完走を全て不合格として算入） | 96.8% |
-
-- pass-rate は完走した spec の `pass / (pass + fail + err)`。
-- 2 回連続実行での差は 1 example のみ（`file/open` が pass↔err で振れる）。
-  ただし per-file 20s timeout があるので、**測る前にマシンの負荷を確認すること**
-  （過去 sweep の残骸プロセスを落としてから測り直したら、未完走 files が 7 → 4 になった。
-  残骸の件は [docs/todo.md](./docs/todo.md) の「sweep が fork した子プロセスを残す」）。
-- 単一 spec の再現は
-  `SPEC_TEMP_DIR=<writable> ./koruby_precise tools/mspec_launch.rb <absolute-spec-path>`。
-- `tools/rubyspec_run.rb`（mspec **shim** + spec 連結方式）は速いが `it_behaves_like` や
-  mock が独自実装なので **pass を水増しする**。数字を出すときは実 mspec のほうを使うこと。
-
-カテゴリ別（summary が返った examples）:
-
-| category | pass / total | category | pass / total | category | pass / total |
-|---|---:|---|---:|---|---:|
-| `argf` | 127/139 (91.4%) | `array` | 2,884/2,898 (99.5%) | `basicobject` | 160/172 (93.0%) |
-| `binding` | 85/98 (86.7%) | `builtin_constants` | 27/27 (100.0%) | `class` | 50/54 (92.6%) |
-| `comparable` | 54/54 (100.0%) | `complex` | 166/169 (98.2%) | `conditionvariable` | 9/11 (81.8%) |
-| `data` | 85/88 (96.6%) | `dir` | 325/333 (97.6%) | `encoding` | 618/632 (97.8%) |
-| `enumerable` | 532/536 (99.3%) | `enumerator` | 421/431 (97.7%) | `env` | 172/193 (89.1%) |
-| `exception` | 215/250 (86.0%) | `false` | 12/13 (92.3%) | `fiber` | 161/171 (94.2%) |
-| `file` | 899/913 (98.5%) | `filetest` | 85/89 (95.5%) | `float` | 255/260 (98.1%) |
-| `gc` | 39/39 (100.0%) | `hash` | 550/562 (97.9%) | `integer` | 585/598 (97.8%) |
-| `io` | 1,602/1,634 (98.0%) | `kernel` | 2,110/2,235 (94.4%) | `main` | 23/27 (85.2%) |
-| `marshal` | 473/475 (99.6%) | `matchdata` | 180/185 (97.3%) | `math` | 243/243 (100.0%) |
-| `method` | 194/199 (97.5%) | `module` | 1,021/1,049 (97.3%) | `mutex` | 28/29 (96.6%) |
-| `nil` | 26/27 (96.3%) | `numeric` | 325/326 (99.7%) | `objectspace` | 107/107 (100.0%) |
-| `proc` | 235/247 (95.1%) | `process` | 339/363 (93.4%) | `queue` | 46/46 (100.0%) |
-| `random` | 85/87 (97.7%) | `range` | 606/606 (100.0%) | `rational` | 155/158 (98.1%) |
-| `refinement` | 24/25 (96.0%) | `regexp` | 249/258 (96.5%) | `set` | 165/175 (94.3%) |
-| `signal` | 52/53 (98.1%) | `sizedqueue` | 59/61 (96.7%) | `string` | 3,846/3,906 (98.5%) |
-| `struct` | 170/170 (100.0%) | `symbol` | 262/270 (97.0%) | `systemexit` | 6/6 (100.0%) |
-| `thread` | 261/327 (79.8%) | `threadgroup` | 8/8 (100.0%) | `time` | 629/652 (96.5%) |
-| `tracepoint` | 29/76 (38.2%) | `true` | 12/13 (92.3%) | `unboundmethod` | 100/106 (94.3%) |
-| `warning` | 29/31 (93.5%) | — | — | — | — |
-
-主な残課題:
-
-| 残課題 | 内容 |
+| 対象 | 状況 |
 |---|---|
-| TracePoint のイベント配信 | API 層はあるが `:line` / `:call` / `:return` / `:b_call` などの実行時フックが未実装 |
-| 実行中フレームの観測 | `caller` / `caller_locations` / `Thread#backtrace` と location 系、例外 backtrace / `full_message` / トップレベル表示の一部が不完全 |
-| Thread/Fiber の割り込みと同期 | Fiber 内で lock 中の thread への `raise` / `kill` など、green-thread モデルと CRuby native thread の意味差 |
-| eval/Binding の字句スコープ | `eval(str)` から呼び出し元・外側 block の local を読み書きするケース、Binding の外側 scope 列挙 |
-| 完走しない 4 files | `mutex/lock`、`process/kill`、`process/status/wait`、`process/wait`。Fiber 内 lock への割り込みと signal/wait の wakeup がハング経路。さらに `process/wait` 系は fork した子が `timeout` の kill を生き延びて残留するので、sweep 後にプロセスを確認すること |
-| 個別 edge case | ENV の変換プロトコル、Encoding::Converter / Unicode、String、Process/IO など |
+| Rails 8.1 | `rails new` / `bundle install` / scaffold / `db:migrate` / ActiveRecord（sqlite3）/ 画面・JSON・開発時のエラー画面が CRuby と同じ（2026-09-29） |
+| ruby-bench（Shopify/ruby-bench の既定 79 本） | 79 本すべて動く（railsbench・lobsters・activerecord・erubi-rails・liquid・hexapdf・psych・optcarrot ほか）。性能は下の表 |
+| gem のテストスイート | 342 gem・7,068 ファイルを CRuby と結果比較: 6,888 ファイル一致、313 gem は全ファイル一致（2026-09-28〜29、表は [docs/status.html](./docs/status.html)） |
+| C 拡張 | CRuby の C API の互換層（builtins/cext.c）。`gem install` が mkmf で拡張を `.kompat.so` にビルドする（拡張のソースは無改造）。nokogiri・sqlite3・puma・json・bigdecimal・psych・msgpack・bcrypt・nio4r・openssl・digest ほか。ビルドできない拡張は抜いて入れ、koruby の `lib/` が代わりに立つ |
+| CRuby の test/rubygems | 162 ファイル・3,541 テストを 1 ファイルずつ比較し、koruby だけが落ちるのは 3 件（いずれも意図した違い、2026-10-17）。`tools/cruby_tests.sh rubygems` |
+| gem / bundle コマンド | `root/bin/gem`・`bundle`・`rake` ほか（shebang は koruby）。rubygems.org からの `gem install` も動く |
+| optcarrot / DOOM | NES エミュレータ optcarrot と純 Ruby の DOOM が CRuby と checksum（画素）一致 |
 
-失敗の履歴と設計上の制約は [docs/rubyspec.md](./docs/rubyspec.md) と
-[docs/todo.md](./docs/todo.md) に記録している。
+## 互換性の数字
 
-corpus（`make test`）は CRuby オラクル差分の golden test **100,354 件を 0 fail / 0 crash** で維持している。
+| 指標 | 値 | 計測 |
+|---|---|---|
+| ruby/spec（core / language / library、3,747 ファイル） | **32,363 / 32,364 例 = 99.997%**（TracePoint の 76 例を除く。含めると 32,438 / 32,440） | 2026-10-17、20b36a9c、本物の mspec で 1 ファイルずつ（`tools/spec_sweep/sweep.rb`） |
+| 手書きの回帰テスト（rubyharness/t、1,220 ファイル） | **17,725 行すべて CRuby master と一致**。GC 負荷試験（STRESS+PURGE）では 41 行が違う（2026-10-16 の作業前の build 1743b846 でも同じ 41 行） | 2026-10-17 / 10-16 |
+| CRuby の test/rubygems | koruby だけが落ちるテスト 3 / 3,541 | 2026-10-17 |
 
-## 実装済み機能（抜粋・すべて CRuby 一致を確認）
+- 残りの 1 例は `Proc#binding`（外側を読まないブロックの binding からメソッドの引数が見えない）。直すとブロックを作るたびに
+  +約 270 命令かかるので見送った（[docs/todo.md](./docs/todo.md)）。
+- 経過と方法は `~/ruby/src/trials/2026-10-15-koruby-rubyspec/README.md`（2026-10-15 の 98.55% から）。
+- 比較の基準は CRuby master（4.1.0dev）。
 
-- **言語**: closure/proc/lambda/`->`、block・`yield`・`&blk`・`Symbol#to_proc`、splat `f(*a,&p){}`・
-  `**kwargs`・anonymous rest、多重代入、パターンマッチ（`case/in`）、`method_missing`・`respond_to_missing?`、
-  `define_method`、`Binding`/`eval(str, binding)`/`TOPLEVEL_BINDING`、`super`（prepend MRO 線形化含む）、
-  例外 + `backtrace`/`caller`、`defined?`、`freeze`/`FrozenError`。
-- **正規表現**: `libastrogre` ベースの本物の Regexp/MatchData。`=~`/`$1..$9`/`$~`/`$&`/`` $` ``/`$'`、
-  scan/match/split/sub/gsub（`\1` backref + block）、名前付きキャプチャ（`MatchData#[:name]` /
-  `#named_captures` / `Regexp#names`。ただし **`/(?<n>…)/ =~ str` がローカル変数 `n` を
-  作る形は未対応** — prism の MATCH_WRITE ノードが未実装）、lookahead/lookbehind、
-  in-pattern backref、POSIX class、`/i`・`/m` フラグ、`Regexp.union`、補間 `/#{}/`。
-- **数値**: fixnum tagged 算術、bignum（GMP）、Rational、Complex、CRuby 互換 MT19937（seeded 完全一致）。
-- **core クラス**: Array/Hash/String/Symbol/Range/Struct/Data/Set/Comparable/Enumerable
-  （lazy Enumerator 一部）/Time（sub-second）/pack・unpack/sprintf。
-- **メタプロ**: Module#include/prepend/extend、`class << self` 一般 body、class instance variable、
-  const_set/alias_method/undef_method、builtin subclass/extend（side-table 方式）。
-- **stdlib**: ENV/ARGV/File/Dir/IO/StringIO/Marshal（一部）、IO::Buffer、IO.copy_stream、autoload。
-- **Thread / Fiber**: green thread M:1（scheduler + blop 層。Thread/Mutex/Queue/ConditionVariable/
-  IO.select）、Fiber の resume/yield/raise/transfer/kill/storage。
+## 性能
 
-## 意図的な除外（現時点でスコープ外）
+計測はすべて専用機 sp4（Ryzen 9 8945HS、8 コア 16 スレッド、Linux 7.0、performance governor、gcc 15.2、
+`bench-lease` で専有）。比較対象は CRuby 4.1.0dev（master `69b49ac7ae`、2026-08-28）+PRISM。
+数字は CPU・コンパイラ・CRuby の版で大きく動くので、引用するときは比較対象も同じ環境で測り直すこと。
 
-- **encoding / transcoding**: String header の 3-bit フィールドで encoding を持つ。
-  **直接扱えるのは UTF-8 / US-ASCII / ASCII-8BIT の 3 つ**で、それ以外は「名前だけ覚える」
-  （`force_encoding("ISO-8859-1")` は通り `#encoding` も返すが、文字単位の操作は
-  NotImplementedError）。`String#encode` の実 transcoding と Unicode case mapping は非対応
-  （`project_koruby_precise_encoding`）。※正規表現そのものは対応済みで、encoding 依存の
-  regex テストだけがこの境界。
-- **真の並行性**: Thread は **green thread M:1**（native 1 本の上で協調スケジューリング。
-  blocking 操作でのみ切り替わり、preemption なし）。**真の並列実行はしない**。
-  Ractor と Fiber scheduler は無し（`Fiber.scheduler` は nil を返すスタブ）。
-- **gem エコシステム**: 外部 gem / native 拡張のロードは非対応。
-  （`require` の `$LOAD_PATH` 解決と `autoload` は実装済み — [done.md](./docs/done.md)）
+### optcarrot（NES エミュレータ、180 フレーム、各 5 回の中央値、checksum 59662 全回一致）
+
+2026-10-17、koruby `20b36a9c`（`~/ruby/src/trials/2026-10-17-koruby-status-perf/`）:
+
+| 実行系 | fps | 範囲 | 対 CRuby | 対 YJIT |
+|---|---:|---|---:|---:|
+| CRuby + ZJIT | 314.1 | 313.2–317.8 | 4.68× | 1.05× |
+| CRuby + YJIT | 299.6 | 298.9–301.3 | 4.47× | 1.00× |
+| **koruby AOT** | **278.2** | 276.9–279.0 | **4.15×** | **0.93×** |
+| koruby interp | 70.8 | 70.0–73.1 | 1.06× | 0.24× |
+| CRuby（JIT なし） | 67.0 | 64.1–68.0 | 1.00× | 0.22× |
+
+AOT は先に焼いて（`--aot-compile`）から `--compiled-only` で測る。焼きの時間は含まない。
+
+### ruby-bench（Shopify/ruby-bench、ハーネスの「最後の 10 回の平均」）
+
+| ベンチ | koruby AOT | CRuby | YJIT | 計測 |
+|---|---:|---:|---:|---|
+| **railsbench**（Rails 8.1 + sqlite3、2000 リクエスト / 反復） | **1032〜1051 ms**（3 巡） | 1239 ms | 682 ms | 2026-10-17、3e7952b3（run 90・91） |
+| optcarrot | 725〜739 ms（91 の 2 巡） | 3181 ms | 724 ms | 同上 |
+| chunky-png | 167 ms | — | 211 ms | 2026-10-03、e10646b9（run 68） |
+
+- railsbench の AOT は CRuby の 0.85 倍の時間（CRuby より速い）、YJIT の 1.5 倍。10/3 朝の 1948 ms から約 −47%。
+- YJIT に勝っているもの（AOT / YJIT の時間比、run 68）: chunky-png 0.79、fannkuchredux 0.47、sudoku 0.87、rubykon 0.91。
+  負けているもの: psych-load 1.26、lee 1.25、liquid-render 1.66、liquid-compile 1.68。
+- インタプリタ（AOT なし）は 79 本中 23 本で CRuby より速く、68 本が CRuby の 2 倍以内（2026-09-30、754eaa48）。
+- ベンチごとの表・方法・経過は `~/ruby/src/trials/2026-09-29-rubybench/README.md`、要約は [docs/status.html](./docs/status.html)。
+  CRuby / YJIT は run 51（2026-09-29）の値で、同じ binary なので取り直していない。
+
+### その他
+
+- 純 Ruby の DOOM（E1M1、60 フレーム）は画素の checksum が CRuby と一致（2026-09-28）。
+- rubyharness の 53 本の microbench（2026-09-04、0a908f2a）: 実時間の geomean は CRuby = 1.00 に対し
+  YJIT 0.49 / interp 0.74 / AOT 0.37（焼きを含めると 1.04）。値と過去の経過は [docs/perf.md](./docs/perf.md)。
+- **計測前に対象ディレクトリの `code_store` を消すこと。** 古い store を新しい binary で読むと SEGV か compile-miss になる。
+
+## 範囲外・制限
+
+- **TracePoint**: ベストエフォート（`:line` / `:call` / `:return` / `:b_call` / `:class` / `:raise` / `:script_compiled` ほか）。
+  無効時に実行される命令は増えない。AOT の実行中のフレームと `:c_call` / `:c_return` には効かない。rubyspec の数には入れない。
+- **並列実行しない**: Thread は green thread（1 本のネイティブスレッドの上で切り替える）。Ractor は API だけで逐次実行。
+- RubyVM::InstructionSequence / AbstractSyntaxTree、Fiber scheduler、Process / fork を介する spec は範囲外。
+- 一覧は [docs/todo.md](./docs/todo.md) の「§0 範囲外」。
 
 ## ビルド・テスト・ベンチ
 
@@ -181,18 +104,18 @@ make                       # koruby_precise を直接ビルド（GC=copy moving 
 make root                  # root/ を作る: CRuby（CRUBY=、既定 ~/ruby/install/master/bin/ruby）の stdlib・rubygems・
                            # default gem の spec と、bundled gem を koruby 自身の `gem install` で入れたもの。
                            # これがあると koruby は起動時に rubygems を読み（CRuby と同じ）、gem を名前で require できる。
-                           # root/bin/gem・bundle・rake …（shebang は koruby）。`gem install --local ./x.gem` 可。
-                           # C 拡張は build せず警告（koruby は .so を読めない）。`--user-install` は ~/.gem/koruby/<ver>。
+                           # root/bin/gem・bundle・rake …（shebang は koruby）。
+                           # C 拡張は mkmf で .kompat.so にビルド（ビルドできないものは拡張抜き）。`--user-install` は ~/.gem/koruby/<ver>。
                            # make test は root に依存する
-make test                  # rubyharness 差分テスト（CRuby オラクル, 100,354 件）
-                           #   CAT=<category> / STRESS=1 で絞り込み・GC stress
+make test                  # rubyharness 差分テスト（CRuby オラクル。比較先は PATH の ruby なので master の ruby を先に置く）
+                           #   CAT=<ファイル名の先頭> / STRESS=1 で絞り込み・GC stress
 make bench                 # 多モード bench（interp / aot+compile / aot+cached / cruby+yjit）
 make optcarrot             # optcarrot をインタプリタで（--plain, FRAMES= 指定可）
 make optcarrot-aot         # optcarrot を AOT で（bake → --compiled-only の fps）
 
-ruby tools/mspec_real_run.rb <dir> [jobs]   # rubyspec 充足率（本物の mspec。DUMP=path は ENV で）
-ruby tools/rubyspec_run.rb <dir>   # 同（shim 版・速いが pass 水増し。DUMP=path WORST=1 で詳細）
-ruby tools/runspec1.rb <spec>      # 単一 spec の pass/fail 詳細
+SWEEP_TMP=/tmp/ksw ruby tools/spec_sweep/sweep.rb <jobs> <out.tsv> core language library
+                                   # rubyspec（本物の mspec で 1 ファイルずつ。SWEEP_TMP は短いパス）
+bash tools/cruby_tests.sh <dir> <outdir> [jobs]   # CRuby の test/<dir>（rubygems / ruby …）を koruby と CRuby で比べる
 ```
 
 GC 健全性チェック: `BARUBY_GC_STRESS=1 BARUBY_GC_PURGE=1 ./koruby_precise prog.rb`

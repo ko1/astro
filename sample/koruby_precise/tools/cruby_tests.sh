@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Run CRuby's test/rubygems file by file under koruby and CRuby; print per-file "tests/failures/errors/skips".
-# usage: tools/rubygems_tests.sh OUTDIR [JOBS]   (CRUBY_SRC, CRUBY override the master tree / ruby)
+# Run a directory of CRuby's tests (test/<DIR>/test_*.rb) file by file under koruby and CRuby; OUTDIR/summary.txt
+# has per-file "tests failures errors skips" of both.
+# usage: tools/cruby_tests.sh DIR OUTDIR [JOBS]   (DIR e.g. rubygems, ruby; CRUBY_SRC, CRUBY override the master tree / ruby)
 set -u
-OUT=${1:?outdir}; J=${2:-8}
+DIR=${1:?dir}; OUT=${2:?outdir}; J=${3:-8}
 KO=$(cd "$(dirname "$0")/.." && pwd)/koruby_precise
 SRC=${CRUBY_SRC:-$HOME/ruby/src/master}
 CR=${CRUBY:-$HOME/ruby/install/master/bin/ruby}
@@ -15,7 +16,7 @@ one() {
   done
 }
 export -f one; export OUT KO SRC CR
-ls "$SRC"/test/rubygems/test_*.rb | sed "s|$SRC/||" | xargs -P "$J" -I{} bash -c 'one {}'
+ls "$SRC"/test/"$DIR"/test_*.rb | sed "s|$SRC/||" | xargs -P "$J" -I{} bash -c 'one {}'
 for f in "$OUT"/*.ko; do
   b=$(basename "$f" .ko)
   s() { grep -E '^[0-9]+ tests, ' "$1" | tail -1 | sed -E 's/([0-9]+) tests, [0-9]+ assertions, ([0-9]+) failures, ([0-9]+) errors, ([0-9]+) skips.*/\1 \2 \3 \4/'; }
